@@ -65,13 +65,13 @@ Add the built plugin to your OpenCode configuration. The global configuration fi
 - Windows: `%USERPROFILE%/.config/opencode/opencode.json`
 - macOS/Linux: `~/.config/opencode/opencode.json`
 
-Example using an absolute file URL:
+Reference the plugin package directory itself. OpenCode resolves the package entry from `package.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "file:///absolute/path/to/opencode-usage-stat/dist/index.js"
+    "file:///absolute/path/to/opencode-usage-stat"
   ]
 }
 ```
@@ -82,7 +82,7 @@ Windows example:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "file:///C:/Users/you/projects/opencode-usage-stat/dist/index.js"
+    "file:///C:/Users/you/projects/opencode-usage-stat"
   ]
 }
 ```
