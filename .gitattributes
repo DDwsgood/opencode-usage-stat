@@ -1,0 +1,6 @@
+*.svg text eol=lf whitespace=-trailing-space
+*.png binary
+*.jpg binary
+vendor/** linguist-vendored
+icons/** linguist-vendored
+dist/** linguist-generated

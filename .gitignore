@@ -1,0 +1,10 @@
+node_modules/
+*.backup
+*.backup[0-9]*
+*.tgz
+.DS_Store
+Thumbs.db
+*.log
+.opencode/
+reports/
+check-*.cjs

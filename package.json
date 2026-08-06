@@ -1,0 +1,52 @@
+{
+  "name": "opencode-usage-stat",
+  "version": "1.0.0",
+  "description": "Token usage statistics plugin for OpenCode / OpenChamber: /session-usage and /total-usage HTML reports",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets/bg-texture.jpg",
+    "icons",
+    "vendor"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "token",
+    "usage",
+    "stats",
+    "session"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DDwsgood/opencode-usage-stat.git"
+  },
+  "homepage": "https://github.com/DDwsgood/opencode-usage-stat#readme",
+  "bugs": {
+    "url": "https://github.com/DDwsgood/opencode-usage-stat/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.5",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
