@@ -1,15 +1,24 @@
 {
   "name": "opencode-usage-stat",
-  "version": "1.0.0",
-  "description": "Token usage statistics plugin for OpenCode / OpenChamber: /session-usage and /total-usage HTML reports",
+  "version": "2.1.0",
+  "description": "Opencode V2 plugin: real-time token/cache/performance stats, provider usage (OpenCode Go/DeepSeek/Codex), and polished HTML usage dashboards",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.jsx"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -17,17 +26,27 @@
     "icons",
     "vendor"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc --emitDeclarationOnly && node build.tui.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node build.tests.mjs && node --test \"dist-test/*.test.mjs\"",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "opencode",
     "opencode-plugin",
+    "opencode2",
     "token",
     "usage",
     "stats",
-    "session"
+    "tokens",
+    "analytics",
+    "tui",
+    "provider-usage"
   ],
   "license": "MIT",
   "repository": {
@@ -38,15 +57,19 @@
   "bugs": {
     "url": "https://github.com/DDwsgood/opencode-usage-stat/issues"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.18.0"
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-beta-17498",
+    "@opentui/core": "0.5.6",
+    "@opentui/keymap": "0.5.6",
+    "@opentui/solid": "0.5.6",
+    "solid-js": "^1.9.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.5",
+    "@opencode-ai/client": "0.0.0-beta-17498",
+    "@opencode-ai/theme": "0.0.0-beta-17498",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "esbuild-plugin-solid": "^0.5.0",
     "typescript": "^5.9.0"
   }
 }

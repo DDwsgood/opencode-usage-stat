@@ -1,16 +1,20 @@
-// queries.ts - SQL query layer via `opencode db` CLI
-// Adapted from opencode-tokenwatch (MIT, (c) TTWK)
+// queries.ts - V2 data aggregation layer.
+//
+// OpenCode V2 has no `opencode db` CLI. All session/message data comes from the
+// V2 client (`@opencode-ai/client` OpenCodeClient, `context.client` in the TUI).
+//   - client.session.list({ limit, cursor }) -> SessionsResponse { data, cursor }
+//   - client.message.list({ sessionID, limit, order, cursor }) -> SessionMessagesResponse { data, cursor }
+// The SessionMessageInfo projections (assistant/user...) are adapted into the
+// report structures the HTML dashboards expect.
+// Adapted from opencode-usage-stat (MIT) and opencode-tokenwatch (MIT, (c) TTWK).
 
-import { exec } from "node:child_process"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import type { OpenCodeClient, SessionInfo, SessionMessageInfo, SessionMessageAssistant } from "@opencode-ai/client"
 import type {
   DailyBreakdownItem,
   ErrorStats,
   HourlyHeatmapItem,
-  ModelBreakdownItem,
   MessageRow,
+  ModelBreakdownItem,
   ProviderBreakdownItem,
   SessionBreakdownItem,
   SessionTokenData,
@@ -18,539 +22,472 @@ import type {
   UsageReport,
 } from "./formatter.js"
 
-/**
- * Resolve the `opencode` CLI binary path.
- * In OpenChamber (desktop app), the bundled `opencode.exe` is not in PATH.
- * We try common locations as fallback.
- */
-function resolveOpencodeCli(): string {
-  // On Windows, try to find the bundled OpenChamber binary first
-  if (process.platform === "win32") {
-    const candidates = [
-      join(homedir(), "AppData", "Local", "Programs", "@openchamberelectron", "resources", "opencode-cli", "opencode.exe"),
-      join(homedir(), "AppData", "Roaming", "npm", "opencode.cmd"),
-      join(homedir(), "AppData", "Roaming", "npm", "opencode.exe"),
-      "opencode.exe",
-    ]
-    for (const c of candidates) {
-      if (existsSync(c)) return c
-    }
+let client: OpenCodeClient | null = null
+
+/** Bind the TUI plugin's V2 client. Must be called before any query. */
+export function setV2Client(c: OpenCodeClient): void {
+  client = c
+}
+
+export function getV2Client(): OpenCodeClient | null {
+  return client
+}
+
+function requireClient(): OpenCodeClient {
+  if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)")
+  return client
+}
+
+/** Fetch all sessions with cursor pagination. */
+async function fetchAllSessions(limit = 500): Promise<SessionInfo[]> {
+  const c = requireClient()
+  const all: SessionInfo[] = []
+  let cursor: string | undefined
+  for (;;) {
+    const res = await c.session.list({ limit, cursor })
+    const page = res?.data
+    if (!Array.isArray(page) || page.length === 0) break
+    all.push(...page)
+    const next = res?.cursor?.next
+    if (!next) break
+    cursor = next
   }
-  // Fallback: just use `opencode` and let the shell resolve it
-  // (works in TUI where npm global bin is in PATH)
-  return "opencode"
+  return all
 }
 
-function execAsync(cmd: string): Promise<{ stdout: string; stderr: string }> {
-  // Replace leading "opencode " with resolved path
-  const resolved = resolveOpencodeCli()
-  const finalCmd = cmd.startsWith("opencode ") ? `${JSON.stringify(resolved)} ${cmd.slice("opencode ".length)}` : cmd
-  return new Promise((resolve, reject) => {
-    exec(finalCmd, { windowsHide: true, timeout: 30000, maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(Object.assign(error, { stderr }))
-      else resolve({ stdout, stderr })
-    })
-  })
+/** Fetch all message projections for a session, with cursor pagination. */
+async function fetchAllMessages(sessionID: string, limit = 1000): Promise<SessionMessageInfo[]> {
+  const c = requireClient()
+  const all: SessionMessageInfo[] = []
+  let cursor: string | undefined
+  for (;;) {
+    const res = await c.message.list({ sessionID, limit, order: "asc", cursor })
+    const page = res?.data
+    if (!Array.isArray(page) || page.length === 0) break
+    all.push(...page)
+    const next = res?.cursor?.next
+    if (!next) break
+    cursor = next
+  }
+  return all
 }
 
-interface SummaryRow {
-  models_used: string | null
-  providers_used: string | null
-  request_count: number | null
-  total_tokens: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  cache_write: number | null
-  total_cost: number | null
+interface RawAssistant {
+  sessionID: string
+  providerID: string
+  modelID: string
+  messageID: string
+  role: "assistant"
+  created: number
+  completed: number | undefined
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cacheRead: number
+    cacheWrite: number
+    total: number
+  }
 }
 
-interface ModelRow {
-  provider: string | null
-  model: string | null
-  requests: number | null
-  sessions: number | null
-  total_tokens: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  cache_write: number | null
-  total_cost: number | null
-}
-
-interface ProviderRow {
-  provider: string | null
-  requests: number | null
-  sessions: number | null
-  total_tokens: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  total_cost: number | null
-}
-
-interface DailyRow {
-  day: string | null
-  requests: number | null
-  sessions: number | null
-  total_tokens: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  total_cost: number | null
-}
-
-interface SessionRow {
-  session_id: string | null
-  title: string | null
-  provider: string | null
-  model: string | null
-  requests: number | null
-  total_tokens: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  total_cost: number | null
-  day: string | null
-}
-
-interface MessageDetailRow {
-  message_id: string | null
-  model: string | null
-  provider: string | null
-  input_tokens: number | null
-  output_tokens: number | null
-  reasoning_tokens: number | null
-  cache_read: number | null
-  cache_write: number | null
-  total_tokens: number | null
-  cost: number | null
-  time_created: number | null
-  time_completed: number | null
-}
-
-interface DistinctValueRow {
-  value: string | null
-}
-
-async function queryDb<T>(sql: string): Promise<T[]> {
-  const flatSql = sql.replace(/\s+/g, " ").trim()
-  const { stdout, stderr } = await execAsync(`opencode db ${JSON.stringify(flatSql)} --format json`)
-  if (stderr) throw new Error(stderr.trim())
-  const parsed = JSON.parse(stdout.trim())
-  return Array.isArray(parsed) ? parsed : parsed.data ?? []
-}
-
-function escapeSql(value: string): string {
-  return value.replace(/'/g, "''")
+function asAssistant(m: SessionMessageInfo | undefined, sessionID: string): RawAssistant | null {
+  if (!m || typeof m !== "object" || m.type !== "assistant") return null
+  const a = m as SessionMessageAssistant
+  const tokens = a.tokens
+  if (!tokens || typeof tokens !== "object") return null
+  const input = tokens.input ?? 0
+  const output = tokens.output ?? 0
+  const reasoning = tokens.reasoning ?? 0
+  const cacheRead = tokens.cache?.read ?? 0
+  const cacheWrite = tokens.cache?.write ?? 0
+  return {
+    sessionID,
+    providerID: a.model?.providerID ?? "unknown",
+    modelID: a.model?.id ?? "unknown",
+    messageID: a.id,
+    role: "assistant",
+    created: a.time?.created ?? 0,
+    completed: a.time?.completed,
+    cost: a.cost ?? 0,
+    tokens: {
+      input,
+      output,
+      reasoning,
+      cacheRead,
+      cacheWrite,
+      total: input + output + reasoning + cacheRead + cacheWrite,
+    },
+  }
 }
 
 function isValidDate(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s)
 }
 
-function messageWhere(filters: UsageFilters): string {
-  const where = [
-    "json_extract(m.data, '$.role') = 'assistant'",
-    "coalesce(json_extract(m.data, '$.tokens.total'), 0) > 0",
-  ]
-
-  if (filters.sessionIds && filters.sessionIds.length > 0) {
-    const ids = filters.sessionIds.map(id => `'${escapeSql(id)}'`).join(", ")
-    where.push(`m.session_id IN (${ids})`)
-  } else if (filters.sessionId) {
-    where.push(`m.session_id = '${escapeSql(filters.sessionId)}'`)
-  }
-  if (filters.provider) where.push(`coalesce(json_extract(m.data, '$.providerID'), '') = '${escapeSql(filters.provider)}'`)
-  if (filters.model) where.push(`coalesce(json_extract(m.data, '$.modelID'), '') = '${escapeSql(filters.model)}'`)
-  if (filters.startDate && isValidDate(filters.startDate)) {
-    where.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') >= '${filters.startDate}'`)
-  }
-  if (filters.endDate && isValidDate(filters.endDate)) {
-    where.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') <= '${filters.endDate}'`)
-  }
-
-  return where.join(" AND ")
+function toLocalDay(ms: number): string {
+  const d = new Date(ms)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
 }
 
-function parseList(value: string | null | undefined): string[] {
-  if (!value) return []
-  return value.split(",").map((item) => item.trim()).filter(Boolean)
+function matchesFilters(a: RawAssistant, filters: UsageFilters): boolean {
+  if (filters.sessionIds && filters.sessionIds.length > 0 && !filters.sessionIds.includes(a.sessionID)) return false
+  if (filters.sessionId && a.sessionID !== filters.sessionId) return false
+  if (filters.provider && a.providerID !== filters.provider) return false
+  if (filters.model && a.modelID !== filters.model) return false
+  if (a.created != null) {
+    const day = toLocalDay(a.created)
+    if (filters.startDate && isValidDate(filters.startDate) && day < filters.startDate) return false
+    if (filters.endDate && isValidDate(filters.endDate) && day > filters.endDate) return false
+  }
+  return true
 }
 
-function toSessionTokenData(row?: SummaryRow): SessionTokenData {
-  const models = parseList(row?.models_used)
-  const providers = parseList(row?.providers_used)
+/** Load raw assistant message data filtered by filters (excludes zero-token failures). */
+async function loadAssistants(filters: UsageFilters = {}): Promise<RawAssistant[]> {
+  const sessions = await fetchAllSessions()
+  const out: RawAssistant[] = []
+  for (const s of sessions) {
+    let msgs: SessionMessageInfo[]
+    try {
+      msgs = await fetchAllMessages(s.id)
+    } catch {
+      continue // skip sessions we cannot read
+    }
+    for (const m of msgs) {
+      const a = asAssistant(m, s.id)
+      if (!a) continue
+      if (a.tokens.total <= 0) continue
+      if (!matchesFilters(a, filters)) continue
+      out.push(a)
+    }
+  }
+  return out
+}
 
+function toSessionTokenData(assistants: RawAssistant[]): SessionTokenData {
+  const models = new Set<string>()
+  const providers = new Set<string>()
+  let totalTokens = 0
+  let inputTokens = 0
+  let outputTokens = 0
+  let reasoningTokens = 0
+  let cacheRead = 0
+  let cacheWrite = 0
+  let totalCost = 0
+  for (const a of assistants) {
+    const t = a.tokens
+    totalTokens += t.total
+    inputTokens += t.input
+    outputTokens += t.output
+    reasoningTokens += t.reasoning
+    cacheRead += t.cacheRead
+    cacheWrite += t.cacheWrite
+    totalCost += a.cost
+    models.add(a.modelID)
+    providers.add(a.providerID)
+  }
+  const modelsArray = Array.from(models)
   return {
-    model: models.length === 1 ? models[0] : "",
-    provider: providers.length === 1 ? providers[0] : "",
-    modelsUsed: models,
-    totalTokens: row?.total_tokens ?? 0,
-    inputTokens: row?.input_tokens ?? 0,
-    outputTokens: row?.output_tokens ?? 0,
-    reasoningTokens: row?.reasoning_tokens ?? 0,
-    cacheRead: row?.cache_read ?? 0,
-    cacheWrite: row?.cache_write ?? 0,
-    totalCost: row?.total_cost ?? 0,
-    requestCount: row?.request_count ?? 0,
+    model: modelsArray.length === 1 ? modelsArray[0] : "",
+    provider: providers.size === 1 ? Array.from(providers)[0] : "",
+    modelsUsed: modelsArray,
+    totalTokens,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheRead,
+    cacheWrite,
+    totalCost,
+    requestCount: assistants.length,
   }
 }
 
 export async function getSummary(filters: UsageFilters = {}): Promise<SessionTokenData> {
-  const sql = `
-SELECT
-  group_concat(distinct coalesce(json_extract(m.data, '$.modelID'), 'unknown')) as models_used,
-  group_concat(distinct coalesce(json_extract(m.data, '$.providerID'), 'unknown')) as providers_used,
-  count(*) as request_count,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost
-FROM message m
-WHERE ${messageWhere(filters)}
-  `.trim()
-
-  const rows = await queryDb<SummaryRow>(sql)
-  return toSessionTokenData(rows[0])
+  return toSessionTokenData(await loadAssistants(filters))
 }
 
 export async function getModelBreakdown(filters: UsageFilters = {}): Promise<ModelBreakdownItem[]> {
-  const sql = `
-SELECT
-  coalesce(json_extract(m.data, '$.providerID'), 'unknown') as provider,
-  coalesce(json_extract(m.data, '$.modelID'), 'unknown') as model,
-  count(*) as requests,
-  count(distinct m.session_id) as sessions,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost
-FROM message m
-WHERE ${messageWhere(filters)}
-GROUP BY provider, model
-ORDER BY total_tokens DESC
-  `.trim()
-
-  const rows = await queryDb<ModelRow>(sql)
-  return rows.map((row) => ({
-    provider: row.provider ?? "unknown",
-    model: row.model ?? "unknown",
-    requests: row.requests ?? 0,
-    sessions: row.sessions ?? 0,
-    totalTokens: row.total_tokens ?? 0,
-    inputTokens: row.input_tokens ?? 0,
-    outputTokens: row.output_tokens ?? 0,
-    reasoningTokens: row.reasoning_tokens ?? 0,
-    cacheRead: row.cache_read ?? 0,
-    cacheWrite: row.cache_write ?? 0,
-    totalCost: row.total_cost ?? 0,
-  }))
+  const assistants = await loadAssistants(filters)
+  const map = new Map<string, ModelBreakdownItem>()
+  const sessionSet = new Set<string>()
+  for (const a of assistants) {
+    const key = `${a.providerID ?? "unknown"}|${a.modelID ?? "unknown"}`
+    const t = a.tokens
+    let item = map.get(key)
+    if (!item) {
+      item = {
+        provider: a.providerID ?? "unknown",
+        model: a.modelID ?? "unknown",
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalCost: 0,
+      }
+      map.set(key, item)
+    }
+    item.requests++
+    item.totalTokens += t.total
+    item.inputTokens += t.input
+    item.outputTokens += t.output
+    item.reasoningTokens += t.reasoning
+    item.cacheRead += t.cacheRead
+    item.cacheWrite += t.cacheWrite
+    item.totalCost += a.cost
+    sessionSet.add(`${key}|${a.sessionID}`)
+  }
+  for (const s of sessionSet) {
+    const [provider, model] = s.split("|")
+    const item = map.get(`${provider}|${model}`)
+    if (item) item.sessions++
+  }
+  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens)
 }
 
 export async function getProviderBreakdown(filters: UsageFilters = {}): Promise<ProviderBreakdownItem[]> {
-  const sql = `
-SELECT
-  coalesce(json_extract(m.data, '$.providerID'), 'unknown') as provider,
-  count(*) as requests,
-  count(distinct m.session_id) as sessions,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost
-FROM message m
-WHERE ${messageWhere(filters)}
-GROUP BY provider
-ORDER BY total_tokens DESC
-  `.trim()
-
-  const rows = await queryDb<ProviderRow>(sql)
-  return rows.map((row) => ({
-    provider: row.provider ?? "unknown",
-    requests: row.requests ?? 0,
-    sessions: row.sessions ?? 0,
-    totalTokens: row.total_tokens ?? 0,
-    inputTokens: row.input_tokens ?? 0,
-    outputTokens: row.output_tokens ?? 0,
-    reasoningTokens: row.reasoning_tokens ?? 0,
-    cacheRead: row.cache_read ?? 0,
-    totalCost: row.total_cost ?? 0,
-  }))
+  const assistants = await loadAssistants(filters)
+  const map = new Map<string, ProviderBreakdownItem>()
+  const sessionSet = new Set<string>()
+  for (const a of assistants) {
+    const key = a.providerID ?? "unknown"
+    const t = a.tokens
+    let item = map.get(key)
+    if (!item) {
+      item = {
+        provider: key,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+      }
+      map.set(key, item)
+    }
+    item.requests++
+    item.totalTokens += t.total
+    item.inputTokens += t.input
+    item.outputTokens += t.output
+    item.reasoningTokens += t.reasoning
+    item.cacheRead += t.cacheRead
+    item.totalCost += a.cost
+    sessionSet.add(`${key}|${a.sessionID}`)
+  }
+  for (const s of sessionSet) {
+    const [provider] = s.split("|")
+    const item = map.get(provider)
+    if (item) item.sessions++
+  }
+  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens)
 }
 
 export async function getDailyBreakdown(filters: UsageFilters = {}): Promise<DailyBreakdownItem[]> {
-  const limit = filters.limit ?? 30
-  const sql = `
-SELECT
-  date(m.time_created / 1000, 'unixepoch', 'localtime') as day,
-  count(*) as requests,
-  count(distinct m.session_id) as sessions,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost
-FROM message m
-WHERE ${messageWhere(filters)}
-GROUP BY day
-ORDER BY day DESC
-LIMIT ${Math.max(1, limit)}
-  `.trim()
-
-  const rows = await queryDb<DailyRow>(sql)
-  return rows.map((row) => ({
-    day: row.day ?? "",
-    requests: row.requests ?? 0,
-    sessions: row.sessions ?? 0,
-    totalTokens: row.total_tokens ?? 0,
-    inputTokens: row.input_tokens ?? 0,
-    outputTokens: row.output_tokens ?? 0,
-    reasoningTokens: row.reasoning_tokens ?? 0,
-    cacheRead: row.cache_read ?? 0,
-    totalCost: row.total_cost ?? 0,
-  }))
+  const limit = filters.limit ?? 90
+  const assistants = await loadAssistants(filters)
+  const map = new Map<string, DailyBreakdownItem>()
+  const sessionSet = new Set<string>()
+  for (const a of assistants) {
+    const day = a.created != null ? toLocalDay(a.created) : "unknown"
+    const t = a.tokens
+    let item = map.get(day)
+    if (!item) {
+      item = {
+        day,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+      }
+      map.set(day, item)
+    }
+    item.requests++
+    item.totalTokens += t.total
+    item.inputTokens += t.input
+    item.outputTokens += t.output
+    item.reasoningTokens += t.reasoning
+    item.cacheRead += t.cacheRead
+    item.totalCost += a.cost
+    sessionSet.add(`${day}|${a.sessionID}`)
+  }
+  for (const s of sessionSet) {
+    const [day] = s.split("|")
+    const item = map.get(day)
+    if (item) item.sessions++
+  }
+  return Array.from(map.values())
+    .sort((a, b) => (a.day < b.day ? 1 : -1))
+    .slice(0, Math.max(1, limit))
 }
 
 export async function getSessionBreakdown(filters: UsageFilters = {}): Promise<SessionBreakdownItem[]> {
-  const limit = filters.limit ?? 20
-  const sql = `
-SELECT
-  s.id as session_id,
-  s.title as title,
-  coalesce(json_extract(m.data, '$.providerID'), json_extract(s.model, '$.providerID'), 'unknown') as provider,
-  coalesce(json_extract(m.data, '$.modelID'), json_extract(s.model, '$.id'), 'unknown') as model,
-  count(*) as requests,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning_tokens,
-  sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost,
-  date(max(m.time_created) / 1000, 'unixepoch', 'localtime') as day
-FROM message m
-JOIN session s ON s.id = m.session_id
-WHERE ${messageWhere(filters)}
-GROUP BY s.id, s.title, provider, model
-ORDER BY max(m.time_created) DESC
-LIMIT ${Math.max(1, limit)}
-  `.trim()
-
-  const rows = await queryDb<SessionRow>(sql)
-  return rows.map((row) => ({
-    sessionId: row.session_id ?? "",
-    title: row.title ?? "(untitled)",
-    provider: row.provider ?? "unknown",
-    model: row.model ?? "unknown",
-    requests: row.requests ?? 0,
-    totalTokens: row.total_tokens ?? 0,
-    inputTokens: row.input_tokens ?? 0,
-    outputTokens: row.output_tokens ?? 0,
-    reasoningTokens: row.reasoning_tokens ?? 0,
-    cacheRead: row.cache_read ?? 0,
-    totalCost: row.total_cost ?? 0,
-    day: row.day ?? "",
-  }))
+  const limit = filters.limit ?? 15
+  const sessions = await fetchAllSessions()
+  const byId = new Map(sessions.map(s => [s.id, s]))
+  const assistants = await loadAssistants(filters)
+  const map = new Map<string, SessionBreakdownItem>()
+  for (const a of assistants) {
+    let item = map.get(a.sessionID)
+    const t = a.tokens
+    if (!item) {
+      const s = byId.get(a.sessionID)
+      const first = s?.model
+      item = {
+        sessionId: a.sessionID,
+        title: s?.title ?? "(untitled)",
+        provider: a.providerID ?? "unknown",
+        model: a.modelID ?? first?.id ?? "unknown",
+        requests: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+        day: a.created != null ? toLocalDay(a.created) : "",
+      }
+      map.set(a.sessionID, item)
+    }
+    item.requests++
+    item.totalTokens += t.total
+    item.inputTokens += t.input
+    item.outputTokens += t.output
+    item.reasoningTokens += t.reasoning
+    item.cacheRead += t.cacheRead
+    item.totalCost += a.cost
+    if (a.created != null) {
+      const day = toLocalDay(a.created)
+      if (day > item.day) item.day = day
+    }
+  }
+  return Array.from(map.values())
+    .sort((a, b) => (a.day < b.day ? 1 : -1))
+    .slice(0, Math.max(1, limit))
 }
 
-/** Get all child session IDs for a given parent session (subagent sessions) */
+/** Fetch child (forked/family) session IDs for a parent session recursively. */
 export async function getChildSessionIds(parentSessionId: string): Promise<string[]> {
-  const sql = `
-SELECT s.id as session_id
-FROM session s
-WHERE s.parent_id = '${escapeSql(parentSessionId)}'
-  `.trim()
   try {
-    const rows = await queryDb<{ session_id: string | null }>(sql)
-    return rows.map(r => r.session_id ?? "").filter(Boolean)
+    const sessions = await fetchAllSessions()
+    const direct = sessions.filter(s => s.parentID === parentSessionId).map(s => s.id)
+    const out = [...direct]
+    for (const id of direct) {
+      try {
+        out.push(...(await getChildSessionIds(id)))
+      } catch { /* ignore */ }
+    }
+    return Array.from(new Set(out))
   } catch {
     return []
   }
 }
 
-/** Per-message detail for a specific session - used in /session-usage report */
+/** Per-request message details for a session + its children (old dashboard contract). */
 export async function getMessageDetails(sessionId: string): Promise<MessageRow[]> {
-  // Include child (subagent) sessions
   const childIds = await getChildSessionIds(sessionId)
   const allIds = [sessionId, ...childIds]
   const filters: UsageFilters = { sessionIds: allIds }
-  const sql = `
-SELECT
-  m.id as message_id,
-  coalesce(json_extract(m.data, '$.modelID'), 'unknown') as model,
-  coalesce(json_extract(m.data, '$.providerID'), 'unknown') as provider,
-  coalesce(json_extract(m.data, '$.tokens.input'), 0) as input_tokens,
-  coalesce(json_extract(m.data, '$.tokens.output'), 0) as output_tokens,
-  coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) as reasoning_tokens,
-  coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
-  coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write,
-  coalesce(json_extract(m.data, '$.tokens.total'), 0) as total_tokens,
-  coalesce(json_extract(m.data, '$.cost'), 0) as cost,
-  m.time_created as time_created,
-  json_extract(m.data, '$.time.completed') as time_completed
-FROM message m
-WHERE ${messageWhere(filters)}
-ORDER BY m.time_created ASC
-  `.trim()
-
-  const rows = await queryDb<MessageDetailRow>(sql)
-  return rows.map((row) => ({
-    messageId: row.message_id ?? "",
-    model: row.model ?? "unknown",
-    provider: row.provider ?? "unknown",
-    inputTokens: row.input_tokens ?? 0,
-    outputTokens: row.output_tokens ?? 0,
-    reasoningTokens: row.reasoning_tokens ?? 0,
-    cacheRead: row.cache_read ?? 0,
-    cacheWrite: row.cache_write ?? 0,
-    totalTokens: row.total_tokens ?? 0,
-    cost: row.cost ?? 0,
-    timeCreated: row.time_created ?? 0,
-    timeCompleted: row.time_completed ?? null,
-  }))
+  const assistants = await loadAssistants(filters)
+  return assistants
+    .sort((a, b) => a.created - b.created)
+    .map(a => ({
+      messageId: a.messageID,
+      model: a.modelID ?? "unknown",
+      provider: a.providerID ?? "unknown",
+      inputTokens: a.tokens.input,
+      outputTokens: a.tokens.output,
+      reasoningTokens: a.tokens.reasoning,
+      cacheRead: a.tokens.cacheRead,
+      cacheWrite: a.tokens.cacheWrite,
+      totalTokens: a.tokens.total,
+      cost: a.cost,
+      timeCreated: a.created,
+      timeCompleted: a.completed ?? null,
+    }))
 }
 
-/** Get session title for a given session ID */
 export async function getSessionTitle(sessionId: string): Promise<string> {
-  const sql = `
-SELECT s.title as title
-FROM session s
-WHERE s.id = '${escapeSql(sessionId)}'
-LIMIT 1
-  `.trim()
+  const c = requireClient()
   try {
-    const rows = await queryDb<{ title: string | null }>(sql)
-    return rows[0]?.title ?? "(untitled)"
+    const s = await c.session.get({ sessionID: sessionId })
+    return s?.title ?? "(untitled)"
   } catch {
     return "(untitled)"
   }
 }
 
+/** 失败请求统计 (assistant with tokens all zero, or error finish) */
 export async function getErrorStats(filters: UsageFilters = {}): Promise<ErrorStats> {
-  const baseConds: string[] = [
-    "json_extract(m.data, '$.role') = 'assistant'",
-  ]
-  if (filters.sessionIds && filters.sessionIds.length > 0) {
-    const ids = filters.sessionIds.map(id => `'${escapeSql(id)}'`).join(", ")
-    baseConds.push(`m.session_id IN (${ids})`)
-  } else if (filters.sessionId) {
-    baseConds.push(`m.session_id = '${escapeSql(filters.sessionId)}'`)
+  const sessions = await fetchAllSessions()
+  let successCount = 0
+  let failedCount = 0
+  const byModelMap = new Map<string, { provider: string; model: string; failed: number; total: number }>()
+  for (const s of sessions) {
+    let msgs: SessionMessageInfo[]
+    try {
+      msgs = await fetchAllMessages(s.id)
+    } catch {
+      continue
+    }
+    for (const m of msgs) {
+      if (m?.type !== "assistant") continue
+      const a = asAssistant(m, s.id)
+      if (!a) continue
+      if (!matchesFilters(a, filters)) continue
+      const key = `${a.providerID}|${a.modelID}`
+      let row = byModelMap.get(key)
+      if (!row) {
+        row = { provider: a.providerID, model: a.modelID, failed: 0, total: 0 }
+        byModelMap.set(key, row)
+      }
+      row.total++
+      if (a.tokens.total === 0) {
+        row.failed++
+        failedCount++
+      } else {
+        successCount++
+      }
+    }
   }
-  if (filters.provider) baseConds.push(`coalesce(json_extract(m.data, '$.providerID'), '') = '${escapeSql(filters.provider)}'`)
-  if (filters.model) baseConds.push(`coalesce(json_extract(m.data, '$.modelID'), '') = '${escapeSql(filters.model)}'`)
-  if (filters.startDate && isValidDate(filters.startDate)) {
-    baseConds.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') >= '${filters.startDate}'`)
-  }
-  if (filters.endDate && isValidDate(filters.endDate)) {
-    baseConds.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') <= '${filters.endDate}'`)
-  }
-  const baseWhere = baseConds.join(" AND ")
-
-  const sql = `
-SELECT
-  coalesce(json_extract(m.data, '$.providerID'), 'unknown') as provider,
-  coalesce(json_extract(m.data, '$.modelID'), 'unknown') as model,
-  count(*) as total,
-  sum(CASE WHEN coalesce(json_extract(m.data, '$.tokens.total'), 0) = 0 THEN 1 ELSE 0 END) as failed
-FROM message m
-WHERE ${baseWhere}
-GROUP BY provider, model
-ORDER BY failed DESC
-  `.trim()
-
-  interface ErrorRow {
-    provider: string | null
-    model: string | null
-    total: number | null
-    failed: number | null
-  }
-
-  try {
-    const rows = await queryDb<ErrorRow>(sql)
-    let successCount = 0, failedCount = 0
-    const byModel = rows.map(r => {
-      const total = r.total ?? 0
-      const failed = r.failed ?? 0
-      const success = total - failed
-      successCount += success
-      failedCount += failed
-      return { provider: r.provider ?? 'unknown', model: r.model ?? 'unknown', failed, total }
-    })
-    const errorRate = (successCount + failedCount) > 0
-      ? failedCount / (successCount + failedCount)
-      : 0
-    return { successCount, failedCount, errorRate, byModel }
-  } catch {
-    return { successCount: 0, failedCount: 0, errorRate: 0, byModel: [] }
-  }
+  const byModel = Array.from(byModelMap.values()).sort((a, b) => b.failed - a.failed)
+  const errorRate = successCount + failedCount > 0 ? failedCount / (successCount + failedCount) : 0
+  return { successCount, failedCount, errorRate, byModel }
 }
 
+/** Hourly heatmap (dow 0-6, hour 0-23) for the total dashboard. */
 export async function getHourlyHeatmap(filters: UsageFilters = {}): Promise<HourlyHeatmapItem[]> {
-  const conds: string[] = [
-    "json_extract(m.data, '$.role') = 'assistant'",
-    "coalesce(json_extract(m.data, '$.tokens.total'), 0) > 0",
-  ]
-  if (filters.sessionIds && filters.sessionIds.length > 0) {
-    const ids = filters.sessionIds.map(id => `'${escapeSql(id)}'`).join(", ")
-    conds.push(`m.session_id IN (${ids})`)
-  } else if (filters.sessionId) {
-    conds.push(`m.session_id = '${escapeSql(filters.sessionId)}'`)
+  const assistants = await loadAssistants(filters)
+  const map = new Map<string, HourlyHeatmapItem>()
+  for (const a of assistants) {
+    const created = a.created
+    if (created == null) continue
+    const d = new Date(created)
+    const dow = d.getDay()
+    const hour = d.getHours()
+    const key = `${dow}|${hour}`
+    let item = map.get(key)
+    if (!item) {
+      item = { dow, hour, requests: 0, totalTokens: 0, totalCost: 0 }
+      map.set(key, item)
+    }
+    item.requests++
+    item.totalTokens += a.tokens.total
+    item.totalCost += a.cost
   }
-  if (filters.provider) conds.push(`coalesce(json_extract(m.data, '$.providerID'), '') = '${escapeSql(filters.provider)}'`)
-  if (filters.model) conds.push(`coalesce(json_extract(m.data, '$.modelID'), '') = '${escapeSql(filters.model)}'`)
-  if (filters.startDate && isValidDate(filters.startDate)) {
-    conds.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') >= '${filters.startDate}'`)
-  }
-  if (filters.endDate && isValidDate(filters.endDate)) {
-    conds.push(`date(m.time_created / 1000, 'unixepoch', 'localtime') <= '${filters.endDate}'`)
-  }
-
-  const sql = `
-SELECT
-  cast(strftime('%w', m.time_created / 1000, 'unixepoch', 'localtime') as int) as dow,
-  cast(strftime('%H', m.time_created / 1000, 'unixepoch', 'localtime') as int) as hour,
-  count(*) as requests,
-  sum(coalesce(json_extract(m.data, '$.tokens.total'), 0)) as total_tokens,
-  sum(coalesce(json_extract(m.data, '$.cost'), 0)) as total_cost
-FROM message m
-WHERE ${conds.join(" AND ")}
-GROUP BY dow, hour
-ORDER BY dow, hour
-  `.trim()
-
-  interface HeatmapRow {
-    dow: number | null
-    hour: number | null
-    requests: number | null
-    total_tokens: number | null
-    total_cost: number | null
-  }
-
-  try {
-    const rows = await queryDb<HeatmapRow>(sql)
-    return rows.map(r => ({
-      dow: r.dow ?? 0,
-      hour: r.hour ?? 0,
-      requests: r.requests ?? 0,
-      totalTokens: r.total_tokens ?? 0,
-      totalCost: r.total_cost ?? 0,
-    }))
-  } catch {
-    return []
-  }
+  return Array.from(map.values())
 }
 
 export async function getUsageReport(filters: UsageFilters = {}): Promise<UsageReport> {
@@ -562,6 +499,42 @@ export async function getUsageReport(filters: UsageFilters = {}): Promise<UsageR
     getSessionBreakdown(filters),
     getErrorStats(filters),
   ])
-
   return { filters, summary, models, providers, daily, sessions, errors }
+}
+
+/** Available model IDs across all sessions (used by filters / exports). */
+export async function getAvailableModels(): Promise<string[]> {
+  const list = new Set<string>()
+  const sessions = await fetchAllSessions()
+  for (const s of sessions) {
+    let msgs: SessionMessageInfo[]
+    try {
+      msgs = await fetchAllMessages(s.id)
+    } catch {
+      continue
+    }
+    for (const m of msgs) {
+      const a = asAssistant(m, s.id)
+      if (a && a.tokens.total > 0) list.add(a.modelID)
+    }
+  }
+  return Array.from(list).sort()
+}
+
+export async function getAvailableProviders(): Promise<string[]> {
+  const list = new Set<string>()
+  const sessions = await fetchAllSessions()
+  for (const s of sessions) {
+    let msgs: SessionMessageInfo[]
+    try {
+      msgs = await fetchAllMessages(s.id)
+    } catch {
+      continue
+    }
+    for (const m of msgs) {
+      const a = asAssistant(m, s.id)
+      if (a && a.tokens.total > 0) list.add(a.providerID)
+    }
+  }
+  return Array.from(list).sort()
 }

@@ -132,6 +132,8 @@ export interface CombinedReportData {
     apiCost?: ApiCostAnalysis;
     errors?: ErrorStats;
     hourlyHeatmap?: HourlyHeatmapItem[];
+    perfLogs?: LogEntry[];
+    perfSummary?: ModelPerfStats[];
 }
 /** Per-message row for detailed session breakdown */
 export interface MessageRow {
@@ -155,5 +157,82 @@ export interface MessageRow {
 export declare function isMissingCache(requestCount: number, totalCacheRead: number): boolean;
 export declare function formatTokens(n: number): string;
 export declare function formatCost(n: number): string;
+export declare function formatDuration(ms: number | null): string;
 export declare function cacheHitRate(input: number, cacheRead: number): number;
 export declare function getPresetRange(preset: "all" | "7d" | "30d" | "month"): Pick<UsageFilters, "startDate" | "endDate">;
+export declare function formatFilters(filters: UsageFilters): string;
+export declare function formatStatusBar(data: SessionTokenData): string;
+export interface SessionPerfStats {
+    models: Record<string, ModelPerfStats>;
+    totals: {
+        totalInput: number;
+        totalOutput: number;
+        totalCacheRead: number;
+        totalCacheWrite: number;
+        totalRequests: number;
+        totalCost: number;
+        /** 全局加权缓存命中率（按请求数加权平均） */
+        weightedCacheHitRate: number | null;
+    };
+}
+export interface ModelPerfStats {
+    model: string;
+    providerID: string;
+    requestCount: number;
+    ttftCount: number;
+    tpsCount: number;
+    latencyCount: number;
+    totalInput: number;
+    totalOutput: number;
+    totalCacheRead: number;
+    totalCacheWrite: number;
+    totalCost: number;
+    avgTTFT: number | null;
+    maxTTFT: number | null;
+    minTTFT: number | null;
+    p50TTFT: number | null;
+    p95TTFT: number | null;
+    p99TTFT: number | null;
+    avgTPS: number | null;
+    maxTPS: number | null;
+    minTPS: number | null;
+    avgLatency: number | null;
+    maxLatency: number | null;
+    minLatency: number | null;
+    p50Latency: number | null;
+    p95Latency: number | null;
+    p99Latency: number | null;
+    /** 该模型加权缓存命中率：cacheRead / (cacheRead + input) */
+    cacheHitRate: number | null;
+}
+export interface TokenDistribution {
+    system: number;
+    user: number;
+    agent: number;
+    toolCall: number;
+    toolResult: number;
+    output: number;
+    total: number;
+}
+export interface LogEntry {
+    ts: string;
+    model: string;
+    providerID: string;
+    modelID: string;
+    sessionID: string;
+    ttft_ms: number | null;
+    /** TTFT start clock; absent entries used the obsolete assistant-created clock. */
+    ttft_source?: "inbox-enqueued";
+    tps: number | null;
+    /** TPS uses visible + reasoning tokens over the first-to-last output window. */
+    tps_source?: "all-output-window";
+    latency_ms: number | null;
+    /** Latency uses prompt enqueue to the final reasoning/text output event. */
+    latency_source?: "inbox-to-last-output";
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    cost: number;
+}

@@ -14,10 +14,11 @@ function resolveIconsDir(): string | null {
     const url = import.meta.url
     if (url) candidates.push(join(dirname(fileURLToPath(url)), "..", "icons"))
   } catch { /* ignore */ }
-  // 2. Absolute fallback for this machine
-  candidates.push("C:/Users/34177/AIGC/opencode-local-plugins/opencode-usage-stat/icons")
-  // 3. Relative to cwd
-  candidates.push(join(process.cwd(), "icons"))
+  // 2. Relative to cwd (plugin dir or workspace root)
+  const cwd = process.cwd()
+  for (const base of [cwd, join(cwd, "dist", "..")]) {
+    candidates.push(join(base, "icons"))
+  }
   for (const c of candidates) {
     if (c && existsSync(join(c, "_default.svg"))) return c
   }

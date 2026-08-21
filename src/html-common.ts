@@ -76,11 +76,10 @@ export function percentile(sortedAsc: number[], p: number): number {
 // ---------------------------------------------------------------------------
 
 function embeddedEChartsScript(): string {
-  const moduleDir = dirname(fileURLToPath(import.meta.url))
   const candidates = [
-    join(moduleDir, "..", "vendor", "echarts.min.js"),
+    join(dirname(fileURLToPath(import.meta.url)), "..", "vendor", "echarts.min.js"),
     join(process.cwd(), "vendor", "echarts.min.js"),
-    "C:/Users/34177/AIGC/opencode-local-plugins/opencode-usage-stat/vendor/echarts.min.js",
+    join(process.cwd(), "dist", "..", "vendor", "echarts.min.js"),
   ]
   for (const path of candidates) {
     if (!existsSync(path)) continue
@@ -93,11 +92,10 @@ function embeddedEChartsScript(): string {
 export const HTML_HEAD_SHARED = embeddedEChartsScript()
 
 function embeddedBackgroundTexture(): string {
-  const moduleDir = dirname(fileURLToPath(import.meta.url))
   const candidates = [
-    join(moduleDir, "..", "assets", "bg-texture.jpg"),
+    join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "bg-texture.jpg"),
     join(process.cwd(), "assets", "bg-texture.jpg"),
-    "C:/Users/34177/AIGC/opencode-local-plugins/opencode-usage-stat/assets/bg-texture.jpg",
+    join(process.cwd(), "dist", "..", "assets", "bg-texture.jpg"),
   ]
   for (const path of candidates) {
     if (existsSync(path)) {

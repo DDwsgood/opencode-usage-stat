@@ -14,7 +14,7 @@ import { homedir } from "node:os"
 import { execSync } from "node:child_process"
 import { isMissingCache } from "./formatter.js"
 
-const PRICING_PATH = join(homedir(), ".opencode", "tokenwatch-pricing.json")
+const PRICING_PATH = join(homedir(), ".opencode", "usage-stat-pricing.json")
 const MODELS_DEV_URL = "https://models.dev/api.json"
 /** MISSING model estimated hit rate */
 const MISSING_HIT_RATE = 0.94

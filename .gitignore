@@ -8,3 +8,4 @@ Thumbs.db
 .opencode/
 reports/
 check-*.cjs
+dist-test/
