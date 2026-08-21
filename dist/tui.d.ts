@@ -1,4 +1,3 @@
-import { Plugin } from "@opencode-ai/plugin/tui";
 import type { PerfTracker } from "./perf-tracker.js";
 export interface TokenMessage {
     id: string;
@@ -13,7 +12,7 @@ export interface TokenMessage {
     cost: number;
 }
 declare function messageToTokenMessage(msg: any, sessionID: string): TokenMessage | null;
-declare const plugin: Plugin.Definition;
+declare const plugin: import("@opencode-ai/plugin/tui/plugin").Definition;
 export default plugin;
 export { plugin, messageToTokenMessage };
 export type { PerfTracker };

@@ -1,6 +1,13 @@
+/** @jsxImportSource @opentui/solid */
+
 // src/tui.tsx
+import { createComponent as _$createComponent3 } from "@opentui/solid";
 import { createSignal as createSignal3 } from "solid-js";
-import { Plugin } from "@opencode-ai/plugin/tui";
+
+// node_modules/@opencode-ai/plugin/dist/tui/plugin.js
+function define(plugin2) {
+  return plugin2;
+}
 
 // src/formatter.ts
 function isMissingCache(requestCount, totalCacheRead) {
@@ -602,7 +609,16 @@ function readLogs(last = 50) {
 }
 
 // src/sidebar.tsx
-import { createSignal as createSignal2, createMemo, createEffect as createEffect2, For as For2, Show as Show2, onCleanup as onCleanup2 } from "solid-js";
+import { effect as _$effect2 } from "@opentui/solid";
+import { createComponent as _$createComponent2 } from "@opentui/solid";
+import { createTextNode as _$createTextNode2 } from "@opentui/solid";
+import { insertNode as _$insertNode2 } from "@opentui/solid";
+import { insert as _$insert2 } from "@opentui/solid";
+import { memo as _$memo2 } from "@opentui/solid";
+import { setProp as _$setProp2 } from "@opentui/solid";
+import { use as _$use } from "@opentui/solid";
+import { createElement as _$createElement2 } from "@opentui/solid";
+import { createSignal as createSignal2, createMemo, createEffect, For as For2, Show as Show2, onCleanup as onCleanup2 } from "solid-js";
 import { RGBA as RGBA3 } from "@opentui/core";
 
 // src/i18n.ts
@@ -788,7 +804,15 @@ function t(key) {
 }
 
 // src/provider-usage-blocks.tsx
-import { createSignal, createEffect, onCleanup, For, Show } from "solid-js";
+import { effect as _$effect } from "@opentui/solid";
+import { createTextNode as _$createTextNode } from "@opentui/solid";
+import { insertNode as _$insertNode } from "@opentui/solid";
+import { memo as _$memo } from "@opentui/solid";
+import { insert as _$insert } from "@opentui/solid";
+import { createComponent as _$createComponent } from "@opentui/solid";
+import { setProp as _$setProp } from "@opentui/solid";
+import { createElement as _$createElement } from "@opentui/solid";
+import { createSignal, onCleanup, For, Show } from "solid-js";
 import { RGBA as RGBA2 } from "@opentui/core";
 
 // src/credentials.ts
@@ -834,7 +858,7 @@ function sqliteCredential(aliases) {
   const sql = `SELECT integration_id, value, time_updated FROM credential WHERE integration_id IN (${placeholders})`;
   let database;
   try {
-    const require2 = createRequire(import.meta.url);
+    const require2 = createRequire(join3(homedir3(), ".opencode", "usage-stat-require.cjs"));
     let rows;
     if (typeof globalThis.Bun !== "undefined") {
       const { Database } = require2("bun:sqlite");
@@ -1290,7 +1314,9 @@ var PROVIDER_COLORS = {
   codex: RGBA2.fromInts(205, 130, 255, 255)
 };
 function ProviderUsageBlocks(props) {
-  const { context } = props;
+  const {
+    context
+  } = props;
   const enabledIds = PROVIDER_IDS.filter((id) => resolveProviderUsageConfig(context.options)[id]);
   const colors = resolveThemeColors(context.theme);
   const primaryColor = () => colors.primary;
@@ -1300,15 +1326,25 @@ function ProviderUsageBlocks(props) {
   const redColor = () => colors.red;
   const amberColor = () => colors.amber;
   const cyanColor = () => colors.cyan;
-  const [states, setStates] = createSignal(
-    enabledIds.map((id) => ({ id, collapsed: true, loading: false, result: null }))
-  );
+  const [states, setStates] = createSignal(enabledIds.map((id) => ({
+    id,
+    collapsed: true,
+    loading: false,
+    result: null
+  })));
   async function refreshOne(id) {
-    setStates((prev) => prev.map((s) => s.id === id ? { ...s, loading: true } : s));
+    setStates((prev) => prev.map((s) => s.id === id ? {
+      ...s,
+      loading: true
+    } : s));
     const result = await checkProviderUsage(id);
     setStates((prev) => prev.map((state) => {
       if (state.id !== id) return state;
-      return { ...state, loading: false, result };
+      return {
+        ...state,
+        loading: false,
+        result
+      };
     }));
   }
   function initialRefresh() {
@@ -1316,8 +1352,7 @@ function ProviderUsageBlocks(props) {
       void refreshOne(id);
     }
   }
-  createEffect(() => {
-    if (enabledIds.length === 0) return;
+  if (enabledIds.length > 0) {
     initialRefresh();
     const timers = [];
     for (const id of enabledIds) {
@@ -1328,9 +1363,12 @@ function ProviderUsageBlocks(props) {
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer);
     });
-  });
+  }
   function toggle(id) {
-    setStates((prev) => prev.map((s) => s.id === id ? { ...s, collapsed: !s.collapsed } : s));
+    setStates((prev) => prev.map((s) => s.id === id ? {
+      ...s,
+      collapsed: !s.collapsed
+    } : s));
   }
   function statusColor(s) {
     if (s.loading) return mutedColor();
@@ -1359,89 +1397,222 @@ function ProviderUsageBlocks(props) {
     if (hours < 48) return `${hours}h`;
     return `${Math.round(hours / 24)}d`;
   }
-  return <Show when={states().length > 0}>
-      <box flexDirection="column" marginTop={1} paddingX={1}>
-      <For each={states()}>
-        {(state) => {
-    const isOpen = () => !state.collapsed;
-    const color = () => statusColor(state);
-    const dot = () => {
-      if (state.loading) return "\u25CC";
-      if (!state.result) return "\u25CB";
-      if (!state.result.ok) return "\u25CF";
-      const first = state.result.windows?.[0];
-      if (first == null) return "\u25CF";
-      if (first.percent == null) return "\u25C6";
-      return "\u25CF";
-    };
-    const headerText = () => {
-      if (state.loading) return `${t("providerRefreshing")}\u2026`;
-      const first = state.result?.windows?.[0];
-      if (state.result?.ok && first?.percent != null) return `${first.percent.toFixed(0)}% used`;
-      if (state.result?.ok && first?.valueLabel) return first.valueLabel;
-      const status = state.result?.status ?? t("providerNotConfigured");
-      const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
-      return status.startsWith(prefix) ? status.slice(prefix.length) : status;
-    };
-    return <box flexDirection="column">
-              <box flexDirection="row" justifyContent="space-between" gap={1} onMouseDown={() => toggle(state.id)} paddingX={0}>
-                <text fg={PROVIDER_COLORS[state.id] ?? cyanColor()}>
-                  <span style={{ fg: color() }}>{dot()}</span>{" "}
-                  <span style={{ fg: primaryColor() }}>{PROVIDER_NAMES[state.id]}</span>
-                  {isOpen() ? " \u25BE" : " \u25B8"}
-                </text>
-                <text fg={mutedColor()}>
-                  {headerText().length > 32 ? headerText().slice(0, 31) + "\u2026" : headerText()}
-                </text>
-              </box>
-
-              <Show when={isOpen()}>
-                <box flexDirection="column" paddingX={1} marginTop={0}>
-                  <Show when={state.loading && !state.result}>
-                    <text fg={mutedColor()}>{t("providerRefreshing")}…</text>
-                  </Show>
-
-                  <Show when={!state.loading && !state.result}>
-                    <text fg={mutedColor()}>—</text>
-                  </Show>
-
-                  <Show when={state.result !== null && !state.result.ok}>
-                    <text fg={redColor()}>{state.result.status}</text>
-                    <Show when={state.result !== null && !state.result.configured}>
-                      <text fg={dimColor()}>enable via plugin config: providerUsage.&lt;id&gt; = true</text>
-                    </Show>
-                  </Show>
-
-                  <Show when={state.result !== null && state.result.ok && state.result.windows}>
-                    <For each={state.result.windows}>
-                      {(win) => {
-      const label = win.label ? win.label + ": " : "";
-      if (win.percent != null) {
-        return <text fg={mutedColor()}>
-                              {label}
-                              <span style={{ fg: statusColor(state) }}>
-                                {percentBar(win.percent, 12)} {win.percent.toFixed(0)}%
-                              </span>
-                              {win.resetsAt ? <span style={{ fg: dimColor() }}> · {t("providerResets")} {formatReset2(win.resetsAt)}</span> : null}
-                            </text>;
-      }
-      if (win.valueLabel) {
-        return <text fg={mutedColor()}>
-                              {label}
-                              <span style={{ fg: greenColor() }}>{win.valueLabel}</span>
-                            </text>;
-      }
-      return <text fg={mutedColor()}>{label}—</text>;
-    }}
-                    </For>
-                  </Show>
-                </box>
-              </Show>
-            </box>;
-  }}
-      </For>
-      </box>
-    </Show>;
+  return _$createComponent(Show, {
+    get when() {
+      return states().length > 0;
+    },
+    get children() {
+      var _el$ = _$createElement("box");
+      _$setProp(_el$, "flexDirection", "column");
+      _$setProp(_el$, "marginTop", 1);
+      _$setProp(_el$, "paddingX", 1);
+      _$insert(_el$, _$createComponent(For, {
+        get each() {
+          return states();
+        },
+        children: (state) => {
+          const isOpen = () => !state.collapsed;
+          const color = () => statusColor(state);
+          const dot = () => {
+            if (state.loading) return "\u25CC";
+            if (!state.result) return "\u25CB";
+            if (!state.result.ok) return "\u25CF";
+            const first = state.result.windows?.[0];
+            if (first == null) return "\u25CF";
+            if (first.percent == null) return "\u25C6";
+            return "\u25CF";
+          };
+          const headerText = () => {
+            if (state.loading) return `${t("providerRefreshing")}\u2026`;
+            const first = state.result?.windows?.[0];
+            if (state.result?.ok && first?.percent != null) return `${first.percent.toFixed(0)}% used`;
+            if (state.result?.ok && first?.valueLabel) return first.valueLabel;
+            const status = state.result?.status ?? t("providerNotConfigured");
+            const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
+            return status.startsWith(prefix) ? status.slice(prefix.length) : status;
+          };
+          return (() => {
+            var _el$2 = _$createElement("box"), _el$3 = _$createElement("box"), _el$4 = _$createElement("text"), _el$5 = _$createElement("span"), _el$6 = _$createTextNode(` `), _el$7 = _$createElement("span"), _el$8 = _$createElement("text");
+            _$insertNode(_el$2, _el$3);
+            _$setProp(_el$2, "flexDirection", "column");
+            _$insertNode(_el$3, _el$4);
+            _$insertNode(_el$3, _el$8);
+            _$setProp(_el$3, "flexDirection", "row");
+            _$setProp(_el$3, "justifyContent", "space-between");
+            _$setProp(_el$3, "gap", 1);
+            _$setProp(_el$3, "onMouseDown", () => toggle(state.id));
+            _$setProp(_el$3, "paddingX", 0);
+            _$insertNode(_el$4, _el$5);
+            _$insertNode(_el$4, _el$6);
+            _$insertNode(_el$4, _el$7);
+            _$insert(_el$5, dot);
+            _$insert(_el$7, () => PROVIDER_NAMES[state.id]);
+            _$insert(_el$4, () => isOpen() ? " \u25BE" : " \u25B8", null);
+            _$insert(_el$8, (() => {
+              var _c$ = _$memo(() => headerText().length > 32);
+              return () => _c$() ? headerText().slice(0, 31) + "\u2026" : headerText();
+            })());
+            _$insert(_el$2, _$createComponent(Show, {
+              get when() {
+                return isOpen();
+              },
+              get children() {
+                var _el$9 = _$createElement("box");
+                _$setProp(_el$9, "flexDirection", "column");
+                _$setProp(_el$9, "paddingX", 1);
+                _$setProp(_el$9, "marginTop", 0);
+                _$insert(_el$9, _$createComponent(Show, {
+                  get when() {
+                    return _$memo(() => !!state.loading)() && !state.result;
+                  },
+                  get children() {
+                    var _el$0 = _$createElement("text"), _el$1 = _$createTextNode(`\u2026`);
+                    _$insertNode(_el$0, _el$1);
+                    _$insert(_el$0, () => t("providerRefreshing"), _el$1);
+                    _$effect((_$p) => _$setProp(_el$0, "fg", mutedColor(), _$p));
+                    return _el$0;
+                  }
+                }), null);
+                _$insert(_el$9, _$createComponent(Show, {
+                  get when() {
+                    return _$memo(() => !!!state.loading)() && !state.result;
+                  },
+                  get children() {
+                    var _el$10 = _$createElement("text");
+                    _$insertNode(_el$10, _$createTextNode(`\u2014`));
+                    _$effect((_$p) => _$setProp(_el$10, "fg", mutedColor(), _$p));
+                    return _el$10;
+                  }
+                }), null);
+                _$insert(_el$9, _$createComponent(Show, {
+                  get when() {
+                    return _$memo(() => state.result !== null)() && !state.result.ok;
+                  },
+                  get children() {
+                    return [(() => {
+                      var _el$12 = _$createElement("text");
+                      _$insert(_el$12, () => state.result?.status ?? "");
+                      _$effect((_$p) => _$setProp(_el$12, "fg", redColor(), _$p));
+                      return _el$12;
+                    })(), _$createComponent(Show, {
+                      get when() {
+                        return _$memo(() => state.result !== null)() && !state.result?.configured;
+                      },
+                      get children() {
+                        var _el$13 = _$createElement("text");
+                        _$insertNode(_el$13, _$createTextNode(`enable via plugin config: providerUsage.&lt;id&gt; = true`));
+                        _$effect((_$p) => _$setProp(_el$13, "fg", dimColor(), _$p));
+                        return _el$13;
+                      }
+                    })];
+                  }
+                }), null);
+                _$insert(_el$9, _$createComponent(Show, {
+                  get when() {
+                    return _$memo(() => !!(state.result !== null && state.result.ok))() && state.result.windows;
+                  },
+                  get children() {
+                    return _$createComponent(For, {
+                      get each() {
+                        return state.result?.windows ?? [];
+                      },
+                      children: (win) => {
+                        const label = win.label ? win.label + ": " : "";
+                        if (win.percent != null) {
+                          return (() => {
+                            var _el$15 = _$createElement("text"), _el$16 = _$createElement("span"), _el$17 = _$createTextNode(` `), _el$18 = _$createTextNode(`%`);
+                            _$insertNode(_el$15, _el$16);
+                            _$insert(_el$15, label, _el$16);
+                            _$insertNode(_el$16, _el$17);
+                            _$insertNode(_el$16, _el$18);
+                            _$insert(_el$16, () => percentBar(win.percent, 12), _el$17);
+                            _$insert(_el$16, () => win.percent.toFixed(0), _el$18);
+                            _$insert(_el$15, (() => {
+                              var _c$2 = _$memo(() => !!win.resetsAt);
+                              return () => _c$2() ? (() => {
+                                var _el$19 = _$createElement("span"), _el$20 = _$createTextNode(` \xB7 `), _el$21 = _$createTextNode(` `);
+                                _$insertNode(_el$19, _el$20);
+                                _$insertNode(_el$19, _el$21);
+                                _$insert(_el$19, () => t("providerResets"), _el$21);
+                                _$insert(_el$19, () => formatReset2(win.resetsAt), null);
+                                _$effect((_$p) => _$setProp(_el$19, "style", {
+                                  fg: dimColor()
+                                }, _$p));
+                                return _el$19;
+                              })() : null;
+                            })(), null);
+                            _$effect((_p$) => {
+                              var _v$5 = mutedColor(), _v$6 = {
+                                fg: statusColor(state)
+                              };
+                              _v$5 !== _p$.e && (_p$.e = _$setProp(_el$15, "fg", _v$5, _p$.e));
+                              _v$6 !== _p$.t && (_p$.t = _$setProp(_el$16, "style", _v$6, _p$.t));
+                              return _p$;
+                            }, {
+                              e: void 0,
+                              t: void 0
+                            });
+                            return _el$15;
+                          })();
+                        }
+                        if (win.valueLabel) {
+                          return (() => {
+                            var _el$22 = _$createElement("text"), _el$23 = _$createElement("span");
+                            _$insertNode(_el$22, _el$23);
+                            _$insert(_el$22, label, _el$23);
+                            _$insert(_el$23, () => win.valueLabel);
+                            _$effect((_p$) => {
+                              var _v$7 = mutedColor(), _v$8 = {
+                                fg: greenColor()
+                              };
+                              _v$7 !== _p$.e && (_p$.e = _$setProp(_el$22, "fg", _v$7, _p$.e));
+                              _v$8 !== _p$.t && (_p$.t = _$setProp(_el$23, "style", _v$8, _p$.t));
+                              return _p$;
+                            }, {
+                              e: void 0,
+                              t: void 0
+                            });
+                            return _el$22;
+                          })();
+                        }
+                        return (() => {
+                          var _el$24 = _$createElement("text"), _el$25 = _$createTextNode(`\u2014`);
+                          _$insertNode(_el$24, _el$25);
+                          _$insert(_el$24, label, _el$25);
+                          _$effect((_$p) => _$setProp(_el$24, "fg", mutedColor(), _$p));
+                          return _el$24;
+                        })();
+                      }
+                    });
+                  }
+                }), null);
+                return _el$9;
+              }
+            }), null);
+            _$effect((_p$) => {
+              var _v$ = PROVIDER_COLORS[state.id] ?? cyanColor(), _v$2 = {
+                fg: color()
+              }, _v$3 = {
+                fg: primaryColor()
+              }, _v$4 = mutedColor();
+              _v$ !== _p$.e && (_p$.e = _$setProp(_el$4, "fg", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp(_el$5, "style", _v$2, _p$.t));
+              _v$3 !== _p$.a && (_p$.a = _$setProp(_el$7, "style", _v$3, _p$.a));
+              _v$4 !== _p$.o && (_p$.o = _$setProp(_el$8, "fg", _v$4, _p$.o));
+              return _p$;
+            }, {
+              e: void 0,
+              t: void 0,
+              a: void 0,
+              o: void 0
+            });
+            return _el$2;
+          })();
+        }
+      }));
+      return _el$;
+    }
+  });
 }
 
 // src/queries.ts
@@ -4150,7 +4321,9 @@ import { homedir as homedir5 } from "node:os";
 var REPORT_PREFIX = "usage-stat-";
 function ensureReportDir() {
   const dir = join7(homedir5(), ".opencode", "reports");
-  if (!existsSync7(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync7(dir)) mkdirSync(dir, {
+    recursive: true
+  });
   return dir;
 }
 function openInBrowser(filePath) {
@@ -4158,18 +4331,27 @@ function openInBrowser(filePath) {
     const platform = process.platform;
     if (platform === "win32") {
       try {
-        spawn("explorer.exe", [filePath], { detached: true, stdio: "ignore" }).unref();
+        spawn("explorer.exe", [filePath], {
+          detached: true,
+          stdio: "ignore"
+        }).unref();
         return;
       } catch {
       }
       try {
-        execSync2(`start "" "${filePath}"`, { timeout: 5e3 });
+        execSync2(`start "" "${filePath}"`, {
+          timeout: 5e3
+        });
       } catch {
       }
     } else if (platform === "darwin") {
-      execSync2(`open "${filePath}"`, { timeout: 5e3 });
+      execSync2(`open "${filePath}"`, {
+        timeout: 5e3
+      });
     } else {
-      execSync2(`xdg-open "${filePath}"`, { timeout: 5e3 });
+      execSync2(`xdg-open "${filePath}"`, {
+        timeout: 5e3
+      });
     }
   } catch {
   }
@@ -4177,7 +4359,11 @@ function openInBrowser(filePath) {
 var MAX_REPORTS = 50;
 function cleanupOldReports(dir) {
   try {
-    const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && f.endsWith(".html")).map((f) => ({ name: f, path: join7(dir, f), mtime: statSync2(join7(dir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && f.endsWith(".html")).map((f) => ({
+      name: f,
+      path: join7(dir, f),
+      mtime: statSync2(join7(dir, f)).mtimeMs
+    })).sort((a, b) => b.mtime - a.mtime);
     if (files.length > MAX_REPORTS) {
       for (const f of files.slice(MAX_REPORTS)) {
         try {
@@ -4220,16 +4406,7 @@ async function buildCombinedData(context, filters = {}) {
     }
   };
   const apiCostByModel = report.models.map((m) => {
-    const est = estimateApiCost(
-      m.provider,
-      m.model,
-      m.requests,
-      m.inputTokens,
-      m.outputTokens,
-      m.reasoningTokens,
-      m.cacheRead,
-      m.cacheWrite
-    );
+    const est = estimateApiCost(m.provider, m.model, m.requests, m.inputTokens, m.outputTokens, m.reasoningTokens, m.cacheRead, m.cacheWrite);
     return {
       provider: m.provider,
       model: m.model,
@@ -4269,41 +4446,52 @@ async function showHtmlReport(context, filters = {}) {
     const filePath = join7(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
     writeFileSync4(filePath, html, "utf-8");
     cleanupOldReports(dir);
-    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" });
+    context.ui.toast.show({
+      message: `Report: ${filePath}`,
+      variant: "info"
+    });
     openInBrowser(filePath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" });
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
   }
 }
 async function showHtmlSessionReport(context) {
   const sessionId = currentSessionId(context);
   try {
     if (!sessionId) {
-      context.ui.toast.show({ message: "No active session. Open a session first.", variant: "error" });
+      context.ui.toast.show({
+        message: "No active session. Open a session first.",
+        variant: "error"
+      });
       return;
     }
     const childIds = await getChildSessionIds(sessionId);
     const allIds = [sessionId, ...childIds];
-    const filters = { sessionIds: allIds };
-    const [summary, models, messages, errors, sessionTitle] = await Promise.all([
-      getSummary(filters),
-      getModelBreakdown(filters),
-      getMessageDetails(sessionId),
-      getErrorStats(filters),
-      getSessionTitle(sessionId)
-    ]);
+    const filters = {
+      sessionIds: allIds
+    };
+    const [summary, models, messages, errors, sessionTitle] = await Promise.all([getSummary(filters), getModelBreakdown(filters), getMessageDetails(sessionId), getErrorStats(filters), getSessionTitle(sessionId)]);
     const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors);
     const html = generateSessionUsageHtml(data);
     const dir = ensureReportDir();
     const filePath = join7(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`);
     writeFileSync4(filePath, html, "utf-8");
     cleanupOldReports(dir);
-    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" });
+    context.ui.toast.show({
+      message: `Report: ${filePath}`,
+      variant: "info"
+    });
     openInBrowser(filePath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" });
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
   }
 }
 async function showJsonExport(context) {
@@ -4312,22 +4500,35 @@ async function showJsonExport(context) {
     const dir = ensureReportDir();
     const filePath = join7(dir, `${REPORT_PREFIX}data-${dateTimeStamp()}.json`);
     writeFileSync4(filePath, JSON.stringify(data, null, 2), "utf-8");
-    context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" });
+    context.ui.toast.show({
+      message: `JSON: ${filePath}`,
+      variant: "info"
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" });
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
   }
 }
 async function showHtmlReportRangeMenu(context) {
   const choice = await context.ui.dialog.select({
     title: t("cmdTitleHtml"),
     placeholder: "Select date range...",
-    options: [
-      { title: `\u{1F4C4} ${t("menuToday")}`, value: "today" },
-      { title: `\u{1F4C4} ${t("menu7d")}`, value: "7d" },
-      { title: `\u{1F4C4} ${t("menu30d")}`, value: "30d" },
-      { title: `\u{1F4C4} ${t("menuAll")}`, value: "all" }
-    ]
+    options: [{
+      title: `\u{1F4C4} ${t("menuToday")}`,
+      value: "today"
+    }, {
+      title: `\u{1F4C4} ${t("menu7d")}`,
+      value: "7d"
+    }, {
+      title: `\u{1F4C4} ${t("menu30d")}`,
+      value: "30d"
+    }, {
+      title: `\u{1F4C4} ${t("menuAll")}`,
+      value: "all"
+    }]
   });
   if (!choice) return;
   const d = /* @__PURE__ */ new Date();
@@ -4335,7 +4536,10 @@ async function showHtmlReportRangeMenu(context) {
   const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   switch (choice) {
     case "today":
-      await showHtmlReport(context, { startDate: today, endDate: today });
+      await showHtmlReport(context, {
+        startDate: today,
+        endDate: today
+      });
       break;
     case "7d":
       await showHtmlReport(context, getPresetRange("7d"));
@@ -4357,12 +4561,23 @@ async function showUsageMenu(context) {
   const choice = await context.ui.dialog.select({
     title: t("panelTitle"),
     placeholder: "Select an action...",
-    options: [
-      { title: `\u{1F5C2} ${t("menuCurrentSession")}`, value: "session", description: "Current session + subagents HTML dashboard" },
-      { title: `\u{1F4C4} ${t("cmdTitleHtml")} \u25B8`, value: "html", description: t("cmdDescHtml") },
-      { title: t("cmdTitleJson"), value: "json", description: t("cmdDescJson") },
-      { title: `${t("cmdTitleSettings")} \u25B8`, value: "settings", description: t("cmdDescSettings") }
-    ]
+    options: [{
+      title: `\u{1F5C2} ${t("menuCurrentSession")}`,
+      value: "session",
+      description: "Current session + subagents HTML dashboard"
+    }, {
+      title: `\u{1F4C4} ${t("cmdTitleHtml")} \u25B8`,
+      value: "html",
+      description: t("cmdDescHtml")
+    }, {
+      title: t("cmdTitleJson"),
+      value: "json",
+      description: t("cmdDescJson")
+    }, {
+      title: `${t("cmdTitleSettings")} \u25B8`,
+      value: "settings",
+      description: t("cmdDescSettings")
+    }]
   });
   switch (choice) {
     case "session":
@@ -4379,18 +4594,33 @@ async function showUsageMenu(context) {
       break;
   }
 }
-var DEFAULT_SETTINGS = { showPerformance: true, showPricing: true, showTrend: true };
+var DEFAULT_SETTINGS = {
+  showPerformance: true,
+  showPricing: true,
+  showTrend: true
+};
 async function loadSidebarSettings(context) {
   try {
-    const [store] = context.storage.store("usage-stat-config", { initial: DEFAULT_SETTINGS });
-    return { ...DEFAULT_SETTINGS, ...store };
+    const [store] = context.storage.store("usage-stat-config", {
+      initial: DEFAULT_SETTINGS
+    });
+    return {
+      ...DEFAULT_SETTINGS,
+      ...store
+    };
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return {
+      ...DEFAULT_SETTINGS
+    };
   }
 }
 async function loadLanguageFromStorage(context) {
   try {
-    const [store] = context.storage.store("usage-stat-config", { initial: { language: "auto" } });
+    const [store] = context.storage.store("usage-stat-config", {
+      initial: {
+        language: "auto"
+      }
+    });
     return store.language ?? null;
   } catch {
     return null;
@@ -4401,17 +4631,33 @@ async function showSettingsDialog(context) {
   const choice = await context.ui.dialog.select({
     title: t("settingsTitle"),
     placeholder: t("settingsPlaceholder"),
-    options: [
-      { title: `${cfg.showPerformance ? "\u2713 " : "  "}${t("showPerformance")}`, value: "showPerformance", description: t("descShowPerformance") },
-      { title: `${cfg.showPricing ? "\u2713 " : "  "}${t("showPricing")}`, value: "showPricing", description: t("descShowPricing") },
-      { title: `${cfg.showTrend ? "\u2713 " : "  "}${t("showTrend")}`, value: "showTrend", description: t("descShowTrend") },
-      { title: `${t("settingsLanguage")} \u25B8`, value: "language", description: t("descSettingsLanguage") },
-      { title: t("done"), value: "done", description: t("closeSettings") }
-    ]
+    options: [{
+      title: `${cfg.showPerformance ? "\u2713 " : "  "}${t("showPerformance")}`,
+      value: "showPerformance",
+      description: t("descShowPerformance")
+    }, {
+      title: `${cfg.showPricing ? "\u2713 " : "  "}${t("showPricing")}`,
+      value: "showPricing",
+      description: t("descShowPricing")
+    }, {
+      title: `${cfg.showTrend ? "\u2713 " : "  "}${t("showTrend")}`,
+      value: "showTrend",
+      description: t("descShowTrend")
+    }, {
+      title: `${t("settingsLanguage")} \u25B8`,
+      value: "language",
+      description: t("descSettingsLanguage")
+    }, {
+      title: t("done"),
+      value: "done",
+      description: t("closeSettings")
+    }]
   });
   if (!choice) return;
   try {
-    const [, mutate] = context.storage.store("usage-stat-config", { initial: DEFAULT_SETTINGS });
+    const [, mutate] = context.storage.store("usage-stat-config", {
+      initial: DEFAULT_SETTINGS
+    });
     if (choice === "language") {
       await showLanguageMenu(context);
     } else if (choice !== "done") {
@@ -4432,16 +4678,25 @@ async function showLanguageMenu(context) {
   const choice = await context.ui.dialog.select({
     title: t("settingsLanguage"),
     placeholder: t("settingsLanguage"),
-    options: [
-      { title: `${current === "auto" ? "\u2713 " : "  "}${t("langAuto")}`, value: "auto" },
-      { title: `${current === "zh" ? "\u2713 " : "  "}\u4E2D\u6587`, value: "zh" },
-      { title: `${current === "en" ? "\u2713 " : "  "}English`, value: "en" }
-    ]
+    options: [{
+      title: `${current === "auto" ? "\u2713 " : "  "}${t("langAuto")}`,
+      value: "auto"
+    }, {
+      title: `${current === "zh" ? "\u2713 " : "  "}\u4E2D\u6587`,
+      value: "zh"
+    }, {
+      title: `${current === "en" ? "\u2713 " : "  "}English`,
+      value: "en"
+    }]
   });
   if (!choice) return;
   setLanguage(choice);
   try {
-    const [, mutate] = context.storage.store("usage-stat-config", { initial: { language: "auto" } });
+    const [, mutate] = context.storage.store("usage-stat-config", {
+      initial: {
+        language: "auto"
+      }
+    });
     await mutate((d) => {
       d.language = choice;
     });
@@ -4455,47 +4710,53 @@ function registerCommands(context) {
   }
   context.keymap.layer(() => ({
     mode: "base",
-    commands: [
-      {
-        id: "usage-stat.usage",
-        title: "Usage Stat",
-        description: "Token use dashboards, provider balances, exports and settings",
-        group: "Stats",
-        palette: true,
-        slash: { name: "usage" },
-        run: () => {
-          void showUsageMenu(context);
-        }
+    commands: [{
+      id: "usage-stat.usage",
+      title: "Usage Stat",
+      description: "Token use dashboards, provider balances, exports and settings",
+      group: "Stats",
+      palette: true,
+      slash: {
+        name: "usage"
       },
-      {
-        id: "usage-stat.session-usage",
-        title: "Session Usage",
-        description: "Generate the current session's HTML usage report locally",
-        group: "Stats",
-        palette: true,
-        slash: { name: "session-usage" },
-        run: () => {
-          void showHtmlSessionReport(context);
-        }
-      },
-      {
-        id: "usage-stat.total-usage",
-        title: "Total Usage",
-        description: "Generate a cumulative HTML usage report (all time) locally",
-        group: "Stats",
-        palette: true,
-        slash: { name: "total-usage" },
-        run: () => {
-          void showHtmlReport(context, getPresetRange("all"));
-        }
+      run: () => {
+        void showUsageMenu(context);
       }
-    ]
+    }, {
+      id: "usage-stat.session-usage",
+      title: "Session Usage",
+      description: "Generate the current session's HTML usage report locally",
+      group: "Stats",
+      palette: true,
+      slash: {
+        name: "session-usage"
+      },
+      run: () => {
+        void showHtmlSessionReport(context);
+      }
+    }, {
+      id: "usage-stat.total-usage",
+      title: "Total Usage",
+      description: "Generate a cumulative HTML usage report (all time) locally",
+      group: "Stats",
+      palette: true,
+      slash: {
+        name: "total-usage"
+      },
+      run: () => {
+        void showHtmlReport(context, getPresetRange("all"));
+      }
+    }]
   }));
 }
 
 // src/sidebar.tsx
 var DEFAULT_CONFIG = {
-  sidebar: { showPerformance: true, showPricing: true, showTrend: true },
+  sidebar: {
+    showPerformance: true,
+    showPricing: true,
+    showTrend: true
+  },
   language: "auto"
 };
 function progressBarWidth(percent, width) {
@@ -4532,9 +4793,17 @@ function hitRateColor(rate) {
   if (rate >= 70) return RGBA3.fromInts(255, 193, 7, 255);
   return RGBA3.fromInts(244, 67, 54, 255);
 }
-var COLLAPSE_INITIAL = { global: false, models: {} };
+var COLLAPSE_INITIAL = {
+  global: false,
+  models: {}
+};
 function loadConfig(context) {
-  const base = { sidebar: { ...DEFAULT_CONFIG.sidebar }, language: DEFAULT_CONFIG.language };
+  const base = {
+    sidebar: {
+      ...DEFAULT_CONFIG.sidebar
+    },
+    language: DEFAULT_CONFIG.language
+  };
   try {
     const pluginCfg = context.options;
     if (pluginCfg?.sidebar) Object.assign(base.sidebar, pluginCfg.sidebar);
@@ -4544,11 +4813,14 @@ function loadConfig(context) {
   return base;
 }
 function UsageStatPanel(props) {
-  const { context, perfTracker } = props;
+  const {
+    context,
+    perfTracker
+  } = props;
   registerCommands(context);
   const [config, setConfig] = createSignal2(loadConfig(context));
   setLanguage(config().language);
-  createEffect2(() => setLanguage(config().language));
+  createEffect(() => setLanguage(config().language));
   const t2 = (key) => {
     void config().language;
     return t(key);
@@ -4557,11 +4829,15 @@ function UsageStatPanel(props) {
   const [collapse, setCollapse] = createSignal2(COLLAPSE_INITIAL);
   let collapseMutate = () => Promise.resolve();
   try {
-    const [store, mutate] = context.storage.store("usage-stat-collapse", { initial: COLLAPSE_INITIAL });
+    const [store, mutate] = context.storage.store("usage-stat-collapse", {
+      initial: COLLAPSE_INITIAL
+    });
     const read = () => store;
-    createEffect2(() => {
+    createEffect(() => {
       const s = read();
-      setCollapse({ ...s });
+      setCollapse({
+        ...s
+      });
     });
     collapseMutate = mutate;
   } catch {
@@ -4583,7 +4859,18 @@ function UsageStatPanel(props) {
       const key = `${msg.providerID}/${msg.modelID}`;
       let e = map.get(key);
       if (!e) {
-        e = { providerID: msg.providerID, modelID: msg.modelID, totalInput: 0, totalOutput: 0, totalReasoning: 0, cacheRead: 0, cacheWrite: 0, totalCost: 0, requestCount: 0, lastMessageIndex: -1 };
+        e = {
+          providerID: msg.providerID,
+          modelID: msg.modelID,
+          totalInput: 0,
+          totalOutput: 0,
+          totalReasoning: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalCost: 0,
+          requestCount: 0,
+          lastMessageIndex: -1
+        };
         map.set(key, e);
       }
       e.totalInput += msg.inputTokens;
@@ -4608,7 +4895,16 @@ function UsageStatPanel(props) {
       r += s.requestCount;
       c += s.totalCost;
     }
-    return { totalInput: i, totalOutput: o, totalReasoning: ir, totalCacheRead: cr, totalCacheWrite: cw, totalRequests: r, totalCost: c, totalTokens: i + o + ir + cr + cw };
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: r,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw
+    };
   });
   const globalHitRate = createMemo(() => {
     let i = 0, cr = 0;
@@ -4623,32 +4919,52 @@ function UsageStatPanel(props) {
   const modelHitRate = createMemo(() => {
     return modelStats().map(([key, stat]) => {
       const denom = stat.totalInput + stat.cacheRead;
-      if (denom === 0) return { key, rate: 0, msgs: [] };
+      if (denom === 0) return {
+        key,
+        rate: 0,
+        msgs: []
+      };
       const msgs = [];
       for (const msg of props.allTokenMessages()) {
         if (`${msg.providerID}/${msg.modelID}` !== key) continue;
         msgs.push(msg);
       }
-      return { key, rate: stat.cacheRead / denom * 100, msgs };
+      return {
+        key,
+        rate: stat.cacheRead / denom * 100,
+        msgs
+      };
     });
   });
   const modelTrend = createMemo(() => {
-    return modelHitRate().map(({ key, msgs }) => {
-      if (msgs.length < 6) return { key, trend: null };
+    return modelHitRate().map(({
+      key,
+      msgs
+    }) => {
+      if (msgs.length < 6) return {
+        key,
+        trend: null
+      };
       const sumSlice = (start, end) => {
         let sumCache = 0, sumTotal = 0;
         for (let i = start; i < end && i < msgs.length; i++) {
           sumCache += msgs[i].cacheRead;
           sumTotal += msgs[i].inputTokens + msgs[i].cacheRead;
         }
-        return { sumCache, sumTotal };
+        return {
+          sumCache,
+          sumTotal
+        };
       };
       const n = msgs.length;
       const recent = sumSlice(n - 3, n);
       const prev = sumSlice(n - 6, n - 3);
       const rateRecent = recent.sumTotal > 0 ? recent.sumCache / recent.sumTotal * 100 : 0;
       const ratePrev = prev.sumTotal > 0 ? prev.sumCache / prev.sumTotal * 100 : 0;
-      return { key, trend: rateRecent - ratePrev };
+      return {
+        key,
+        trend: rateRecent - ratePrev
+      };
     });
   });
   const [partVersion, setPartVersion] = createSignal2(0);
@@ -4670,178 +4986,404 @@ function UsageStatPanel(props) {
   const toggle = {
     global: () => {
       const next = !collapse().global;
-      setCollapse((current) => ({ ...current, global: next }));
+      setCollapse((current) => ({
+        ...current,
+        global: next
+      }));
       void collapseMutate((draft) => {
         draft.global = next;
       });
     },
     model: (key) => {
       const next = collapse().models[key] !== true;
-      setCollapse((current) => ({ ...current, models: { ...current.models, [key]: next } }));
+      setCollapse((current) => ({
+        ...current,
+        models: {
+          ...current.models,
+          [key]: next
+        }
+      }));
       void collapseMutate((draft) => {
         draft.models[key] = next;
       });
     }
   };
-  return <box
-    ref={(el) => {
+  return (() => {
+    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("text");
+    _$insertNode2(_el$, _el$2);
+    _$use((el) => {
       outerBoxRef = el;
-    }}
-    onSizeChange={() => {
+    }, _el$);
+    _$setProp2(_el$, "onSizeChange", () => {
       if (outerBoxRef) setPanelWidth(outerBoxRef.width);
-    }}
-    flexDirection="column"
-    border={true}
-    borderStyle="rounded"
-    borderColor={borderColor()}
-  >
-      {
-    /* Header */
-  }
-      <box flexDirection="row" justifyContent="space-between" onMouseDown={toggle.global} paddingX={1}>
-        <text fg={primaryColor()}>{collapse().global ? "\u25B6" : "\u25BE"} {t2("panelTitle")}</text>
-        <text fg={mutedColor()}>
-          {collapse().global ? <>{formatTokens(sessionTotals().totalTokens)}
-              {globalHitRate() >= 0 ? <span style={{ fg: hitRateColor(globalHitRate()) }}>{` (${globalHitRate().toFixed(1)}% hit)`}</span> : ""}
-            </> : globalHitRate() >= 0 ? <span style={{ fg: hitRateColor(globalHitRate()) }}>{`${globalHitRate().toFixed(1)}% hit`}</span> : ""}
-        </text>
-      </box>
-
-      {
-    /* Provider Usage reveals collapsed after quota changes in this TUI session. */
-  }
-      <ProviderUsageBlocks context={context} />
-
-      <Show2 when={!collapse().global}>
-        <text fg={borderColor()}>{divider()}</text>
-
-        {
-    /* Global stats */
-  }
-        <box flexDirection="row" paddingX={1}>
-          <For2 each={[
-    { val: formatTokens(sessionTotals().totalTokens), lbl: t2("total") },
-    { val: sessionTotals().totalRequests.toString(), lbl: t2("requests") },
-    { val: formatTokens(sessionTotals().totalInput), lbl: t2("input") },
-    { val: formatTokens(sessionTotals().totalOutput), lbl: t2("output") }
-  ]}>
-            {(item, idx) => {
-    const colW = () => {
-      const totalW = panelWidth() - 4;
-      const base = Math.floor(totalW / 4);
-      return idx() === 3 ? totalW - base * 3 : base;
-    };
-    return <box width={colW()} flexDirection="column">
-                  <text fg={primaryColor()}>{centerAlign(item.val, colW())}</text>
-                  <text fg={dimColor()}>{centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW())}</text>
-                </box>;
-  }}
-          </For2>
-        </box>
-
-        <Show2 when={config().sidebar.showPricing && sessionTotals().totalCost > 0}>
-          <box flexDirection="row" justifyContent="center" marginTop={1}>
-            <text fg={mutedColor()}>{t2("cost")}: <span style={{ fg: greenColor() }}>{formatCost(sessionTotals().totalCost)}</span></text>
-          </box>
-        </Show2>
-
-        {
-    /* Model blocks */
-  }
-        <For2 each={modelStats()}>
-          {([key, stat]) => {
-    const isExpanded = () => collapse().models[key] !== true;
-    const hitDenom = stat.totalInput + stat.cacheRead;
-    const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
-    const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
-    const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
-    const trendStr = () => {
-      if (!config().sidebar.showTrend) return "";
-      const td = modelTrend().find((h) => h.key === key);
-      if (!td?.trend || td.trend === 0) return "";
-      return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
-    };
-    const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? RGBA3.fromInts(63, 185, 80, 255) : RGBA3.fromInts(244, 67, 54, 255);
-    const MAX_PROVIDER_LEN = 12;
-    let providerDisplay = stat.providerID;
-    if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "\u2026";
-    let fullTitle = `${providerDisplay}/${stat.modelID}`;
-    if (fullTitle.length > 22) {
-      const parts = fullTitle.split("/");
-      if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
-    }
-    const maxNameLen = Math.max(8, innerWidth() - 12);
-    const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "\u2026" : fullTitle;
-    const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
-    const targetW = () => Math.max(getVisualWidth(`${t2("cache")}:`), getVisualWidth(`${t2("cost")}:`));
-    const paddedCachePrefix = () => {
-      const label = `${t2("cache")}:`;
-      return label + " ".repeat(targetW() - getVisualWidth(label));
-    };
-    const paddedCostPrefix = () => {
-      const label = `${t2("cost")}:`;
-      return label + " ".repeat(targetW() - getVisualWidth(label));
-    };
-    const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11);
-    return <box flexDirection="column" marginTop={1}>
-                <box flexDirection="row" justifyContent="space-between" onMouseDown={() => toggle.model(key)} paddingX={1}>
-                  <text fg={mutedColor()}>
-                    <span style={{ fg: isMissing ? missingColor() : hitRateColor(hitRate) }}>●</span>{" "}
-                    <span style={{ fg: primaryColor() }}>{shortTitle}</span>
-                  </text>
-                  <text fg={mutedColor()}>{modelHeaderRight()}</text>
-                </box>
-
-                <Show2 when={isExpanded()}>
-                  <box flexDirection="column" paddingX={1}>
-                    <box flexDirection="column" border={true} borderStyle="rounded" borderColor={borderColor()}>
-                      <box flexDirection="row">
-                        <For2 each={[
-      { val: formatTokens(modelTotalTokens), lbl: t2("total") },
-      { val: formatTokens(stat.totalInput), lbl: t2("input") },
-      { val: formatTokens(stat.totalOutput), lbl: t2("output") }
-    ]}>
-                          {(item, idx) => {
-      const colW = () => {
-        const totalW = panelWidth() - 6;
-        const base = Math.floor(totalW / 3);
-        return idx() === 2 ? totalW - base * 2 : base;
-      };
-      return <box width={colW()} flexDirection="column">
-                                <text fg={primaryColor()}>{centerAlign(item.val, colW())}</text>
-                                <text fg={dimColor()}>{centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW())}</text>
-                              </box>;
-    }}
-                        </For2>
-                      </box>
-                    </box>
-
-                    <text fg={mutedColor()}>
-                      {paddedCachePrefix()}
-                      {isMissing ? <span style={{ fg: missingColor() }}>{progressRemaining(0, modelBarWidth())}{" "}{t2("missing")}</span> : <span style={{ fg: hitRateColor(hitRate) }}>
-                          {progressFilled(hitRate, modelBarWidth())}{progressRemaining(hitRate, modelBarWidth())}{" "}{hitRate.toFixed(0)}%
-                        </span>}
-                      {trendStr() ? <span style={{ fg: trendColor() }}>{trendStr()}</span> : null}
-                    </text>
-
-                    <Show2 when={config().sidebar.showPerformance && !!perfStats().models[key]}>
-                      <text fg={mutedColor()} marginTop={1}>
-                        {t2("ttft")} <span style={{ fg: primaryColor() }}>{formatDuration(perfStats().models[key]?.avgTTFT ?? null)}</span>
-                        {"  "}{t2("tps")} <span style={{ fg: primaryColor() }}>{perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014"}</span>
-                        {"  "}{t2("lat")} <span style={{ fg: primaryColor() }}>{formatDuration(perfStats().models[key]?.avgLatency ?? null)}</span>
-                      </text>
-                    </Show2>
-
-                    <Show2 when={config().sidebar.showPricing && stat.totalCost > 0}>
-                      <text fg={mutedColor()}>{paddedCostPrefix()}{formatCost(stat.totalCost)}</text>
-                    </Show2>
-                  </box>
-                </Show2>
-              </box>;
-  }}
-        </For2>
-      </Show2>
-    </box>;
+    });
+    _$setProp2(_el$, "flexDirection", "column");
+    _$setProp2(_el$, "border", true);
+    _$setProp2(_el$, "borderStyle", "rounded");
+    _$insertNode2(_el$2, _el$3);
+    _$insertNode2(_el$2, _el$5);
+    _$setProp2(_el$2, "flexDirection", "row");
+    _$setProp2(_el$2, "justifyContent", "space-between");
+    _$setProp2(_el$2, "paddingX", 1);
+    _$insertNode2(_el$3, _el$4);
+    _$insert2(_el$3, () => collapse().global ? "\u25B6" : "\u25BE", _el$4);
+    _$insert2(_el$3, () => t2("panelTitle"), null);
+    _$insert2(_el$5, (() => {
+      var _c$ = _$memo2(() => !!collapse().global);
+      return () => _c$() ? [_$memo2(() => formatTokens(sessionTotals().totalTokens)), _$memo2(() => _$memo2(() => globalHitRate() >= 0)() ? (() => {
+        var _el$10 = _$createElement2("span");
+        _$insert2(_el$10, () => ` (${globalHitRate().toFixed(1)}% hit)`);
+        _$effect2((_$p) => _$setProp2(_el$10, "style", {
+          fg: hitRateColor(globalHitRate())
+        }, _$p));
+        return _el$10;
+      })() : "")] : _$memo2(() => globalHitRate() >= 0)() ? (() => {
+        var _el$11 = _$createElement2("span");
+        _$insert2(_el$11, () => `${globalHitRate().toFixed(1)}% hit`);
+        _$effect2((_$p) => _$setProp2(_el$11, "style", {
+          fg: hitRateColor(globalHitRate())
+        }, _$p));
+        return _el$11;
+      })() : "";
+    })());
+    _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
+      context
+    }), null);
+    _$insert2(_el$, _$createComponent2(Show2, {
+      get when() {
+        return !collapse().global;
+      },
+      get children() {
+        return [(() => {
+          var _el$6 = _$createElement2("text");
+          _$insert2(_el$6, divider);
+          _$effect2((_$p) => _$setProp2(_el$6, "fg", borderColor(), _$p));
+          return _el$6;
+        })(), (() => {
+          var _el$7 = _$createElement2("box");
+          _$setProp2(_el$7, "flexDirection", "row");
+          _$setProp2(_el$7, "paddingX", 1);
+          _$insert2(_el$7, _$createComponent2(For2, {
+            get each() {
+              return [{
+                val: formatTokens(sessionTotals().totalTokens),
+                lbl: t2("total")
+              }, {
+                val: sessionTotals().totalRequests.toString(),
+                lbl: t2("requests")
+              }, {
+                val: formatTokens(sessionTotals().totalInput),
+                lbl: t2("input")
+              }, {
+                val: formatTokens(sessionTotals().totalOutput),
+                lbl: t2("output")
+              }];
+            },
+            children: (item, idx) => {
+              const colW = () => {
+                const totalW = panelWidth() - 4;
+                const base = Math.floor(totalW / 4);
+                return idx() === 3 ? totalW - base * 3 : base;
+              };
+              return (() => {
+                var _el$12 = _$createElement2("box"), _el$13 = _$createElement2("text"), _el$14 = _$createElement2("text");
+                _$insertNode2(_el$12, _el$13);
+                _$insertNode2(_el$12, _el$14);
+                _$setProp2(_el$12, "flexDirection", "column");
+                _$insert2(_el$13, () => centerAlign(item.val, colW()));
+                _$insert2(_el$14, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                _$effect2((_p$) => {
+                  var _v$7 = colW(), _v$8 = primaryColor(), _v$9 = dimColor();
+                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$12, "width", _v$7, _p$.e));
+                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$13, "fg", _v$8, _p$.t));
+                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$14, "fg", _v$9, _p$.a));
+                  return _p$;
+                }, {
+                  e: void 0,
+                  t: void 0,
+                  a: void 0
+                });
+                return _el$12;
+              })();
+            }
+          }));
+          return _el$7;
+        })(), _$createComponent2(Show2, {
+          get when() {
+            return _$memo2(() => !!config().sidebar.showPricing)() && sessionTotals().totalCost > 0;
+          },
+          get children() {
+            var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("text"), _el$0 = _$createTextNode2(`: `), _el$1 = _$createElement2("span");
+            _$insertNode2(_el$8, _el$9);
+            _$setProp2(_el$8, "flexDirection", "row");
+            _$setProp2(_el$8, "justifyContent", "center");
+            _$setProp2(_el$8, "marginTop", 1);
+            _$insertNode2(_el$9, _el$0);
+            _$insertNode2(_el$9, _el$1);
+            _$insert2(_el$9, () => t2("cost"), _el$0);
+            _$insert2(_el$1, () => formatCost(sessionTotals().totalCost));
+            _$effect2((_p$) => {
+              var _v$ = mutedColor(), _v$2 = {
+                fg: greenColor()
+              };
+              _v$ !== _p$.e && (_p$.e = _$setProp2(_el$9, "fg", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$1, "style", _v$2, _p$.t));
+              return _p$;
+            }, {
+              e: void 0,
+              t: void 0
+            });
+            return _el$8;
+          }
+        }), _$createComponent2(For2, {
+          get each() {
+            return modelStats();
+          },
+          children: ([key, stat]) => {
+            const isExpanded = () => collapse().models[key] !== true;
+            const hitDenom = stat.totalInput + stat.cacheRead;
+            const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
+            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
+            const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
+            const trendStr = () => {
+              if (!config().sidebar.showTrend) return "";
+              const td = modelTrend().find((h) => h.key === key);
+              if (!td?.trend || td.trend === 0) return "";
+              return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
+            };
+            const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? RGBA3.fromInts(63, 185, 80, 255) : RGBA3.fromInts(244, 67, 54, 255);
+            const MAX_PROVIDER_LEN = 12;
+            let providerDisplay = stat.providerID;
+            if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "\u2026";
+            let fullTitle = `${providerDisplay}/${stat.modelID}`;
+            if (fullTitle.length > 22) {
+              const parts = fullTitle.split("/");
+              if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
+            }
+            const maxNameLen = Math.max(8, innerWidth() - 12);
+            const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "\u2026" : fullTitle;
+            const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
+            const targetW = () => Math.max(getVisualWidth(`${t2("cache")}:`), getVisualWidth(`${t2("cost")}:`));
+            const paddedCachePrefix = () => {
+              const label = `${t2("cache")}:`;
+              return label + " ".repeat(targetW() - getVisualWidth(label));
+            };
+            const paddedCostPrefix = () => {
+              const label = `${t2("cost")}:`;
+              return label + " ".repeat(targetW() - getVisualWidth(label));
+            };
+            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11);
+            return (() => {
+              var _el$15 = _$createElement2("box"), _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("span"), _el$20 = _$createTextNode2(` `), _el$21 = _$createElement2("span"), _el$22 = _$createElement2("text");
+              _$insertNode2(_el$15, _el$16);
+              _$setProp2(_el$15, "flexDirection", "column");
+              _$setProp2(_el$15, "marginTop", 1);
+              _$insertNode2(_el$16, _el$17);
+              _$insertNode2(_el$16, _el$22);
+              _$setProp2(_el$16, "flexDirection", "row");
+              _$setProp2(_el$16, "justifyContent", "space-between");
+              _$setProp2(_el$16, "onMouseDown", () => toggle.model(key));
+              _$setProp2(_el$16, "paddingX", 1);
+              _$insertNode2(_el$17, _el$18);
+              _$insertNode2(_el$17, _el$20);
+              _$insertNode2(_el$17, _el$21);
+              _$insertNode2(_el$18, _$createTextNode2(`\u25CF`));
+              _$insert2(_el$21, shortTitle);
+              _$insert2(_el$22, modelHeaderRight);
+              _$insert2(_el$15, _$createComponent2(Show2, {
+                get when() {
+                  return isExpanded();
+                },
+                get children() {
+                  var _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("box"), _el$26 = _$createElement2("text");
+                  _$insertNode2(_el$23, _el$24);
+                  _$insertNode2(_el$23, _el$26);
+                  _$setProp2(_el$23, "flexDirection", "column");
+                  _$setProp2(_el$23, "paddingX", 1);
+                  _$insertNode2(_el$24, _el$25);
+                  _$setProp2(_el$24, "flexDirection", "column");
+                  _$setProp2(_el$24, "border", true);
+                  _$setProp2(_el$24, "borderStyle", "rounded");
+                  _$setProp2(_el$25, "flexDirection", "row");
+                  _$insert2(_el$25, _$createComponent2(For2, {
+                    get each() {
+                      return [{
+                        val: formatTokens(modelTotalTokens),
+                        lbl: t2("total")
+                      }, {
+                        val: formatTokens(stat.totalInput),
+                        lbl: t2("input")
+                      }, {
+                        val: formatTokens(stat.totalOutput),
+                        lbl: t2("output")
+                      }];
+                    },
+                    children: (item, idx) => {
+                      const colW = () => {
+                        const totalW = panelWidth() - 6;
+                        const base = Math.floor(totalW / 3);
+                        return idx() === 2 ? totalW - base * 2 : base;
+                      };
+                      return (() => {
+                        var _el$37 = _$createElement2("box"), _el$38 = _$createElement2("text"), _el$39 = _$createElement2("text");
+                        _$insertNode2(_el$37, _el$38);
+                        _$insertNode2(_el$37, _el$39);
+                        _$setProp2(_el$37, "flexDirection", "column");
+                        _$insert2(_el$38, () => centerAlign(item.val, colW()));
+                        _$insert2(_el$39, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                        _$effect2((_p$) => {
+                          var _v$18 = colW(), _v$19 = primaryColor(), _v$20 = dimColor();
+                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$37, "width", _v$18, _p$.e));
+                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$38, "fg", _v$19, _p$.t));
+                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$39, "fg", _v$20, _p$.a));
+                          return _p$;
+                        }, {
+                          e: void 0,
+                          t: void 0,
+                          a: void 0
+                        });
+                        return _el$37;
+                      })();
+                    }
+                  }));
+                  _$insert2(_el$26, paddedCachePrefix, null);
+                  _$insert2(_el$26, isMissing ? (() => {
+                    var _el$40 = _$createElement2("span"), _el$41 = _$createTextNode2(` `);
+                    _$insertNode2(_el$40, _el$41);
+                    _$insert2(_el$40, () => progressRemaining(0, modelBarWidth()), _el$41);
+                    _$insert2(_el$40, () => t2("missing"), null);
+                    _$effect2((_$p) => _$setProp2(_el$40, "style", {
+                      fg: missingColor()
+                    }, _$p));
+                    return _el$40;
+                  })() : (() => {
+                    var _el$42 = _$createElement2("span"), _el$43 = _$createTextNode2(` `), _el$44 = _$createTextNode2(`%`);
+                    _$insertNode2(_el$42, _el$43);
+                    _$insertNode2(_el$42, _el$44);
+                    _$insert2(_el$42, () => progressFilled(hitRate, modelBarWidth()), _el$43);
+                    _$insert2(_el$42, () => progressRemaining(hitRate, modelBarWidth()), _el$43);
+                    _$insert2(_el$42, () => hitRate.toFixed(0), _el$44);
+                    _$effect2((_$p) => _$setProp2(_el$42, "style", {
+                      fg: hitRateColor(hitRate)
+                    }, _$p));
+                    return _el$42;
+                  })(), null);
+                  _$insert2(_el$26, (() => {
+                    var _c$2 = _$memo2(() => !!trendStr());
+                    return () => _c$2() ? (() => {
+                      var _el$45 = _$createElement2("span");
+                      _$insert2(_el$45, trendStr);
+                      _$effect2((_$p) => _$setProp2(_el$45, "style", {
+                        fg: trendColor()
+                      }, _$p));
+                      return _el$45;
+                    })() : null;
+                  })(), null);
+                  _$insert2(_el$23, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!config().sidebar.showPerformance)() && !!perfStats().models[key];
+                    },
+                    get children() {
+                      var _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(` `), _el$29 = _$createElement2("span"), _el$30 = _$createTextNode2(`  `), _el$31 = _$createTextNode2(` `), _el$32 = _$createElement2("span"), _el$33 = _$createTextNode2(`  `), _el$34 = _$createTextNode2(` `), _el$35 = _$createElement2("span");
+                      _$insertNode2(_el$27, _el$28);
+                      _$insertNode2(_el$27, _el$29);
+                      _$insertNode2(_el$27, _el$30);
+                      _$insertNode2(_el$27, _el$31);
+                      _$insertNode2(_el$27, _el$32);
+                      _$insertNode2(_el$27, _el$33);
+                      _$insertNode2(_el$27, _el$34);
+                      _$insertNode2(_el$27, _el$35);
+                      _$setProp2(_el$27, "marginTop", 1);
+                      _$insert2(_el$27, () => t2("ttft"), _el$28);
+                      _$insert2(_el$29, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
+                      _$insert2(_el$27, () => t2("tps"), _el$31);
+                      _$insert2(_el$32, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
+                      _$insert2(_el$27, () => t2("lat"), _el$34);
+                      _$insert2(_el$35, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
+                      _$effect2((_p$) => {
+                        var _v$0 = mutedColor(), _v$1 = {
+                          fg: primaryColor()
+                        }, _v$10 = {
+                          fg: primaryColor()
+                        }, _v$11 = {
+                          fg: primaryColor()
+                        };
+                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$27, "fg", _v$0, _p$.e));
+                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$29, "style", _v$1, _p$.t));
+                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$32, "style", _v$10, _p$.a));
+                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$35, "style", _v$11, _p$.o));
+                        return _p$;
+                      }, {
+                        e: void 0,
+                        t: void 0,
+                        a: void 0,
+                        o: void 0
+                      });
+                      return _el$27;
+                    }
+                  }), null);
+                  _$insert2(_el$23, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!config().sidebar.showPricing)() && stat.totalCost > 0;
+                    },
+                    get children() {
+                      var _el$36 = _$createElement2("text");
+                      _$insert2(_el$36, paddedCostPrefix, null);
+                      _$insert2(_el$36, () => formatCost(stat.totalCost), null);
+                      _$effect2((_$p) => _$setProp2(_el$36, "fg", mutedColor(), _$p));
+                      return _el$36;
+                    }
+                  }), null);
+                  _$effect2((_p$) => {
+                    var _v$12 = borderColor(), _v$13 = mutedColor();
+                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$24, "borderColor", _v$12, _p$.e));
+                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$26, "fg", _v$13, _p$.t));
+                    return _p$;
+                  }, {
+                    e: void 0,
+                    t: void 0
+                  });
+                  return _el$23;
+                }
+              }), null);
+              _$effect2((_p$) => {
+                var _v$14 = mutedColor(), _v$15 = {
+                  fg: isMissing ? missingColor() : hitRateColor(hitRate)
+                }, _v$16 = {
+                  fg: primaryColor()
+                }, _v$17 = mutedColor();
+                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$17, "fg", _v$14, _p$.e));
+                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$18, "style", _v$15, _p$.t));
+                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$21, "style", _v$16, _p$.a));
+                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$22, "fg", _v$17, _p$.o));
+                return _p$;
+              }, {
+                e: void 0,
+                t: void 0,
+                a: void 0,
+                o: void 0
+              });
+              return _el$15;
+            })();
+          }
+        })];
+      }
+    }), null);
+    _$effect2((_p$) => {
+      var _v$3 = borderColor(), _v$4 = toggle.global, _v$5 = primaryColor(), _v$6 = mutedColor();
+      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$, "borderColor", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$2, "onMouseDown", _v$4, _p$.t));
+      _v$5 !== _p$.a && (_p$.a = _$setProp2(_el$3, "fg", _v$5, _p$.a));
+      _v$6 !== _p$.o && (_p$.o = _$setProp2(_el$5, "fg", _v$6, _p$.o));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0,
+      a: void 0,
+      o: void 0
+    });
+    return _el$;
+  })();
 }
 
 // src/tui.tsx
@@ -4863,7 +5405,7 @@ function messageToTokenMessage(msg, sessionID) {
     cost: msg.cost ?? 0
   };
 }
-var plugin = Plugin.define({
+var plugin = define({
   id: "opencode-usage-stat",
   setup: async (context) => {
     const perfTracker = createPerfTracker();
@@ -4890,7 +5432,9 @@ var plugin = Plugin.define({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
         type: "text",
-        time: { start: event?.created }
+        time: {
+          start: event?.created
+        }
       });
     });
     cleanups.push(unsubPart);
@@ -4899,7 +5443,9 @@ var plugin = Plugin.define({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
         type: "reasoning",
-        time: { start: event?.created }
+        time: {
+          start: event?.created
+        }
       });
     });
     cleanups.push(unsubReasoning);
@@ -4907,7 +5453,9 @@ var plugin = Plugin.define({
       perfTracker.handlePartEnded({
         message_id: event?.data?.assistantMessageID,
         type: "text",
-        time: { start: event?.created }
+        time: {
+          start: event?.created
+        }
       });
     });
     cleanups.push(unsubTextEnded);
@@ -4915,7 +5463,9 @@ var plugin = Plugin.define({
       perfTracker.handlePartEnded({
         message_id: event?.data?.assistantMessageID,
         type: "reasoning",
-        time: { start: event?.created }
+        time: {
+          start: event?.created
+        }
       });
     });
     cleanups.push(unsubReasoningEnded);
@@ -4966,10 +5516,16 @@ var plugin = Plugin.define({
                 input: tokens.input ?? 0,
                 output: tokens.output ?? 0,
                 reasoning: tokens.reasoning ?? 0,
-                cache: { read: tokens.cache?.read ?? 0, write: tokens.cache?.write ?? 0 }
+                cache: {
+                  read: tokens.cache?.read ?? 0,
+                  write: tokens.cache?.write ?? 0
+                }
               },
               cost: msg.cost ?? 0,
-              time: { created: msg.time.created, completed: msg.time.completed }
+              time: {
+                created: msg.time.created,
+                completed: msg.time.completed
+              }
             }
           }
         });
@@ -4982,9 +5538,7 @@ var plugin = Plugin.define({
       if (trackNew) {
         processNewCompletions(sessionID, messages);
       } else {
-        knownCompleted.set(sessionID, new Set(
-          messages.filter((message) => message?.type === "assistant" && message?.time?.completed).map((message) => message.id)
-        ));
+        knownCompleted.set(sessionID, new Set(messages.filter((message) => message?.type === "assistant" && message?.time?.completed).map((message) => message.id)));
       }
       if (currentFamily.includes(sessionID)) updateTokenMessages();
       setSidebarRevision((value) => value + 1);
@@ -4994,7 +5548,9 @@ var plugin = Plugin.define({
       const queue = [rootID];
       while (queue.length > 0 && visited.size < 200) {
         const sessionID = queue.shift();
-        await context.data.session.sync(sessionID, { children: true }).catch(() => {
+        await context.data.session.sync(sessionID, {
+          children: true
+        }).catch(() => {
         });
         for (const member of context.data.session.family(sessionID)) {
           if (member && !visited.has(member)) {
@@ -5027,7 +5583,9 @@ var plugin = Plugin.define({
     cleanups.push(unsubCreated);
     const disposeSlot = context.ui.slot({
       append: "sidebar.content",
-      render: ({ sessionID }) => {
+      render: ({
+        sessionID
+      }) => {
         sidebarRevision();
         if (sessionID && sessionID !== currentSessionID) {
           currentSessionID = sessionID;
@@ -5036,13 +5594,13 @@ var plugin = Plugin.define({
           setAllTokenMessages([]);
           void syncFamilyTree(sessionID);
         }
-        return <UsageStatPanel
-          context={context}
-          perfTracker={perfTracker}
-          sessionID={sessionID}
-          revision={sidebarRevision}
-          allTokenMessages={allTokenMessages}
-        />;
+        return _$createComponent3(UsageStatPanel, {
+          context,
+          perfTracker,
+          sessionID,
+          revision: sidebarRevision,
+          allTokenMessages
+        });
       }
     });
     cleanups.push(disposeSlot);

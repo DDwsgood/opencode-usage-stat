@@ -7,8 +7,8 @@
 // slash locally (keymap layer) and opens the built-in dashboard menus without
 // ever sending the slash to the LLM.
 
-import { Plugin } from "@opencode-ai/plugin"
-import type { Context } from "@opencode-ai/plugin/promise/plugin"
+import { define } from "@opencode-ai/plugin/promise/plugin"
+import type { Context, Plugin } from "@opencode-ai/plugin/promise/plugin"
 
 export async function setup(context: Context): Promise<void> {
   await context.command.transform((commands) => {
@@ -24,11 +24,11 @@ export async function setup(context: Context): Promise<void> {
   })
 }
 
-const plugin = Plugin.define({
+const plugin = define({
   id: "opencode-usage-stat",
   tui: true,
   setup,
-} as Plugin.Plugin & { readonly tui: true }) as Plugin.Plugin & { readonly tui: true }
+} as Plugin & { readonly tui: true }) as Plugin & { readonly tui: true }
 
 export default plugin
 

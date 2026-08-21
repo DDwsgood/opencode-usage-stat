@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js"
-import { Plugin } from "@opencode-ai/plugin/tui"
+import { define } from "@opencode-ai/plugin/tui/plugin"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { createPerfTracker } from "./perf-tracker.js"
 import type { PerfTracker } from "./perf-tracker.js"
@@ -37,7 +37,7 @@ function messageToTokenMessage(msg: any, sessionID: string): TokenMessage | null
   }
 }
 
-const plugin = Plugin.define({
+const plugin = define({
   id: "opencode-usage-stat",
   setup: async (context: Context) => {
     const perfTracker: PerfTracker = createPerfTracker()

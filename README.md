@@ -59,7 +59,7 @@ Single self-contained HTML files (ECharts, background, icons, styles embedded). 
 After the package is published, install and configure both entrypoints globally:
 
 ```bash
-opencode2 plugin add opencode-usage-stat@2.1.0
+opencode2 plugin add opencode-usage-stat@2.1.2
 ```
 
 Or clone and build from source:

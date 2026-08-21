@@ -10,7 +10,7 @@
  *
  * V2 API: Context from @opencode-ai/plugin/tui.
  */
-import { createSignal, createEffect, onCleanup, For, Show } from "solid-js"
+import { createSignal, onCleanup, For, Show } from "solid-js"
 import type { JSX } from "solid-js"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { RGBA } from "@opentui/core"
@@ -77,8 +77,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     }
   }
 
-  createEffect(() => {
-    if (enabledIds.length === 0) return
+  if (enabledIds.length > 0) {
     initialRefresh()
     const timers: ReturnType<typeof setInterval>[] = []
     for (const id of enabledIds) {
@@ -87,7 +86,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer)
     })
-  })
+  }
 
   function toggle(id: string): void {
     setStates(prev => prev.map(s => (s.id === id ? { ...s, collapsed: !s.collapsed } : s)))
@@ -172,14 +171,14 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                   </Show>
 
                   <Show when={state.result !== null && !state.result.ok}>
-                    <text fg={redColor()}>{state.result!.status}</text>
-                    <Show when={state.result !== null && !state.result.configured}>
+                    <text fg={redColor()}>{state.result?.status ?? ""}</text>
+                    <Show when={state.result !== null && !state.result?.configured}>
                       <text fg={dimColor()}>enable via plugin config: providerUsage.&lt;id&gt; = true</text>
                     </Show>
                   </Show>
 
                   <Show when={state.result !== null && state.result.ok && state.result.windows}>
-                    <For each={state.result!.windows}>
+                    <For each={state.result?.windows ?? []}>
                       {win => {
                         const label = win.label ? win.label + ": " : ""
                         if (win.percent != null) {

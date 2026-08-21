@@ -1,6 +1,6 @@
 {
   "name": "opencode-usage-stat",
-  "version": "2.1.0",
+  "version": "2.1.2",
   "description": "Opencode V2 plugin: real-time token/cache/performance stats, provider usage (OpenCode Go/DeepSeek/Codex), and polished HTML usage dashboards",
   "type": "module",
   "main": "./dist/server.js",
@@ -58,15 +58,15 @@
     "url": "https://github.com/DDwsgood/opencode-usage-stat/issues"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-beta-17498",
     "@opentui/core": "0.5.6",
-    "@opentui/keymap": "0.5.6",
     "@opentui/solid": "0.5.6",
     "solid-js": "^1.9.0"
   },
   "devDependencies": {
     "@opencode-ai/client": "0.0.0-beta-17498",
+    "@opencode-ai/plugin": "0.0.0-beta-17498",
     "@opencode-ai/theme": "0.0.0-beta-17498",
+    "@opentui/keymap": "0.5.6",
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.5.0",

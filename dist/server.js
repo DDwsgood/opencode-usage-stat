@@ -1,5 +1,9 @@
+// node_modules/@opencode-ai/plugin/dist/promise/plugin.js
+function define(plugin2) {
+  return plugin2;
+}
+
 // src/server.ts
-import { Plugin } from "@opencode-ai/plugin";
 async function setup(context) {
   await context.command.transform((commands) => {
     commands.update("usage", (command) => {
@@ -13,7 +17,7 @@ async function setup(context) {
     });
   });
 }
-var plugin = Plugin.define({
+var plugin = define({
   id: "opencode-usage-stat",
   tui: true,
   setup

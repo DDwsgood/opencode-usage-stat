@@ -86,7 +86,7 @@ function sqliteCredential(aliases: string[]): AuthEntry | null {
   const sql = `SELECT integration_id, value, time_updated FROM credential WHERE integration_id IN (${placeholders})`
   let database: any
   try {
-    const require = createRequire(import.meta.url)
+    const require = createRequire(join(homedir(), ".opencode", "usage-stat-require.cjs"))
     let rows: CredentialRow[]
     if (typeof (globalThis as any).Bun !== "undefined") {
       const { Database } = require("bun:sqlite")
