@@ -4,11 +4,23 @@ import {
   parseOpenCodeGoUsage,
   parseDeepSeekBalance,
   parseCodexUsage,
+  parseClaudeUsage,
+  parseKimiUsage,
+  parseZaiUsage,
+  parseZhipuaiUsage,
+  parseMiniMaxUsage,
+  parseOpenRouterCredits,
+  parseOllamaSettingsHtml,
+  buildCopilotWindows,
+  parseCursorUsage,
+  parseXaiUsage,
+  collapsedSummary,
   fetchOpenCodeGoUsage,
   fetchDeepSeekBalance,
   fetchCodexUsage,
   checkProviderUsage,
   resolveProviderUsageConfig,
+  USAGE_STAT_PROVIDER_IDS,
 } from "../src/provider-usage.js"
 
 // ── Pure parsers ──
@@ -178,7 +190,7 @@ test("fetchCodexUsage sends ChatGPT-Account-Id when account present", async () =
 // checkProviderUsage with injected fake credentials (offline, never touches real auth)
 
 function fakeCredential(value: string | null, accountId: string | null = null) {
-  return () => ({ value, accountId, source: "env" as const })
+  return () => ({ value, accountId, refresh: null, expires: null, source: "env" as const })
 }
 
 test("checkProviderUsage returns not-configured when no credential", async () => {
@@ -237,7 +249,7 @@ test("provider failure surfaces clear error without secrets", async () => {
 // ── Provider usage opt-in config (pure; no credentials involved) ──
 
 test("resolveProviderUsageConfig defaults all providers to disabled", () => {
-  const disabled = { "opencode-go": false, deepseek: false, codex: false }
+  const disabled = Object.fromEntries(USAGE_STAT_PROVIDER_IDS.map(id => [id, false]))
   assert.deepEqual(resolveProviderUsageConfig(undefined), disabled)
   assert.deepEqual(resolveProviderUsageConfig(null), disabled)
   assert.deepEqual(resolveProviderUsageConfig({}), disabled)
@@ -249,12 +261,222 @@ test("resolveProviderUsageConfig enables only explicitly true providers", () => 
   const config = resolveProviderUsageConfig({
     providerUsage: { "opencode-go": true, deepseek: "yes", codex: true },
   })
-  assert.deepEqual(config, { "opencode-go": true, deepseek: false, codex: true })
+  assert.equal(config["opencode-go"], true)
+  assert.equal(config.deepseek, false)
+  assert.equal(config.codex, true)
+  assert.equal(config.claude, false)
 })
 
 test("resolveProviderUsageConfig ignores false, 1, and unknown provider keys", () => {
   const config = resolveProviderUsageConfig({
     providerUsage: { "opencode-go": false, codex: 1, h4x: true },
   })
-  assert.deepEqual(config, { "opencode-go": false, deepseek: false, codex: false })
+  const all = resolveProviderUsageConfig({})
+  assert.equal(config["opencode-go"], false)
+  assert.equal(config.codex, false)
+  for (const id of USAGE_STAT_PROVIDER_IDS) {
+    assert.equal(typeof config[id], "boolean")
+    void all[id]
+  }
+})
+
+// ── Claude ──
+
+test("parseClaudeUsage extracts 5h/weekly windows and ignores monthly extras in collapsed summary", () => {
+  const windows = parseClaudeUsage({
+    limits: [
+      { kind: "session", percent: 37.4, resets_at: "2026-08-23T18:00:00Z" },
+      { kind: "weekly_all", percent: 12.5, resets_at: "2026-08-25T00:00:00Z" },
+    ],
+    spend: { enabled: true, percent: 3, used: { amount_minor: 150, exponent: 2, currency: "USD" } },
+  })
+  assert.equal(windows[0].label, "5h")
+  assert.equal(windows[0].percent, 37.4)
+  assert.equal(windows[1].label, "7d")
+  assert.equal(collapsedSummary(windows, "used"), "37%/13%")
+})
+
+test("parseClaudeUsage falls back to legacy five_hour/seven_day and adds scoped models after aggregates", () => {
+  const windows = parseClaudeUsage({
+    five_hour: { utilization: 10, resets_at: "2026-08-23T18:00:00Z" },
+    seven_day: { utilization: 20, resets_at: "2026-08-25T00:00:00Z" },
+    limits: [],
+  })
+  assert.deepEqual(windows.map(w => w.label), ["5h", "7d"])
+})
+
+// ── Kimi / z.ai / Zhipu / MiniMax ──
+
+test("parseKimiUsage derives weekly + rate-limit windows from used or remaining", () => {
+  const windows = parseKimiUsage({
+    usage: { limit: 1000, used: 250, resetTime: "2026-08-24T00:00:00Z" },
+    limits: [
+      { window: { duration: 5, timeUnit: "TIME_UNIT_HOUR" }, detail: { limit: 200, remaining: 50, resetTime: "2026-08-23T20:00:00Z" } },
+    ],
+  })
+  assert.equal(windows.find(w => w.label === "Weekly")?.percent, 25)
+  assert.equal(windows.find(w => w.label === "Rate Limit (5h)")?.percent, 75)
+})
+
+test("parseZaiUsage maps credit limits and MCP tools with plan label", () => {
+  const payload = {
+    data: {
+      level: "Pro",
+      limits: [
+        { type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 40.2, nextResetTime: 1756000000000, currentValue: 400, usage: 1000 },
+        { type: "TIME_LIMIT", percentage: 8, nextResetTime: 1758000000000 },
+      ],
+    },
+  }
+  const windows = parseZaiUsage(payload)
+  assert.equal(windows[0].label, "weekly")
+  assert.equal(windows[0].percent, 40.2)
+  assert.equal(windows[1].label, "MCP Tools")
+  assert.ok(windows[0].valueLabel?.includes("400"))
+})
+
+test("parseZhipuaiUsage maps Tokens + MCP Tools", () => {
+  const windows = parseZhipuaiUsage({
+    data: { limits: [
+      { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 55, nextResetTime: 1756000000000 },
+      { type: "TIME_LIMIT", percentage: 12, nextResetTime: 1758000000000 },
+    ] },
+  })
+  assert.deepEqual(windows.map(w => w.label), ["Tokens", "MCP Tools"])
+  assert.equal(windows[0].percent, 55)
+})
+
+test("parseMiniMaxUsage honors remaining-field semantics for the CN endpoint", () => {
+  const base = {
+    base_resp: { status_code: 0 },
+    model_remains: [{
+      current_interval_total_count: 100,
+      current_interval_usage_count: 30,
+      current_weekly_total_count: 700,
+      current_weekly_usage_count: 140,
+      end_time: 1756000000000,
+      weekly_end_time: 1758000000000,
+    }],
+  }
+  const used = parseMiniMaxUsage(base, false)
+  assert.equal(used.find(w => w.label === "5h")?.percent, 30)
+  assert.equal(used.find(w => w.label === "weekly")?.percent, 20)
+
+  const remaining = parseMiniMaxUsage(base, true)
+  assert.equal(remaining.find(w => w.label === "5h")?.percent, 70)
+  assert.equal(remaining.find(w => w.label === "weekly")?.percent, 80)
+})
+
+// ── OpenRouter / Ollama Cloud / Copilot / Cursor ──
+
+test("parseOpenRouterCredits formats remaining/spent label", () => {
+  const windows = parseOpenRouterCredits({ data: { total_credits: 50, total_usage: 12.5 } })
+  assert.equal(windows[0].valueLabel, "$37.50 left · $12.50 spent")
+  assert.deepEqual(parseOpenRouterCredits({ data: {} }), [])
+})
+
+test("parseOllamaSettingsHtml scrapes session/weekly/premium percentages", () => {
+  const html = `<div>Session usage 42%</div><div>Weekly usage 7%</div><div>Premium requests 12 / 100</div>`
+  const windows = parseOllamaSettingsHtml(html)
+  assert.deepEqual(windows.map(w => w.label), ["Session", "Weekly", "Premium"])
+  assert.equal(windows[0].percent, 42)
+  assert.equal(windows[2].valueLabel, "12 / 100")
+  assert.deepEqual(parseOllamaSettingsHtml("<p>nothing here</p>"), [])
+})
+
+test("buildCopilotWindows computes used percent from entitlement/remaining", () => {
+  const windows = buildCopilotWindows({
+    quota_reset_date: "2026-09-01T00:00:00Z",
+    quota_snapshots: {
+      chat: { entitlement: 300, remaining: 150 },
+      premium_interactions: { entitlement: 1000, remaining: 990 },
+    },
+  })
+  assert.deepEqual(windows.map(w => w.label), ["chat", "premium"])
+  assert.equal(windows[0].percent, 50)
+  assert.equal(windows[0].valueLabel, "150 / 300 left")
+})
+
+test("parseCursorUsage reads planUsage.totalPercentUsed", () => {
+  const windows = parseCursorUsage({
+    planUsage: { totalPercentUsed: 33 },
+    billingCycleEnd: "2026-09-15T00:00:00Z",
+  })
+  assert.equal(windows[0].label, "Billing Cycle")
+  assert.equal(windows[0].percent, 33)
+  assert.deepEqual(parseCursorUsage({}), [])
+})
+
+// ── xAI protobuf (synthetic minimal frame) ──
+
+function xaiFrame(fields: Array<{ path: number[]; kind: "float" | "varint"; value: number }>): Uint8Array {
+  // Build one flat message: floats use field 1 (wire type 5), varints field 2.
+  const chunks: number[] = []
+  for (const f of fields) {
+    if (f.kind === "float") {
+      chunks.push(0x0d) // field 1, wire 5
+      const buf = new ArrayBuffer(4)
+      new DataView(buf).setFloat32(0, f.value, true)
+      chunks.push(...new Uint8Array(buf))
+    } else {
+      chunks.push(0x10) // field 2, wire 0
+      let v = Math.floor(f.value)
+      do {
+        let byte = v & 0x7f
+        v >>>= 7
+        if (v > 0) byte |= 0x80
+        chunks.push(byte)
+      } while (v > 0)
+    }
+  }
+  return new Uint8Array(chunks)
+}
+
+test("parseXaiUsage extracts percent and reset from a gRPC-web framed response", () => {
+  const nowSec = Math.floor(Date.now() / 1000) + 3600
+  const inner = xaiFrame([
+    { path: [1], kind: "float", value: 66.5 },
+    { path: [], kind: "varint", value: nowSec },
+  ])
+  // Wrap inner as a nested message under field 1 of an outer message, then frame it.
+  const outer: number[] = [0x0a, inner.length, ...inner]
+  const len = outer.length
+  const framed = new Uint8Array(5 + len)
+  framed[0] = 0x00
+  framed[1] = (len >>> 24) & 0xff
+  framed[2] = (len >>> 16) & 0xff
+  framed[3] = (len >>> 8) & 0xff
+  framed[4] = len & 0xff
+  framed.set(outer, 5)
+  const parsed = parseXaiUsage(framed)
+  assert.equal(parsed.usedPercent, 66.5)
+  assert.ok(parsed.resetAt != null && parsed.resetAt > Date.now())
+})
+
+// ── Collapsed header summary ("n%/m%") ──
+
+test("collapsedSummary shows 5h/weekly pair and skips monthly/billing windows", () => {
+  const windows = [
+    { label: "5h", percent: 12, resetsAt: null, valueLabel: null },
+    { label: "7d", percent: 34.6, resetsAt: null, valueLabel: null },
+    { label: "Monthly", percent: 90, resetsAt: null, valueLabel: null },
+  ]
+  assert.equal(collapsedSummary(windows, "used"), "12%/35%")
+  assert.equal(collapsedSummary(windows, "remaining"), "88%/65%")
+})
+
+test("collapsedSummary falls back gracefully per provider shape", () => {
+  assert.equal(collapsedSummary([
+    { label: "Rolling", percent: 5, resetsAt: null, valueLabel: null },
+    { label: "Weekly", percent: 9, resetsAt: null, valueLabel: null },
+    { label: "Monthly", percent: 77, resetsAt: null, valueLabel: null },
+  ], "used"), "5%/9%")
+  assert.equal(collapsedSummary([{ label: "Balance", percent: null, resetsAt: null, valueLabel: "$5.00" }], "used"), "$5.00")
+  assert.equal(collapsedSummary([], "used"), null)
+  assert.equal(collapsedSummary(undefined, "used"), null)
+  // Session-only providers show a single percentage
+  assert.equal(collapsedSummary([
+    { label: "Tokens", percent: 44, resetsAt: null, valueLabel: null },
+    { label: "MCP Tools", percent: 3, resetsAt: null, valueLabel: null },
+  ], "used"), "44%")
 })

@@ -9,3 +9,6 @@ Thumbs.db
 reports/
 check-*.cjs
 dist-test/
+
+# runtime session temp file
+:memory:.ses

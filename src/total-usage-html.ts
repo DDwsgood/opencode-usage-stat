@@ -5,7 +5,7 @@
 import type { CombinedReportData, ModelBreakdownItem } from "./formatter.js"
 import { isMissingCache, cacheHitRate } from "./formatter.js"
 import {
-  fmtTokens, fmtCost, fmtPercent, escapeHtml,
+  fmtTokens, fmtCost, fmtPercent, escapeHtml, jsonForScript,
   HTML_HEAD_SHARED, BG_ANIMATION_HTML, BG_ANIMATION_CSS, BG_PARTICLE_JS, SHARED_CSS, SHARED_JS,
 } from "./html-common.js"
 import { modelIconImg, getModelIconDataUri } from "./model-icons.js"
@@ -57,7 +57,8 @@ function renderKpiCards(data: CombinedReportData): string {
   const dailyCount = data.daily.length
   const avgDailyTokens = dailyCount > 0 ? s.totalTokens / dailyCount : 0
   const avgDailyColor = avgDailyUsageColor(avgDailyTokens)
-  const costPerSession = data.sessions.length > 0 ? s.totalCost / data.sessions.length : 0
+  const totalSessions = data.totalSessions ?? data.sessions.length
+  const costPerSession = totalSessions > 0 ? s.totalCost / totalSessions : 0
 
   return `
     <div class="kpi-row cols-9" style="grid-template-columns:repeat(9,1fr)">
@@ -75,7 +76,7 @@ function renderKpiCards(data: CombinedReportData): string {
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Sessions</div>
-        <div class="kpi-value" data-countup="${data.sessions.length}">${data.sessions.length}</div>
+        <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Avg Daily Tokens</div>
@@ -145,17 +146,17 @@ function renderModelChartInit(data: CombinedReportData): string {
   // Build icon data URI map + ECharts rich-text config (one icon token per index)
   const iconUris = rev.map(m => getModelIconDataUri(m.model))
   const richEntries = iconUris.map((uri, i) =>
-    `i${i}:{backgroundColor:{image:${JSON.stringify(uri)}},width:14,height:14,align:'center',verticalAlign:'middle'}`
+    `i${i}:{backgroundColor:{image:${jsonForScript(uri)}},width:14,height:14,align:'center',verticalAlign:'middle'}`
   ).join(",")
 
-  return `var modelNames = ${JSON.stringify(names)};
-var modelInput = ${JSON.stringify(inputData)};
-var modelOutput = ${JSON.stringify(outputData)};
-var modelCache = ${JSON.stringify(cacheData)};
-var modelReasoning = ${JSON.stringify(reasoningData)};
-var modelCost = ${JSON.stringify(costData)};
-var modelApiCost = ${JSON.stringify(apiCostData)};
-var modelReq = ${JSON.stringify(requestData)};
+  return `var modelNames = ${jsonForScript(names)};
+var modelInput = ${jsonForScript(inputData)};
+var modelOutput = ${jsonForScript(outputData)};
+var modelCache = ${jsonForScript(cacheData)};
+var modelReasoning = ${jsonForScript(reasoningData)};
+var modelCost = ${jsonForScript(costData)};
+var modelApiCost = ${jsonForScript(apiCostData)};
+var modelReq = ${jsonForScript(requestData)};
 var modelView = 'tokens';
 var modelIconRich = {${richEntries}};
 
@@ -252,8 +253,8 @@ function renderProviderDonutInit(data: CombinedReportData): string {
   if (restCost > 0) items.push({ name: 'Other', value: restCost })
   const colors = ['#FFB800', '#00D1FF', '#00F593', '#B545FF', '#FF8C00', '#4FC3F7', '#FF6B6B', '#B478FF', '#555568']
 
-  return `var provDonutData = ${JSON.stringify(items)};
-var provDonutColors = ${JSON.stringify(colors)};
+  return `var provDonutData = ${jsonForScript(items)};
+var provDonutColors = ${jsonForScript(colors)};
 function initProviderDonut() {
   var el = document.getElementById('provider-donut');
   if (!el) return;
@@ -290,11 +291,11 @@ function renderApiCostSection(data: CombinedReportData): string {
       ? (m.estimated ? `<span style="color:var(--missing)">~${fmtCost(m.apiEquivCost)}</span>` : fmtCost(m.apiEquivCost))
       : '<span style="color:var(--text-faint)">N/A</span>'
     const estTag = m.estimated ? ` <span style="color:var(--missing);font-size:0.8em">(est.)</span>` : ''
-    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${m.pricingProvider}</span>` : '-'
+    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : '-'
     const totalTok = m.inputTokens + m.outputTokens + m.reasoningTokens + m.cacheRead + m.cacheWrite
     const costPer1M = totalTok > 0 && m.apiEquivCost != null ? `$${((m.apiEquivCost / totalTok) * 1000000).toFixed(4)}` : '-'
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td><td>${m.provider}</td><td>${pricingSrc}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
       <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
       <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td><td>${costPer1M}</td>
     </tr>`
@@ -337,7 +338,7 @@ function renderProviderCards(data: CombinedReportData): string {
     const sharePct = totalTokens > 0 ? (p.totalTokens / totalTokens * 100).toFixed(1) : '0'
     return `
     <div class="provider-card" style="border-color:${providerBorderColor(p.provider)}">
-      <div class="provider-name">${p.provider}</div>
+      <div class="provider-name">${escapeHtml(p.provider)}</div>
       <div class="provider-stat"><span class="stat-label">Tokens</span><span>${fmtTokens(p.totalTokens)} <span style="color:var(--text-faint)">(${sharePct}%)</span></span></div>
       <div class="provider-stat"><span class="stat-label">Cost</span><span>${fmtCost(p.totalCost)}</span></div>
       <div class="provider-stat"><span class="stat-label">Requests</span><span>${p.requests}</span></div>
@@ -368,8 +369,8 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
       : '-'
     const costPer1M = m.totalTokens > 0 && m.totalCost > 0 ? `$${((m.totalCost / m.totalTokens) * 1000000).toFixed(4)}` : '-'
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td>
-      <td>${m.provider}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
+      <td>${escapeHtml(m.provider)}</td>
       <td>${m.requests}</td>
       <td>${m.sessions}</td>
       <td>${fmtTokens(m.totalTokens)}</td>
@@ -399,7 +400,7 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
       .map(m => {
         const modelRate = m.total > 0 ? (m.failed / m.total * 100).toFixed(1) + '%' : '-'
         return `<tr>
-          <td>${m.provider}</td>
+          <td>${escapeHtml(m.provider)}</td>
           <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
           <td>${m.total}</td>
           <td style="color:var(--danger)">${m.failed}</td>
@@ -465,9 +466,9 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
 function renderSessionTable(data: CombinedReportData): string {
   const rows = data.sessions.map(s => {
     return `<tr>
-      <td>${s.day}</td>
-      <td>${s.provider}</td>
-      <td><div class="model-cell">${modelIconImg(s.model, 16)}<span class="model-name-text" title="${escapeHtml(s.model)}">${s.model}</span></div></td>
+      <td>${escapeHtml(s.day)}</td>
+      <td>${escapeHtml(s.provider)}</td>
+      <td><div class="model-cell">${modelIconImg(s.model, 16)}<span class="model-name-text" title="${escapeHtml(s.model)}">${escapeHtml(s.model)}</span></div></td>
       <td>${s.requests}</td>
       <td>${fmtTokens(s.totalTokens)}</td>
       <td>${fmtTokens(s.inputTokens)}</td>
@@ -514,12 +515,12 @@ function renderDailyTrendInit(data: CombinedReportData): string {
   const cumCosts = costs.map(c => { cumCost += c; return cumCost })
 
   return `
-var dailyDays = ${JSON.stringify(days)};
-var dailyTokens = ${JSON.stringify(tokens)};
-var dailyCosts = ${JSON.stringify(costs)};
-var dailyRequests = ${JSON.stringify(requests)};
-var dailyMA7 = ${JSON.stringify(ma7)};
-var dailyCumCost = ${JSON.stringify(cumCosts)};
+var dailyDays = ${jsonForScript(days)};
+var dailyTokens = ${jsonForScript(tokens)};
+var dailyCosts = ${jsonForScript(costs)};
+var dailyRequests = ${jsonForScript(requests)};
+var dailyMA7 = ${jsonForScript(ma7)};
+var dailyCumCost = ${jsonForScript(cumCosts)};
 
 function initDailyChart() {
   var el = document.getElementById('daily-chart');
@@ -565,7 +566,7 @@ function renderHeatmapInit(data: CombinedReportData): string {
   const maxDate = days.length > 0 ? days[days.length - 1].day : ''
 
   return `
-var heatData = ${JSON.stringify(heatData)};
+var heatData = ${jsonForScript(heatData)};
 function initHeatmapChart() {
   var el = document.getElementById('heatmap-chart');
   if (!el) return;
@@ -602,10 +603,10 @@ function renderHourlyHeatmapInit(data: CombinedReportData): string {
   for (let i = 0; i < 24; i++) hours.push(i)
 
   return `
-var hourlyData = ${JSON.stringify(heatData)};
+var hourlyData = ${jsonForScript(heatData)};
 var hourlyMax = ${maxVal};
-var hourLabels = ${JSON.stringify(hours)};
-var dowLabels = ${JSON.stringify(dowNames)};
+var hourLabels = ${jsonForScript(hours)};
+var dowLabels = ${jsonForScript(dowNames)};
 function initHourlyHeatmap() {
   var el = document.getElementById('hourly-heatmap');
   if (!el) return;
@@ -644,9 +645,9 @@ function renderCostTrendInit(data: CombinedReportData): string {
   const cumCosts = costs.map(c => { cumCost += c; return cumCost })
 
   return `
-var costDays = ${JSON.stringify(days)};
-var dailyCostArr = ${JSON.stringify(costs)};
-var cumCostArr = ${JSON.stringify(cumCosts)};
+var costDays = ${jsonForScript(days)};
+var dailyCostArr = ${jsonForScript(costs)};
+var cumCostArr = ${jsonForScript(cumCosts)};
 function initCostTrend() {
   var el = document.getElementById('cost-trend-chart');
   if (!el) return;
@@ -691,7 +692,7 @@ export function generateTotalUsageHtml(data: CombinedReportData): string {
   const heatmapJs = renderHeatmapInit(data)
   const hourlyHeatmapJs = (data.hourlyHeatmap ?? []).length > 0 ? renderHourlyHeatmapInit(data) : ""
   const costTrendJs = data.daily.length > 0 ? renderCostTrendInit(data) : ""
-  const jsonData = JSON.stringify(data)
+  const jsonData = jsonForScript(data)
 
   return `<!DOCTYPE html>
 <html lang="en">

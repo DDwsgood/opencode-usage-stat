@@ -3,6 +3,8 @@ import type { DailyBreakdownItem, ErrorStats, HourlyHeatmapItem, MessageRow, Mod
 /** Bind the TUI plugin's V2 client. Must be called before any query. */
 export declare function setV2Client(c: OpenCodeClient): void;
 export declare function getV2Client(): OpenCodeClient | null;
+/** Invalidate the snapshot (called when the client is rebound or data changes materially). */
+export declare function clearQueryCache(): void;
 export declare function getSummary(filters?: UsageFilters): Promise<SessionTokenData>;
 export declare function getModelBreakdown(filters?: UsageFilters): Promise<ModelBreakdownItem[]>;
 export declare function getProviderBreakdown(filters?: UsageFilters): Promise<ProviderBreakdownItem[]>;
@@ -21,3 +23,8 @@ export declare function getUsageReport(filters?: UsageFilters): Promise<UsageRep
 /** Available model IDs across all sessions (used by filters / exports). */
 export declare function getAvailableModels(): Promise<string[]>;
 export declare function getAvailableProviders(): Promise<string[]>;
+/**
+ * Real session count for the given filters (untruncated). Report KPIs must use
+ * this instead of the session table array, which is capped by `limit`.
+ */
+export declare function getSessionCount(filters?: UsageFilters): Promise<number>;

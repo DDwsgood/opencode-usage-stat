@@ -100,6 +100,8 @@ export interface UsageReport {
   providers: ProviderBreakdownItem[]
   daily: DailyBreakdownItem[]
   sessions: SessionBreakdownItem[]
+  /** Untruncated session count matching the filters (sessions[] is capped by limit). */
+  totalSessions?: number
   errors?: ErrorStats
 }
 
@@ -135,6 +137,8 @@ export interface CombinedReportData {
   providers: ProviderBreakdownItem[]
   daily: DailyBreakdownItem[]
   sessions: SessionBreakdownItem[]
+  /** Untruncated session count matching the filters. */
+  totalSessions?: number
   meta: HtmlReportMeta
   apiCost?: ApiCostAnalysis
   errors?: ErrorStats
@@ -189,6 +193,35 @@ export function formatDuration(ms: number | null): string {
   return `${m}m ${s}s`
 }
 
+/**
+ * Relative time until an ISO reset timestamp ("now"/"5m"/"3h"/"2d").
+ * Single shared implementation (previously duplicated with diverging behavior
+ * in provider-usage.ts and provider-usage-blocks.tsx).
+ */
+export function formatResetDuration(iso: string): string {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return iso
+  const diff = d.getTime() - Date.now()
+  if (diff <= 0) return "now"
+  const mins = Math.round(diff / 60000)
+  if (mins < 1) return "now"
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
+/** Linear-interpolation percentile over a sorted-ascending array. */
+export function percentileSorted(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return 0
+  if (sortedAsc.length === 1) return sortedAsc[0]
+  const idx = Math.min(Math.max(p, 0), 1) * (sortedAsc.length - 1)
+  const lo = Math.floor(idx)
+  const hi = Math.ceil(idx)
+  if (lo === hi) return sortedAsc[lo]
+  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo)
+}
+
 export function cacheHitRate(input: number, cacheRead: number): number {
   if (input + cacheRead === 0) return 0
   return cacheRead / (input + cacheRead)
@@ -212,6 +245,24 @@ export function getPresetRange(preset: "all" | "7d" | "30d" | "month"): Pick<Usa
   }
 
   return { startDate: format(start), endDate: format(end) }
+}
+
+function formatDateOnly(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/**
+ * Parse `/total-usage [days]` raw slash input into a date-range filter.
+ * Accepts an integer 1..3650; anything else falls back to the all-time range.
+ */
+export function parseDaysFilter(input: string | undefined): Pick<UsageFilters, "startDate" | "endDate"> {
+  const days = Math.floor(Number((input ?? "").trim().split(/\s+/)[0] ?? ""))
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return getPresetRange("all")
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(end.getDate() - (days - 1))
+  return { startDate: formatDateOnly(start), endDate: formatDateOnly(end) }
 }
 
 export function formatFilters(filters: UsageFilters): string {

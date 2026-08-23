@@ -6,7 +6,7 @@ import type { ModelBreakdownItem, MessageRow, SessionTokenData, ApiCostAnalysis,
 import { isMissingCache, cacheHitRate } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
 import {
-  fmtTokens, fmtCost, fmtPercent, fmtTime, fmtDateTime, fmtDuration, escapeHtml, nowString, percentile,
+  fmtTokens, fmtCost, fmtPercent, fmtTime, fmtDateTime, fmtDuration, escapeHtml, nowString, percentile, jsonForScript,
   HTML_HEAD_SHARED, BG_ANIMATION_HTML, BG_ANIMATION_CSS, BG_PARTICLE_JS, SHARED_CSS, SHARED_JS,
 } from "./html-common.js"
 import { modelIconImg } from "./model-icons.js"
@@ -140,8 +140,8 @@ function renderModelCards(data: SessionReportData): string {
     return `
     <div class="model-card">
       <div class="model-card-header">
-        <span class="model-name">${modelIconImg(m.model, 18)}${m.model}</span>
-        <span class="model-provider">${m.provider}</span>
+        <span class="model-name">${modelIconImg(m.model, 18)}${escapeHtml(m.model)}</span>
+        <span class="model-provider">${escapeHtml(m.provider)}</span>
       </div>
       <div class="model-card-stats">
         <div class="stat-grid">
@@ -240,13 +240,13 @@ function renderTrendChartInit(data: SessionReportData): string {
   })
 
   return `
-var trendLabels = ${JSON.stringify(labels)};
-var trendInput = ${JSON.stringify(inputTokens)};
-var trendOutput = ${JSON.stringify(outputTokens)};
-var trendCache = ${JSON.stringify(cacheReadTokens)};
-var trendTotal = ${JSON.stringify(totalTokens)};
-var trendCost = ${JSON.stringify(costs)};
-var trendMA5 = ${JSON.stringify(ma5)};
+var trendLabels = ${jsonForScript(labels)};
+var trendInput = ${jsonForScript(inputTokens)};
+var trendOutput = ${jsonForScript(outputTokens)};
+var trendCache = ${jsonForScript(cacheReadTokens)};
+var trendTotal = ${jsonForScript(totalTokens)};
+var trendCost = ${jsonForScript(costs)};
+var trendMA5 = ${jsonForScript(ma5)};
 
 function initTrendChart() {
   var el = document.getElementById('trend-chart');
@@ -294,8 +294,8 @@ function renderDurationChartInit(data: SessionReportData): string {
   const p90 = data.p90Duration / 1000
 
   return `
-var durLabels = ${JSON.stringify(labels)};
-var durData = ${JSON.stringify(durations)};
+var durLabels = ${jsonForScript(labels)};
+var durData = ${jsonForScript(durations)};
 var durP50 = ${p50.toFixed(2)};
 var durP90 = ${p90.toFixed(2)};
 
@@ -338,8 +338,8 @@ function renderCacheTrendInit(data: SessionReportData): string {
   })
 
   return `
-var cacheLabels = ${JSON.stringify(labels)};
-var cacheHitData = ${JSON.stringify(hitRates)};
+var cacheLabels = ${jsonForScript(labels)};
+var cacheHitData = ${jsonForScript(hitRates)};
 
 function initCacheTrendChart() {
   var el = document.getElementById('cache-trend-chart');
@@ -390,9 +390,9 @@ function renderApiCostSection(data: SessionReportData): string {
       ? (m.estimated ? `<span style="color:var(--missing)">~${fmtCost(m.apiEquivCost)}</span>` : fmtCost(m.apiEquivCost))
       : '<span style="color:var(--text-faint)">N/A</span>'
     const estTag = m.estimated ? ` <span style="color:var(--missing);font-size:0.8em">(est.)</span>` : ''
-    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${m.pricingProvider}</span>` : '-'
+    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : '-'
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td><td>${m.provider}</td><td>${pricingSrc}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
       <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
       <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`
@@ -438,7 +438,7 @@ function renderInsights(data: SessionReportData): string {
       insights.push({
         icon: '$', bg: 'rgba(255,184,0,0.15)',
         title: 'Most expensive request',
-        value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${mostExpensive.model})`,
+        value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${escapeHtml(mostExpensive.model)})`,
       })
     }
   }
@@ -453,7 +453,7 @@ function renderInsights(data: SessionReportData): string {
   }
 
   // Best cache streak
-  let bestStreak = 0, streakStart = 0, bestStart = 0
+  let bestStreak = 0, streakStart = -1, bestStart = 0
   for (let i = 0; i < data.messages.length; i++) {
     const m = data.messages[i]
     if (!isMissingCache(1, m.cacheRead) && cacheHitRate(m.inputTokens, m.cacheRead) >= 0.85) {
@@ -482,7 +482,7 @@ function renderInsights(data: SessionReportData): string {
       insights.push({
         icon: '\u23F1', bg: 'rgba(255,71,87,0.15)',
         title: 'Slowest response',
-        value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${slowest.model})`,
+        value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${escapeHtml(slowest.model)})`,
       })
     }
   }

@@ -2,7 +2,8 @@
 
 // src/tui.tsx
 import { createComponent as _$createComponent3 } from "@opentui/solid";
-import { createSignal as createSignal3 } from "solid-js";
+import { memo as _$memo3 } from "@opentui/solid";
+import { createSignal as createSignal3, createEffect as createEffect2 } from "solid-js";
 
 // node_modules/@opencode-ai/plugin/dist/tui/plugin.js
 function define(plugin2) {
@@ -32,6 +33,27 @@ function formatDuration(ms) {
   const s = Math.floor(ms % 6e4 / 1e3);
   return `${m}m ${s}s`;
 }
+function formatResetDuration(iso) {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return iso;
+  const diff = d.getTime() - Date.now();
+  if (diff <= 0) return "now";
+  const mins = Math.round(diff / 6e4);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+function percentileSorted(sortedAsc, p) {
+  if (sortedAsc.length === 0) return 0;
+  if (sortedAsc.length === 1) return sortedAsc[0];
+  const idx = Math.min(Math.max(p, 0), 1) * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedAsc[lo];
+  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo);
+}
 function cacheHitRate(input, cacheRead) {
   if (input + cacheRead === 0) return 0;
   return cacheRead / (input + cacheRead);
@@ -50,6 +72,18 @@ function getPresetRange(preset) {
     return `${year}-${month}-${day}`;
   };
   return { startDate: format(start), endDate: format(end) };
+}
+function formatDateOnly(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+function parseDaysFilter(input) {
+  const days = Math.floor(Number((input ?? "").trim().split(/\s+/)[0] ?? ""));
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return getPresetRange("all");
+  const end = /* @__PURE__ */ new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - (days - 1));
+  return { startDate: formatDateOnly(start), endDate: formatDateOnly(end) };
 }
 
 // src/perf-tracker.ts
@@ -642,7 +676,7 @@ var zh = {
   cache: "\u7F13\u5B58",
   lat: "\u5EF6\u8FDF",
   performance: "\u6027\u80FD",
-  pricing: "Pricing",
+  pricing: "\u5B9A\u4EF7",
   modelLabel: "\u6A21\u578B",
   provider: "\u63D0\u4F9B\u5546",
   ttft: "TTFT",
@@ -653,7 +687,7 @@ var zh = {
   min: "\u6700\u5C0F",
   read: "\u8BFB",
   write: "\u5199",
-  sessionAccumulated: "Session\u7D2F\u8BA1",
+  sessionAccumulated: "\u4F1A\u8BDD\u7D2F\u8BA1",
   saving: "\u8282\u7701",
   priceInput: "\u8F93\u5165",
   priceCacheRead: "\u7F13\u5B58\u8BFB",
@@ -698,6 +732,12 @@ var zh = {
   providerRefreshing: "\u5237\u65B0\u4E2D\u2026",
   providerError: "\u4E0D\u53EF\u7528",
   providerResets: "\u91CD\u7F6E",
+  providerEnableHint: "\u901A\u8FC7\u63D2\u4EF6\u914D\u7F6E\u542F\u7528\uFF1AproviderUsage.<id> = true",
+  displayUsed: "\u5DF2\u7528",
+  displayRemaining: "\u5269\u4F59",
+  left: "\u5269\u4F59",
+  settingsDisplayMode: "Provider \u7528\u91CF\u663E\u793A\u6A21\u5F0F",
+  descSettingsDisplay: "\u5207\u6362 Provider \u914D\u989D\u6309\u201C\u5DF2\u7528\u201D\u6216\u201C\u5269\u4F59\u201D\u767E\u5206\u6BD4\u663E\u793A",
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
   codex: "Codex"
@@ -778,6 +818,12 @@ var en = {
   providerRefreshing: "Refreshing\u2026",
   providerError: "Unavailable",
   providerResets: "Resets",
+  providerEnableHint: "enable via plugin config: providerUsage.<id> = true",
+  displayUsed: "used",
+  displayRemaining: "remaining",
+  left: "left",
+  settingsDisplayMode: "Provider Usage Display Mode",
+  descSettingsDisplay: "Show provider quota percentages as used or remaining",
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
   codex: "Codex"
@@ -826,6 +872,11 @@ function getDataHome() {
   if (xdg && xdg.trim()) return xdg.trim();
   return join3(homedir3(), ".local", "share");
 }
+function getConfigHome() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg && xdg.trim()) return xdg.trim();
+  return join3(homedir3(), ".config");
+}
 function credentialDatabasePath() {
   const configured = process.env.OPENCODE_DB?.trim();
   if (configured && isAbsolute(configured)) return configured;
@@ -839,16 +890,82 @@ function parseCredentialValue(raw) {
     const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : null;
     const text = (candidate) => typeof candidate === "string" && candidate.trim() ? candidate : void 0;
     const accountId = text(entry.accountId) ?? text(entry.accountID) ?? text(entry.account_id) ?? text(entry["account-id"]) ?? text(metadata?.accountId) ?? text(metadata?.accountID) ?? text(metadata?.account_id) ?? (entry.account && typeof entry.account === "object" ? text(entry.account.id) ?? text(entry.account.accountId) ?? text(entry.account.account_id) : void 0);
+    const expiresRaw = entry.expires;
+    let expires;
+    if (typeof expiresRaw === "number" && Number.isFinite(expiresRaw)) {
+      expires = expiresRaw;
+    } else if (typeof expiresRaw === "string" && expiresRaw.trim() !== "" && Number.isFinite(Number(expiresRaw))) {
+      expires = Number(expiresRaw);
+    }
+    if (expires != null && expires > 0 && expires < 1e12) {
+      expires *= 1e3;
+    }
     return {
       type: text(entry.type),
       key: text(entry.key),
       token: text(entry.token),
       access: text(entry.access),
+      refresh: text(entry.refresh),
+      expires,
       accountId: accountId ?? null
     };
   } catch {
     return null;
   }
+}
+function authJsonPath() {
+  return join3(getDataHome(), "opencode", "auth.json");
+}
+function readAuthJson() {
+  try {
+    const file = authJsonPath();
+    if (!existsSync3(file)) return {};
+    const content = readFileSync3(file, "utf8").trim();
+    if (!content) return {};
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+function normalizeAuthEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") return parseCredentialValue(JSON.stringify({ token: entry }));
+  if (typeof entry === "object") {
+    if (entry.oauth && typeof entry.oauth === "object") {
+      return parseCredentialValue(entry.oauth);
+    }
+    return parseCredentialValue(entry);
+  }
+  return null;
+}
+function authJsonEntry(aliases) {
+  if (aliases.length === 0) return null;
+  const auth = readAuthJson();
+  for (const alias of aliases) {
+    const raw = auth[alias];
+    const entry = raw ? normalizeAuthEntry(raw) : null;
+    if (entry && isNonEmpty(entry.key ?? entry.token ?? entry.access ?? entry.refresh)) return entry;
+  }
+  return null;
+}
+function readSecureProviderJson(providerId) {
+  const candidates = [
+    join3(getConfigHome(), "openchamber", "quota", `${providerId}.json`),
+    join3(getConfigHome(), "opencode", "usage-stat", `${providerId}.json`)
+  ];
+  for (const file of candidates) {
+    try {
+      if (!existsSync3(file)) continue;
+      const content = readFileSync3(file, "utf8").trim();
+      if (!content) continue;
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+    }
+  }
+  return null;
 }
 function sqliteCredential(aliases) {
   if (aliases.length === 0) return null;
@@ -959,26 +1076,48 @@ function resolveCredential(opts) {
   if (entry) {
     const value = entry.key ?? entry.token ?? entry.access ?? null;
     if (isNonEmpty(value)) {
-      return { value, accountId: isNonEmpty(entry.accountId) ? entry.accountId : null, source: "sqlite" };
+      return {
+        value,
+        accountId: isNonEmpty(entry.accountId) ? entry.accountId : null,
+        refresh: isNonEmpty(entry.refresh) ? entry.refresh : null,
+        expires: typeof entry.expires === "number" ? entry.expires : null,
+        source: "sqlite"
+      };
+    }
+  }
+  const authEntry = authJsonEntry(opts.aliases);
+  if (authEntry) {
+    const value = authEntry.key ?? authEntry.token ?? authEntry.access ?? null;
+    if (isNonEmpty(value)) {
+      return {
+        value,
+        accountId: isNonEmpty(authEntry.accountId) ? authEntry.accountId : null,
+        refresh: isNonEmpty(authEntry.refresh) ? authEntry.refresh : null,
+        expires: typeof authEntry.expires === "number" ? authEntry.expires : null,
+        source: "auth"
+      };
     }
   }
   for (const key of opts.envKeys) {
     const v = process.env[key];
     if (isNonEmpty(v)) {
-      return { value: v, accountId: null, source: "env" };
+      return { value: v, accountId: null, refresh: null, expires: null, source: "env" };
     }
   }
   const dot = loadDotEnv();
   for (const key of opts.envKeys) {
     const v = dot[key];
     if (isNonEmpty(v)) {
-      return { value: v, accountId: null, source: "dotenv" };
+      return { value: v, accountId: null, refresh: null, expires: null, source: "dotenv" };
     }
   }
-  return { value: null, accountId: null, source: null };
+  return { value: null, accountId: null, refresh: null, expires: null, source: null };
 }
 
 // src/provider-usage.ts
+import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
+import { join as join4 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 var PROVIDER_TIMEOUT_MS = 15e3;
 function fetchWithTimeout(url, init, fetchImpl, timeoutMs = PROVIDER_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -995,16 +1134,88 @@ function parseError(body) {
   }
   return null;
 }
+async function errorFrom(response, label, authMessage) {
+  if ((response.status === 401 || response.status === 403) && authMessage) return new Error(authMessage);
+  const body = await response.text().catch(() => "");
+  const parsed = parseError(body);
+  return new Error(parsed ?? `${label} API error: ${response.status}`);
+}
 function fmtNum(n) {
   if (!Number.isFinite(n)) return "0";
   return String(n);
+}
+function clampPct(n) {
+  return Math.min(100, Math.max(0, n));
+}
+function pct(used, total) {
+  const u = toNumber(used);
+  const t2 = toNumber(total);
+  if (u == null || t2 == null || t2 <= 0) return null;
+  return clampPct(u / t2 * 100);
+}
+function fmtMoney(value) {
+  if (value === null || !Number.isFinite(value)) return null;
+  return value.toFixed(2);
+}
+function toNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+function asObject(value) {
+  return value && typeof value === "object" ? value : null;
+}
+function nonEmptyString(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+function toResetTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const milliseconds = value < 1e10 ? value * 1e3 : value;
+    return new Date(milliseconds).toISOString();
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return toResetTimestamp(numeric);
+    const milliseconds = Date.parse(value);
+    if (Number.isFinite(milliseconds)) return new Date(milliseconds).toISOString();
+  }
+  return null;
+}
+function windowLabelFromSeconds(seconds) {
+  if (seconds == null) return "Window";
+  const hours = seconds / 3600;
+  if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d`;
+  if (hours >= 1) return `${hours}h`;
+  return `${seconds}s`;
+}
+function windowLabel(duration, unit) {
+  const d = toNumber(duration);
+  if (d == null) return "limit";
+  if (unit === "TIME_UNIT_MINUTE") return `${d}m`;
+  if (unit === "TIME_UNIT_HOUR") return `${d}h`;
+  if (unit === "TIME_UNIT_DAY") return `${d}d`;
+  return "limit";
+}
+function windowSeconds(duration, unit) {
+  const d = toNumber(duration);
+  if (d == null) return null;
+  if (unit === "TIME_UNIT_MINUTE") return d * 60;
+  if (unit === "TIME_UNIT_HOUR") return d * 3600;
+  if (unit === "TIME_UNIT_DAY") return d * 86400;
+  return null;
+}
+function percentWindow(label, percent, resetMs, valueLabel = null) {
+  const pctValue = toNumber(percent);
+  return { label, percent: pctValue != null ? clampPct(pctValue) : null, resetsAt: toResetTimestamp(resetMs), valueLabel };
 }
 var OPENCODE_GO_ALIASES = ["opencode-go", "opencode", "zen"];
 var OPENCODE_GO_ENV_KEYS = ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"];
 var OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/usage";
 function parseOpenCodeGoUsage(payload) {
-  const usage = (payload && typeof payload === "object" ? payload.usage : null) ?? null;
-  if (!usage || typeof usage !== "object") return [];
+  const usage = asObject(asObject(payload)?.usage);
+  if (!usage) return [];
   const out = [];
   const order = [
     ["rolling", "Rolling"],
@@ -1012,15 +1223,15 @@ function parseOpenCodeGoUsage(payload) {
     ["monthly", "Monthly"]
   ];
   for (const [key, label] of order) {
-    const entry = usage[key];
-    if (!entry || typeof entry !== "object") continue;
+    const entry = asObject(usage[key]);
+    if (!entry) continue;
     const percent = entry.percent;
     if (typeof percent !== "number" || !Number.isFinite(percent)) continue;
     const resetsAt = typeof entry.resetsAt === "string" ? entry.resetsAt : null;
     if (resetsAt != null && !Number.isFinite(new Date(resetsAt).getTime())) continue;
     out.push({
       label,
-      percent: Math.min(100, Math.max(0, percent)),
+      percent: clampPct(percent),
       resetsAt,
       valueLabel: `${percent.toFixed(1)}% used`
     });
@@ -1054,8 +1265,7 @@ var DEEPSEEK_ALIASES = ["deepseek"];
 var DEEPSEEK_ENV_KEYS = ["DEEPSEEK_API_KEY"];
 var DEEPSEEK_URL = "https://api.deepseek.com/user/balance";
 function parseDeepSeekBalance(payload) {
-  const data = payload && typeof payload === "object" ? payload : null;
-  const infos = Array.isArray(data?.balance_infos) ? data.balance_infos : [];
+  const infos = Array.isArray(asObject(payload)?.balance_infos) ? payload.balance_infos : [];
   const pick = infos.find((i) => i?.currency === "USD") ?? infos.find((i) => i?.currency === "CNY") ?? null;
   if (!pick) return [];
   const raw = pick.total_balance;
@@ -1084,12 +1294,7 @@ async function fetchDeepSeekBalance(apiKey, fetchImpl = fetch) {
     fetchImpl
   );
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const parsed = parseError(body);
-    if (response.status === 401 || response.status === 403) {
-      throw new Error("DeepSeek session expired \u2014 re-authenticate");
-    }
-    throw new Error(parsed ?? `DeepSeek API error: ${response.status}`);
+    throw await errorFrom(response, "DeepSeek", "DeepSeek session expired \u2014 re-authenticate");
   }
   const windows = parseDeepSeekBalance(await response.json().catch(() => null));
   if (windows.length === 0) throw new Error("DeepSeek balance data could not be parsed");
@@ -1098,56 +1303,31 @@ async function fetchDeepSeekBalance(apiKey, fetchImpl = fetch) {
 var CODEX_ALIASES = ["openai", "codex", "chatgpt"];
 var CODEX_ENV_KEYS = [];
 var CODEX_URL = "https://chatgpt.com/backend-api/wham/usage";
-function toNumber(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
-  return null;
-}
-function windowLabelFromSeconds(seconds) {
-  if (seconds == null) return "Window";
-  const hours = seconds / 3600;
-  if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d`;
-  if (hours >= 1) return `${hours}h`;
-  return `${seconds}s`;
-}
-function toResetTimestamp(value) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds = value < 1e10 ? value * 1e3 : value;
-    return new Date(milliseconds).toISOString();
-  }
-  if (typeof value === "string" && value.trim()) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return toResetTimestamp(numeric);
-    const milliseconds = Date.parse(value);
-    if (Number.isFinite(milliseconds)) return new Date(milliseconds).toISOString();
-  }
-  return null;
-}
 function parseCodexUsage(payload) {
-  const data = payload && typeof payload === "object" ? payload : null;
+  const data = asObject(payload);
   if (!data) return [];
   const out = [];
   const primary = data.rate_limit?.primary_window;
   if (primary) {
     const percent = toNumber(primary.used_percent);
     const seconds = toNumber(primary.limit_window_seconds);
-    out.push({
-      label: windowLabelFromSeconds(seconds),
-      percent: percent != null ? Math.min(100, Math.max(0, percent)) : null,
-      resetsAt: toResetTimestamp(primary.reset_at),
-      valueLabel: percent != null ? `${percent.toFixed(1)}% used` : null
-    });
+    out.push(percentWindow(
+      windowLabelFromSeconds(seconds),
+      percent,
+      primary.reset_at,
+      percent != null ? `${percent.toFixed(1)}% used` : null
+    ));
   }
   const secondary = data.rate_limit?.secondary_window;
   if (secondary) {
     const percent = toNumber(secondary.used_percent);
     const seconds = toNumber(secondary.limit_window_seconds);
-    out.push({
-      label: windowLabelFromSeconds(seconds),
-      percent: percent != null ? Math.min(100, Math.max(0, percent)) : null,
-      resetsAt: toResetTimestamp(secondary.reset_at),
-      valueLabel: percent != null ? `${percent.toFixed(1)}% used` : null
-    });
+    out.push(percentWindow(
+      windowLabelFromSeconds(seconds),
+      percent,
+      secondary.reset_at,
+      percent != null ? `${percent.toFixed(1)}% used` : null
+    ));
   }
   if (data.credits) {
     const balance = toNumber(data.credits.balance);
@@ -1163,13 +1343,12 @@ function parseCodexUsage(payload) {
     const sl = data.spend_control.individual_limit;
     const used = toNumber(sl.used);
     const limit = toNumber(sl.limit);
-    const percent = toNumber(sl.used_percent);
-    out.push({
-      label: "Spend Limit",
-      percent: percent != null ? Math.min(100, Math.max(0, percent)) : null,
-      resetsAt: null,
-      valueLabel: used != null && limit != null ? `${fmtNum(used)} / ${fmtNum(limit)} used` : null
-    });
+    out.push(percentWindow(
+      "Spend Limit",
+      sl.used_percent,
+      null,
+      used != null && limit != null ? `${fmtNum(used)} / ${fmtNum(limit)} used` : null
+    ));
   }
   return out;
 }
@@ -1181,47 +1360,910 @@ async function fetchCodexUsage(accessToken, accountId, fetchImpl = fetch) {
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
   const response = await fetchWithTimeout(CODEX_URL, { method: "GET", headers }, fetchImpl);
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const parsed = parseError(body);
-    if (response.status === 401) {
-      throw new Error("Codex session expired \u2014 re-authenticate with OpenAI");
-    }
-    throw new Error(parsed ?? `Codex API error: ${response.status}`);
+    throw await errorFrom(response, "Codex", "Codex session expired \u2014 re-authenticate with OpenAI");
   }
   const windows = parseCodexUsage(await response.json().catch(() => null));
   if (windows.length === 0) throw new Error("Codex usage data could not be parsed");
   return windows;
 }
+var CLAUDE_ALIASES = ["anthropic", "claude"];
+var CLAUDE_ENV_KEYS = [];
+var CLAUDE_URL = "https://api.anthropic.com/api/oauth/usage";
+function parseClaudeUsage(payload) {
+  const data = asObject(payload);
+  if (!data) return [];
+  const out = [];
+  const limits = Array.isArray(data.limits) ? data.limits : [];
+  for (const limit of limits) {
+    const item = asObject(limit);
+    if (!item) continue;
+    const percent = toNumber(item.percent);
+    const resetAt = item.resets_at;
+    if (item.kind === "session") {
+      out.push(percentWindow("5h", percent, resetAt));
+    } else if (item.kind === "weekly_all") {
+      out.push(percentWindow("7d", percent, resetAt));
+    } else if (item.kind === "weekly_scoped") {
+      const scopeModel = asObject(asObject(item.scope)?.model);
+      const model = nonEmptyString(scopeModel?.display_name ?? item.scope);
+      if (model) out.push(percentWindow(`7d \xB7 ${model}`, percent, resetAt));
+    }
+  }
+  if (!limits.length) {
+    const fiveHour = asObject(data.five_hour);
+    const sevenDay = asObject(data.seven_day);
+    if (fiveHour) out.push(percentWindow("5h", fiveHour.utilization, fiveHour.resets_at));
+    if (sevenDay) out.push(percentWindow("7d", sevenDay.utilization, sevenDay.resets_at));
+  }
+  const spend = asObject(data.spend);
+  if (spend?.enabled === true) {
+    const usedMoney = asObject(spend.used);
+    const limitMoney = asObject(spend.limit);
+    const usedMinor = toNumber(usedMoney?.amount_minor);
+    const limitMinor = toNumber(limitMoney?.amount_minor);
+    const exponent = toNumber(usedMoney?.exponent) ?? 2;
+    const currency = nonEmptyString(usedMoney?.currency);
+    const prefix = currency === "USD" || !currency ? "$" : `${currency} `;
+    const used = usedMinor === null ? null : usedMinor / 10 ** exponent;
+    const limit = limitMinor === null ? null : limitMinor / 10 ** (toNumber(limitMoney?.exponent) ?? 2);
+    out.push(percentWindow(
+      "Extra Usage",
+      spend.percent,
+      null,
+      used === null ? null : `${prefix}${fmtMoney(used)}${limit === null ? "" : ` / ${prefix}${fmtMoney(limit)}`}`
+    ));
+  }
+  return out.filter((w, i) => out.findIndex((o) => o.label === w.label) === i);
+}
+async function fetchClaudeUsage(accessToken, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(CLAUDE_URL, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      Accept: "application/json"
+    }
+  }, fetchImpl);
+  if (response.status === 429) throw new Error("Claude rate limited \u2014 retrying later");
+  if (!response.ok) {
+    throw await errorFrom(response, "Anthropic", "Claude session expired \u2014 re-authenticate with Claude Code");
+  }
+  const windows = parseClaudeUsage(await response.json().catch(() => null));
+  if (windows.length === 0) throw new Error("Claude usage data could not be parsed");
+  return windows;
+}
+var KIMI_ALIASES = ["kimi-for-coding", "kimi"];
+var KIMI_ENV_KEYS = ["KIMI_FOR_CODING_API_KEY", "KIMI_API_KEY"];
+var KIMI_URL = "https://api.kimi.com/coding/v1/usages";
+function computeKimiUsedPercent(total, used, remaining) {
+  const t2 = toNumber(total);
+  if (t2 == null || t2 <= 0) return null;
+  const u = toNumber(used);
+  if (u != null) return clampPct(u / t2 * 100);
+  const r = toNumber(remaining);
+  if (r != null) return clampPct(100 - r / t2 * 100);
+  return null;
+}
+function parseKimiUsage(payload) {
+  const data = asObject(payload);
+  if (!data) return [];
+  const out = [];
+  const usage = asObject(data.usage);
+  if (usage) {
+    out.push(percentWindow("Weekly", computeKimiUsedPercent(usage.limit, usage.used, usage.remaining), usage.resetTime));
+  }
+  const limits = Array.isArray(data.limits) ? data.limits : [];
+  for (const raw of limits) {
+    const limit = asObject(raw);
+    if (!limit) continue;
+    const win = asObject(limit.window);
+    const detail = asObject(limit.detail);
+    const seconds = windowSeconds(win?.duration, win?.timeUnit);
+    const rawLabel = windowLabel(win?.duration, win?.timeUnit);
+    const label = seconds === 5 * 3600 ? `Rate Limit (${rawLabel})` : rawLabel;
+    out.push(percentWindow(label, computeKimiUsedPercent(detail?.limit, detail?.used, detail?.remaining), detail?.resetTime));
+  }
+  return out.filter((w) => w.percent != null || w.resetsAt != null);
+}
+async function fetchKimiUsage(apiKey, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(KIMI_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Kimi", "Kimi session expired \u2014 check your coding plan API key");
+  }
+  const windows = parseKimiUsage(await response.json().catch(() => null));
+  if (windows.length === 0) throw new Error("Kimi usage data could not be parsed");
+  return windows;
+}
+var ZAI_ALIASES = ["zai-coding-plan", "zai", "z.ai"];
+var ZAI_ENV_KEYS = ["ZAI_API_KEY", "Z_AI_API_KEY"];
+var ZAI_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
+var ZAI_TOKEN_WINDOW_SECONDS = {
+  3: 3600,
+  6: 7 * 86400
+};
+function zaiWindowSeconds(limit) {
+  const number = toNumber(limit.number);
+  const unitSeconds = ZAI_TOKEN_WINDOW_SECONDS[Number(limit.unit)];
+  if (number == null || unitSeconds == null) return null;
+  return unitSeconds * number;
+}
+function shortWindowLabel(seconds) {
+  if (!seconds) return "tokens";
+  if (seconds % 86400 === 0) {
+    const days = seconds / 86400;
+    return days === 7 ? "weekly" : `${days}d`;
+  }
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  return `${seconds}s`;
+}
+function formatCreditAmount(value) {
+  if (value < 1e3) return Math.round(value).toLocaleString("en-US");
+  return `${Math.round(value / 100) / 10}k`;
+}
+function zaiCreditValueLabel(limit) {
+  const used = toNumber(limit.currentValue);
+  const total = toNumber(limit.usage);
+  if (used == null || total == null) return null;
+  return `${formatCreditAmount(used)} / ${formatCreditAmount(total)} credits`;
+}
+function parseZaiStyleUsage(payload, options) {
+  const data = asObject(payload)?.data;
+  const limits = Array.isArray(data?.limits) ? data.limits : [];
+  const windows = [];
+  for (const limit of limits) {
+    const type = limit?.type;
+    if (type !== "TOKENS_LIMIT" && type !== "CREDIT_LIMIT") continue;
+    const seconds = zaiWindowSeconds(limit);
+    windows.push(percentWindow(shortWindowLabel(seconds), limit.percentage, limit.nextResetTime, zaiCreditValueLabel(limit)));
+  }
+  const mcp = limits.find((l) => l?.type === "TIME_LIMIT");
+  if (mcp) {
+    windows.push(percentWindow("MCP Tools", mcp.percentage, mcp.nextResetTime));
+  }
+  void options;
+  return { windows, planLabel: nonEmptyString(data?.level) };
+}
+async function fetchZaiUsage(apiKey, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(ZAI_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "z.ai", "z.ai session expired \u2014 check your coding plan API key");
+  }
+  const parsed = parseZaiStyleUsage(await response.json().catch(() => null), { tokensLabel: "tokens" });
+  if (parsed.windows.length === 0) throw new Error("z.ai usage data could not be parsed");
+  return parsed;
+}
+var ZHIPUAI_ALIASES = ["zhipuai-coding-plan", "zhipu-coding-plan"];
+var ZHIPUAI_ENV_KEYS = ["ZHIPUAI_CODING_PLAN_API_KEY", "ZHIPU_API_KEY"];
+var ZHIPUAI_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+function parseZhipuaiUsage(payload) {
+  const data = asObject(payload)?.data;
+  const limits = Array.isArray(data?.limits) ? data.limits : [];
+  const out = [];
+  const tokens = limits.find((l) => l?.type === "TOKENS_LIMIT");
+  if (tokens) {
+    out.push(percentWindow("Tokens", tokens.percentage, tokens.nextResetTime));
+  }
+  const mcp = limits.find((l) => l?.type === "TIME_LIMIT");
+  if (mcp) {
+    out.push(percentWindow("MCP Tools", mcp.percentage, mcp.nextResetTime));
+  }
+  return out;
+}
+async function fetchZhipuaiUsage(apiKey, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(ZHIPUAI_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Zhipu", "Zhipu session expired \u2014 check your coding plan API key");
+  }
+  const windows = parseZhipuaiUsage(await response.json().catch(() => null));
+  if (windows.length === 0) throw new Error("Zhipu usage data could not be parsed");
+  return windows;
+}
+var MINIMAX_ALIASES = ["minimax-coding-plan", "minimax"];
+var MINIMAX_ENV_KEYS = ["MINIMAX_CODING_PLAN_API_KEY", "MINIMAX_API_KEY"];
+var MINIMAX_CN_ALIASES = ["minimax-cn-coding-plan"];
+var MINIMAX_CN_ENV_KEYS = ["MINIMAX_CN_CODING_PLAN_API_KEY", "MINIMAX_CN_API_KEY"];
+function parseMiniMaxUsage(payload, usageFieldsAreRemaining) {
+  const data = asObject(payload);
+  const baseResp = asObject(data?.base_resp);
+  if (baseResp && toNumber(baseResp.status_code) !== 0) return [];
+  const remains = Array.isArray(data?.model_remains) ? data.model_remains : [];
+  const model = asObject(remains[0]);
+  if (!model) return [];
+  let intervalTotal = toNumber(model.current_interval_total_count);
+  let intervalValue = toNumber(model.current_interval_usage_count);
+  let weeklyTotal = toNumber(model.current_weekly_total_count);
+  let weeklyValue = toNumber(model.current_weekly_usage_count);
+  if (usageFieldsAreRemaining) {
+    intervalValue = intervalTotal != null && intervalValue != null ? intervalTotal - intervalValue : intervalValue;
+    weeklyValue = weeklyTotal != null && weeklyValue != null ? weeklyTotal - weeklyValue : weeklyValue;
+  }
+  const out = [];
+  const intervalPercent = pct(intervalValue, intervalTotal);
+  const intervalStart = toNumber(model.start_time);
+  const intervalEnd = toNumber(model.end_time);
+  out.push(percentWindow("5h", intervalPercent, intervalEnd, intervalPercent != null ? `${intervalPercent.toFixed(0)}% used` : null));
+  void intervalStart;
+  const weeklyPercent = pct(weeklyValue, weeklyTotal);
+  out.push(percentWindow("weekly", weeklyPercent, model.weekly_end_time, weeklyPercent != null ? `${weeklyPercent.toFixed(0)}% used` : null));
+  void weeklyTotal;
+  return out;
+}
+function miniMaxFetcher(providerId, endpoint, usageFieldsAreRemaining) {
+  return async (apiKey, fetchImpl = fetch) => {
+    const response = await fetchWithTimeout(endpoint, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }
+    }, fetchImpl);
+    if (!response.ok) {
+      throw await errorFrom(response, "MiniMax", "MiniMax session expired \u2014 check your coding plan API key");
+    }
+    const payload = await response.json().catch(() => null);
+    const baseResp = asObject(asObject(payload)?.base_resp);
+    if (baseResp && toNumber(baseResp.status_code) !== 0) {
+      throw new Error(nonEmptyString(baseResp.status_msg) ?? `MiniMax API error: ${toNumber(baseResp.status_code)}`);
+    }
+    const windows = parseMiniMaxUsage(payload, usageFieldsAreRemaining);
+    if (windows.every((w) => w.percent == null)) throw new Error("MiniMax usage data could not be parsed");
+    return windows;
+  };
+}
+var OPENROUTER_ALIASES = ["openrouter"];
+var OPENROUTER_ENV_KEYS = ["OPENROUTER_API_KEY"];
+var OPENROUTER_URL = "https://openrouter.ai/api/v1/credits";
+function parseOpenRouterCredits(payload) {
+  const credits = asObject(asObject(payload)?.data);
+  const totalCredits = toNumber(credits?.total_credits);
+  const totalUsage = toNumber(credits?.total_usage);
+  if (totalCredits == null && totalUsage == null) return [];
+  const remaining = totalCredits != null && totalUsage != null ? Math.max(0, totalCredits - totalUsage) : null;
+  const valueLabel = remaining != null && totalUsage != null ? `$${fmtMoney(remaining)} left \xB7 $${fmtMoney(totalUsage)} spent` : null;
+  return [{ label: "Credits", percent: null, resetsAt: null, valueLabel }];
+}
+async function fetchOpenRouterCredits(apiKey, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(OPENROUTER_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "OpenRouter", "OpenRouter authentication failed");
+  }
+  const windows = parseOpenRouterCredits(await response.json().catch(() => null));
+  if (windows.length === 0) throw new Error("OpenRouter credit data could not be parsed");
+  return windows;
+}
+var OLLAMA_CLOUD_ALIASES = ["ollama-cloud", "ollama"];
+var OLLAMA_CLOUD_ENV_KEYS = [];
+function resolveOllamaCloudCookie() {
+  const data = readSecureProviderJson("ollama-cloud");
+  const cookie = nonEmptyString(data?.cookie ?? data?.session);
+  return cookie ?? null;
+}
+function parseOllamaSettingsHtml(html) {
+  const out = [];
+  const sessionMatch = html.match(/Session\s+usage[^0-9]*([0-9.]+)%/i);
+  if (sessionMatch) out.push(percentWindow("Session", toNumber(sessionMatch[1]), null));
+  const weeklyMatch = html.match(/Weekly\s+usage[^0-9]*([0-9.]+)%/i);
+  if (weeklyMatch) out.push(percentWindow("Weekly", toNumber(weeklyMatch[1]), null));
+  const premiumMatch = html.match(/Premium[^0-9]*([0-9]+)\s*\/\s*([0-9]+)/i);
+  if (premiumMatch) {
+    const used = toNumber(premiumMatch[1]) ?? 0;
+    const total = toNumber(premiumMatch[2]) ?? 0;
+    out.push(percentWindow("Premium", total > 0 ? Math.min(100, used / total * 100) : null, null, `${used} / ${total}`));
+  }
+  return out;
+}
+async function fetchOllamaCloudUsage(cookie, fetchImpl = fetch) {
+  const response = await fetchWithTimeout("https://ollama.com/settings", {
+    method: "GET",
+    headers: {
+      Cookie: cookie,
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      "Accept-Encoding": "identity"
+    }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Ollama Cloud", response.status === 403 || response.status === 401 ? "Ollama Cloud cookie expired \u2014 update the saved session cookie" : void 0);
+  }
+  const windows = parseOllamaSettingsHtml(await response.text());
+  if (windows.length === 0) throw new Error("Ollama Cloud usage data could not be parsed");
+  return windows;
+}
+var COPILOT_ALIASES = ["github-copilot", "copilot", "github"];
+var COPILOT_ENV_KEYS = [];
+function buildCopilotWindows(payload) {
+  const data = asObject(payload);
+  const quota = asObject(data?.quota_snapshots);
+  if (!quota) return [];
+  const resetAt = data?.quota_reset_date;
+  const add = (label, snapshotRaw) => {
+    const snapshot2 = asObject(snapshotRaw);
+    if (!snapshot2) return null;
+    const entitlement = toNumber(snapshot2.entitlement);
+    const remaining = toNumber(snapshot2.remaining);
+    const percent = entitlement != null && entitlement > 0 && remaining != null ? clampPct(100 - remaining / entitlement * 100) : null;
+    return percentWindow(
+      label,
+      percent,
+      resetAt,
+      entitlement != null && remaining != null ? `${remaining.toFixed(0)} / ${entitlement.toFixed(0)} left` : null
+    );
+  };
+  const windows = [
+    add("chat", quota.chat),
+    add("completions", quota.completions),
+    add("premium", quota.premium_interactions)
+  ].filter((w) => w !== null);
+  return windows;
+}
+async function fetchCopilotUsage(accessToken, addonOnly, fetchImpl = fetch) {
+  const response = await fetchWithTimeout("https://api.github.com/copilot_internal/user", {
+    method: "GET",
+    headers: {
+      Authorization: `token ${accessToken}`,
+      Accept: "application/json",
+      "Editor-Version": "vscode/1.96.2",
+      "X-Github-Api-Version": "2025-04-01",
+      "Accept-Encoding": "identity"
+    }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Copilot", "Copilot session expired \u2014 re-authenticate with GitHub");
+  }
+  let windows = buildCopilotWindows(await response.json().catch(() => null));
+  if (addonOnly) {
+    const premium = windows.filter((w) => w.label === "premium");
+    if (premium.length > 0) windows = premium;
+  }
+  if (windows.length === 0) throw new Error("Copilot usage data could not be parsed");
+  return windows;
+}
+var GOOGLE_ALIASES = ["google", "google.oauth"];
+var GOOGLE_ENV_KEYS = [];
+var DEFAULT_PROJECT_ID = "rising-fact-p41fc";
+var GOOGLE_PRIMARY_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+var GOOGLE_ENDPOINTS = [
+  "https://daily-cloudcode-pa.sandbox.googleapis.com",
+  "https://autopush-cloudcode-pa.sandbox.googleapis.com",
+  GOOGLE_PRIMARY_ENDPOINT
+];
+var GOOGLE_HEADERS = {
+  "User-Agent": "antigravity/1.11.5 windows/amd64",
+  "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+  "Client-Metadata": '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}'
+};
+function splitGoogleRefreshToken(raw) {
+  const value = nonEmptyString(raw);
+  if (!value) return { refreshToken: null, projectId: null, managedProjectId: null };
+  const [token = "", project = "", managedProject = ""] = value.split("|");
+  return {
+    refreshToken: nonEmptyString(token),
+    projectId: nonEmptyString(project),
+    managedProjectId: nonEmptyString(managedProject)
+  };
+}
+function readGoogleAuthSources() {
+  const sources = [];
+  const entry = authJsonEntry(GOOGLE_ALIASES);
+  if (entry) {
+    const refreshParts = splitGoogleRefreshToken(entry.refresh);
+    sources.push({
+      sourceLabel: "Gemini",
+      accessToken: entry.access ?? entry.token ?? void 0,
+      expires: entry.expires ?? null,
+      refreshToken: refreshParts.refreshToken,
+      projectId: refreshParts.projectId ?? refreshParts.managedProjectId
+    });
+  }
+  const configDir = process.env.XDG_CONFIG_HOME?.trim() || join4(homedir4(), ".config");
+  const dataDir = process.env.XDG_DATA_HOME?.trim() || join4(homedir4(), ".local", "share");
+  for (const filePath of [
+    join4(configDir, "opencode", "antigravity-accounts.json"),
+    join4(dataDir, "opencode", "antigravity-accounts.json")
+  ]) {
+    try {
+      if (!existsSync4(filePath)) continue;
+      const data = JSON.parse(readFileSync4(filePath, "utf8"));
+      const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+      if (accounts.length === 0) continue;
+      const index = typeof data.activeIndex === "number" ? data.activeIndex : 0;
+      const account = accounts[index] ?? accounts[0];
+      if (!account?.refreshToken) continue;
+      const refreshParts = splitGoogleRefreshToken(account.refreshToken);
+      sources.push({
+        sourceLabel: "Antigravity",
+        refreshToken: refreshParts.refreshToken,
+        projectId: nonEmptyString(account.projectId) ?? nonEmptyString(account.managedProjectId) ?? refreshParts.projectId ?? refreshParts.managedProjectId
+      });
+      break;
+    } catch {
+    }
+  }
+  return sources;
+}
+function resolveGoogleOAuthClient() {
+  const clientId = nonEmptyString(process.env.GOOGLE_CLIENT_ID);
+  const clientSecret = nonEmptyString(process.env.GOOGLE_CLIENT_SECRET);
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret };
+}
+async function refreshGoogleAccessToken(refreshToken, clientId, clientSecret, fetchImpl) {
+  try {
+    const response = await fetchImpl("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" })
+    });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    return nonEmptyString(asObject(data)?.access_token);
+  } catch {
+    return null;
+  }
+}
+async function postGoogleRpc(url, accessToken, projectId, fetchImpl, extraHeaders = {}) {
+  try {
+    const response = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...extraHeaders },
+      body: JSON.stringify(projectId ? { project: projectId } : {})
+    }, fetchImpl);
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => null);
+    return asObject(payload);
+  } catch {
+    return null;
+  }
+}
+function googleWindowLabel(resetAtMs) {
+  if (resetAtMs != null) {
+    const remainingHours = (resetAtMs - Date.now()) / 36e5;
+    if (remainingHours > 10) return "daily";
+  }
+  return "5h";
+}
+async function fetchGoogleUsage(fetchImpl = fetch) {
+  const sources = readGoogleAuthSources();
+  if (sources.length === 0) throw new Error("Not configured");
+  const windows = [];
+  let lastError = null;
+  for (const source of sources) {
+    const isGemini = source.sourceLabel === "Gemini";
+    let accessToken = source.accessToken;
+    const expired = accessToken != null && typeof source.expires === "number" && source.expires <= Date.now();
+    if (!accessToken || expired) {
+      if (!source.refreshToken) {
+        lastError = `${source.sourceLabel}: missing refresh token`;
+        continue;
+      }
+      const oauthClient = resolveGoogleOAuthClient();
+      if (!oauthClient) {
+        lastError = `${source.sourceLabel}: Google OAuth client not configured \u2014 set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET`;
+        continue;
+      }
+      accessToken = await refreshGoogleAccessToken(
+        source.refreshToken,
+        oauthClient.clientId,
+        oauthClient.clientSecret,
+        fetchImpl
+      ) ?? void 0;
+      if (!accessToken) {
+        lastError = `${source.sourceLabel}: failed to refresh OAuth token`;
+        continue;
+      }
+    }
+    const projectId = source.projectId ?? DEFAULT_PROJECT_ID;
+    let merged = false;
+    if (isGemini) {
+      const quotaPayload = await postGoogleRpc(`${GOOGLE_PRIMARY_ENDPOINT}/v1internal:retrieveUserQuota`, accessToken, projectId, fetchImpl);
+      const buckets = Array.isArray(quotaPayload?.buckets) ? quotaPayload.buckets : [];
+      for (const bucket of buckets) {
+        const modelId = nonEmptyString(bucket.modelId);
+        if (!modelId) continue;
+        const remainingFraction = toNumber(bucket.remainingFraction);
+        const usedPercent = remainingFraction != null ? clampPct(100 - Math.round(remainingFraction * 100)) : null;
+        const resetIso = toResetTimestamp(bucket.resetTime);
+        const resetMs = resetIso ? Date.parse(resetIso) : NaN;
+        windows.push(percentWindow(`${modelId} (${googleWindowLabel(Number.isFinite(resetMs) ? resetMs : null)})`, usedPercent, resetIso));
+        merged = true;
+      }
+    }
+    for (const endpoint of GOOGLE_ENDPOINTS) {
+      const payload = await postGoogleRpc(`${endpoint}/v1internal:fetchAvailableModels`, accessToken, projectId, fetchImpl, GOOGLE_HEADERS);
+      const models = asObject(payload?.models);
+      if (!models) continue;
+      for (const [modelName, modelDataRaw] of Object.entries(models)) {
+        const modelData = asObject(modelDataRaw);
+        const quotaInfo = asObject(modelData?.quotaInfo);
+        if (!quotaInfo) continue;
+        const remainingFraction = toNumber(quotaInfo.remainingFraction);
+        const usedPercent = remainingFraction != null ? clampPct(100 - Math.round(remainingFraction * 100)) : null;
+        const resetIso = toResetTimestamp(quotaInfo.resetTime);
+        const resetMs = resetIso ? Date.parse(resetIso) : NaN;
+        windows.push(percentWindow(`${modelName} (${googleWindowLabel(Number.isFinite(resetMs) ? resetMs : null)})`, usedPercent, resetIso));
+        merged = true;
+      }
+      if (merged) break;
+    }
+    if (!merged) lastError = `${source.sourceLabel}: failed to fetch models`;
+  }
+  if (windows.length === 0) throw new Error(lastError ?? "Google usage data could not be parsed");
+  return windows;
+}
+var XAI_ALIASES = ["xai", "grok"];
+var XAI_ENV_KEYS = [];
+var XAI_USAGE_ENDPOINT = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig";
+var XAI_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token";
+var XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+var XAI_REFRESH_SKEW_MS = 12e4;
+var XAI_DEFAULT_EXPIRES_IN_SECONDS = 3600;
+function readXaiVarint(bytes, index) {
+  let result = 0n;
+  for (let shift = 0n; index.value < bytes.length && shift < 64n; shift += 7n) {
+    const byte = bytes[index.value++];
+    if (shift === 63n && (byte & 126) !== 0) return null;
+    result |= BigInt(byte & 127) << shift;
+    if ((byte & 128) === 0) return result;
+  }
+  return null;
+}
+function scanXaiProtobuf(bytes, depth, pathPrefix, scan) {
+  const index = { value: 0 };
+  while (index.value < bytes.length) {
+    const fieldKey = readXaiVarint(bytes, index);
+    if (fieldKey === null || fieldKey === 0n) return false;
+    const fieldNumber = Number(fieldKey >> 3n);
+    const wireType = Number(fieldKey & 0x07n);
+    if (fieldNumber < 1 || fieldNumber > 536870911) return false;
+    const fieldPath = [...pathPrefix, fieldNumber];
+    if (wireType === 0) {
+      const value = readXaiVarint(bytes, index);
+      if (value === null) return false;
+      scan.varintFields.push({ path: fieldPath, value });
+      continue;
+    }
+    if (wireType === 1) {
+      if (index.value + 8 > bytes.length) return false;
+      index.value += 8;
+      continue;
+    }
+    if (wireType === 2) {
+      const length = readXaiVarint(bytes, index);
+      if (length === null || length > BigInt(bytes.length - index.value)) return false;
+      const start = index.value;
+      index.value += Number(length);
+      if (depth >= 4 && length !== 0n) return false;
+      if (depth < 4) {
+        const nestedScan = { fixed32Fields: [], varintFields: [], nextOrder: scan.nextOrder };
+        if (!scanXaiProtobuf(bytes.subarray(start, index.value), depth + 1, fieldPath, nestedScan)) return false;
+        scan.fixed32Fields.push(...nestedScan.fixed32Fields);
+        scan.varintFields.push(...nestedScan.varintFields);
+        scan.nextOrder = nestedScan.nextOrder;
+      }
+      continue;
+    }
+    if (wireType === 5) {
+      if (index.value + 4 > bytes.length) return false;
+      const value = new DataView(bytes.buffer, bytes.byteOffset + index.value, 4).getFloat32(0, true);
+      scan.fixed32Fields.push({ path: fieldPath, value, order: scan.nextOrder++ });
+      index.value += 4;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+function samePath(left, right) {
+  return left.length === right.length && left.every((v, i) => v === right[i]);
+}
+function parseXaiGrpcTrailerStatus(frame) {
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(frame);
+  } catch {
+    return null;
+  }
+  let status = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    const separator = line.indexOf(":");
+    if (separator <= 0) return null;
+    const key = line.slice(0, separator).trim().toLowerCase();
+    if (!key || key !== "grpc-status") continue;
+    if (status !== null) return null;
+    const rawStatus = line.slice(separator + 1).trim();
+    if (!/^\d+$/.test(rawStatus)) return null;
+    status = Number(rawStatus);
+    if (!Number.isSafeInteger(status)) return null;
+  }
+  return status;
+}
+function parseXaiGrpcFrames(bytes) {
+  if (bytes.length < 5 || (bytes[0] & 127) !== 0) return null;
+  const payloads = [];
+  const trailerStatuses = [];
+  let index = 0;
+  let sawTrailer = false;
+  while (index < bytes.length) {
+    if (index + 5 > bytes.length) return false;
+    const flags = bytes[index++];
+    if ((flags & 127) !== 0) return false;
+    const length = bytes[index++] * 16777216 + (bytes[index++] << 16) + (bytes[index++] << 8) + bytes[index++];
+    if (length > bytes.length - index) return false;
+    const frame = bytes.subarray(index, index + length);
+    index += length;
+    if (flags & 128) {
+      sawTrailer = true;
+      const status = parseXaiGrpcTrailerStatus(frame);
+      if (status === null) return false;
+      trailerStatuses.push(status);
+    } else {
+      if (sawTrailer) return false;
+      payloads.push(frame);
+    }
+  }
+  return { payloads, trailerStatuses };
+}
+function looksLikeXaiProtobuf(bytes) {
+  if (!bytes.length) return false;
+  const fieldNumber = Math.floor(bytes[0] / 8);
+  const wireType = bytes[0] % 8;
+  return fieldNumber > 0 && [0, 1, 2, 5].includes(wireType);
+}
+function parseXaiUsage(bytes) {
+  const frames = parseXaiGrpcFrames(bytes);
+  if (frames === false) throw new Error("xAI returned malformed gRPC-web framing");
+  const payloads = frames === null ? looksLikeXaiProtobuf(bytes) ? [bytes] : [] : frames.payloads;
+  if (frames) {
+    for (const status of frames.trailerStatuses) {
+      if (status !== 0) throw new Error(`xAI billing RPC failed with status ${status}`);
+    }
+  }
+  if (payloads.length === 0) throw new Error("xAI returned an empty protobuf response");
+  const scan = { fixed32Fields: [], varintFields: [], nextOrder: 0 };
+  for (const payload of payloads) {
+    if (!scanXaiProtobuf(payload, 0, [], scan)) throw new Error("xAI returned malformed protobuf data");
+  }
+  const percentField = scan.fixed32Fields.filter((f) => (samePath(f.path, [1]) || samePath(f.path, [1, 1])) && Number.isFinite(f.value) && f.value >= 0 && f.value <= 100).sort((a, b) => a.path.length - b.path.length || a.order - b.order)[0];
+  const resetCandidates = scan.varintFields.filter((f) => f.value >= 1700000000n && f.value <= 2100000000n).map((f) => ({ path: f.path, timestamp: Number(f.value) * 1e3 })).filter((f) => f.timestamp > Date.now()).sort((a, b) => a.timestamp - b.timestamp);
+  const preferredReset = resetCandidates.find((f) => samePath(f.path, [1, 5, 1])) ?? resetCandidates[0];
+  const resetAt = preferredReset?.timestamp ?? null;
+  if (!percentField) {
+    const hasUsagePeriod = scan.varintFields.some((f) => f.path.length >= 2 && f.path[0] === 1 && f.path[1] === 6 || samePath(f.path, [1, 8, 1]) && (f.value === 1n || f.value === 2n));
+    if (hasUsagePeriod && scan.fixed32Fields.length === 0 && resetAt !== null) return { usedPercent: 0, resetAt };
+    throw new Error("xAI billing response did not contain usable current-period data");
+  }
+  return { usedPercent: percentField.value, resetAt };
+}
+function jwtExpiryMilliseconds(accessToken) {
+  const payload = accessToken.split(".")[1];
+  if (!payload) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return typeof decoded.exp === "number" ? decoded.exp * 1e3 : null;
+  } catch {
+    return null;
+  }
+}
+async function resolveXaiAccessToken(material, fetchImpl) {
+  const deadline = Date.now() + XAI_REFRESH_SKEW_MS;
+  const needsRefresh = !material.accessToken || material.expires != null && material.expires <= deadline || jwtExpiryMilliseconds(material.accessToken) != null && jwtExpiryMilliseconds(material.accessToken) <= deadline;
+  if (!needsRefresh) return material.accessToken;
+  const refreshToken = material.refreshToken;
+  if (!refreshToken) return material.accessToken;
+  const response = await fetchImpl(XAI_TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: XAI_CLIENT_ID, refresh_token: refreshToken, grant_type: "refresh_token" })
+  }).catch(() => null);
+  if (!response || !response.ok) return material.accessToken;
+  const data = asObject(await response.json().catch(() => null));
+  const access = nonEmptyString(data?.access_token);
+  if (!access) return material.accessToken;
+  const expiresIn = toNumber(data?.expires_in) ?? XAI_DEFAULT_EXPIRES_IN_SECONDS;
+  void expiresIn;
+  return access;
+}
+async function fetchXaiUsage(material, fetchImpl = fetch) {
+  const accessToken = await resolveXaiAccessToken(material, fetchImpl);
+  if (!accessToken) throw new Error("Not configured");
+  const response = await fetchWithTimeout(XAI_USAGE_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Origin: "https://grok.com",
+      Referer: "https://grok.com/?_s=usage",
+      Accept: "*/*",
+      "Content-Type": "application/grpc-web+proto",
+      "x-grpc-web": "1",
+      "x-user-agent": "connect-es/2.1.1",
+      "User-Agent": "opencode-usage-stat"
+    },
+    body: new Uint8Array([0, 0, 0, 0, 0])
+  }, fetchImpl);
+  const grpcStatus = response.headers.get("grpc-status");
+  if (grpcStatus !== null && /^\d+$/.test(grpcStatus.trim()) && Number(grpcStatus.trim()) !== 0) {
+    throw new Error(`xAI billing RPC failed with status ${Number(grpcStatus.trim())}`);
+  }
+  if (!response.ok) {
+    throw await errorFrom(response, "xAI", "xAI session expired \u2014 re-authenticate with Grok");
+  }
+  const parsed = parseXaiUsage(new Uint8Array(await response.arrayBuffer()));
+  return [percentWindow("Billing Cycle", parsed.usedPercent, parsed.resetAt)];
+}
+var CURSOR_ALIASES = ["cursor"];
+var CURSOR_ENV_KEYS = [];
+function resolveCursorCredential(resolved) {
+  const data = readSecureProviderJson("cursor");
+  const token = nonEmptyString(data?.accessToken ?? data?.access_token ?? data?.token);
+  return token ?? resolved.value;
+}
+function parseCursorUsage(payload) {
+  const data = asObject(payload);
+  const plan = asObject(data?.planUsage);
+  if (!data || !plan) return [];
+  return [percentWindow("Billing Cycle", plan.totalPercentUsed, data.billingCycleEnd)];
+}
+async function fetchCursorUsage(accessToken, fetchImpl = fetch) {
+  const response = await fetchWithTimeout("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "Connect-Protocol-Version": "1"
+    },
+    body: "{}"
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Cursor", response.status === 401 ? "Cursor session expired" : void 0);
+  }
+  const windows = parseCursorUsage(await response.json().catch(() => null));
+  if (windows.length === 0) throw new Error("Cursor usage data could not be parsed");
+  return windows;
+}
 var PROVIDERS = [
   { id: "opencode-go", name: "OpenCode Go", aliases: OPENCODE_GO_ALIASES, envKeys: OPENCODE_GO_ENV_KEYS },
   { id: "deepseek", name: "DeepSeek", aliases: DEEPSEEK_ALIASES, envKeys: DEEPSEEK_ENV_KEYS },
-  { id: "codex", name: "Codex", aliases: CODEX_ALIASES, envKeys: CODEX_ENV_KEYS }
+  { id: "codex", name: "Codex", aliases: CODEX_ALIASES, envKeys: CODEX_ENV_KEYS },
+  { id: "claude", name: "Claude", aliases: CLAUDE_ALIASES, envKeys: CLAUDE_ENV_KEYS },
+  { id: "kimi-for-coding", name: "Kimi for Coding", aliases: KIMI_ALIASES, envKeys: KIMI_ENV_KEYS },
+  { id: "zai-coding-plan", name: "z.ai", aliases: ZAI_ALIASES, envKeys: ZAI_ENV_KEYS },
+  { id: "zhipuai-coding-plan", name: "Zhipu AI Coding Plan", aliases: ZHIPUAI_ALIASES, envKeys: ZHIPUAI_ENV_KEYS },
+  { id: "minimax-coding-plan", name: "MiniMax Coding Plan", aliases: MINIMAX_ALIASES, envKeys: MINIMAX_ENV_KEYS },
+  { id: "minimax-cn-coding-plan", name: "MiniMax Coding Plan (CN)", aliases: MINIMAX_CN_ALIASES, envKeys: MINIMAX_CN_ENV_KEYS },
+  { id: "openrouter", name: "OpenRouter", aliases: OPENROUTER_ALIASES, envKeys: OPENROUTER_ENV_KEYS },
+  { id: "ollama-cloud", name: "Ollama Cloud", aliases: OLLAMA_CLOUD_ALIASES, envKeys: OLLAMA_CLOUD_ENV_KEYS },
+  { id: "github-copilot", name: "GitHub Copilot", aliases: COPILOT_ALIASES, envKeys: COPILOT_ENV_KEYS },
+  { id: "github-copilot-addon", name: "Copilot Add-on", aliases: COPILOT_ALIASES, envKeys: COPILOT_ENV_KEYS },
+  { id: "google", name: "Google Gemini", aliases: GOOGLE_ALIASES, envKeys: GOOGLE_ENV_KEYS },
+  { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
+  { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS }
 ];
 var USAGE_STAT_PROVIDER_IDS = PROVIDERS.map((p) => p.id);
 var defaultCredentialResolver = (spec) => resolveCredential(spec);
+function collapsedSummary(windows, mode) {
+  if (!windows || windows.length === 0) return null;
+  const shown = (win) => {
+    if (win.percent == null) return null;
+    return Math.round(mode === "remaining" ? 100 - win.percent : win.percent);
+  };
+  const isSessionWin = (label) => /(^|\b)(5h|session|rolling)\b/i.test(label);
+  const isWeeklyWin = (label) => /(^|\b)(weekly|7d)\b/i.test(label);
+  const session = windows.find((w) => isSessionWin(w.label));
+  const weekly = windows.find((w) => isWeeklyWin(w.label));
+  const n = session ? shown(session) : null;
+  const m = weekly ? shown(weekly) : null;
+  if (n != null && m != null) return `${n}%/${m}%`;
+  if (n != null) return `${n}%`;
+  if (m != null) return `${m}%`;
+  const firstPercent = windows.map(shown).find((v) => v != null);
+  if (firstPercent != null) return `${firstPercent}%`;
+  return windows.find((w) => w.valueLabel)?.valueLabel ?? null;
+}
 async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential = defaultCredentialResolver) {
   const spec = PROVIDERS.find((p) => p.id === providerId);
   if (!spec) return { providerId, providerName: providerId, configured: false, ok: false, status: "Unknown provider" };
+  const finishError = (configured, message) => ({
+    providerId: spec.id,
+    providerName: spec.name,
+    configured,
+    ok: false,
+    status: message.startsWith(spec.name) ? message : `${spec.name} \u2014 ${message}`,
+    error: message
+  });
+  if (spec.id === "ollama-cloud") {
+    const cookie = resolveOllamaCloudCookie();
+    if (!cookie) return finishError(false, `${spec.name} \u2014 not configured (no saved cookie)`);
+    try {
+      const windows = await fetchOllamaCloudUsage(cookie, fetchImpl);
+      return { providerId: spec.id, providerName: spec.name, configured: true, ok: true, status: summarize(spec.name, windows), windows };
+    } catch (err) {
+      return finishError(true, err instanceof Error ? err.message : "Request failed");
+    }
+  }
+  if (spec.id === "google") {
+    try {
+      const windows = await fetchGoogleUsage(fetchImpl);
+      return { providerId: spec.id, providerName: spec.name, configured: true, ok: true, status: summarize(spec.name, windows), windows };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Request failed";
+      return finishError(message !== "Not configured", message);
+    }
+  }
   const resolved = getCredential({ aliases: spec.aliases, envKeys: spec.envKeys });
+  if (spec.id === "xai") {
+    const material = { accessToken: resolved.value, refreshToken: resolved.refresh, expires: resolved.expires };
+    if (!material.accessToken && !material.refreshToken) {
+      return finishError(false, "not configured");
+    }
+    try {
+      const windows = await fetchXaiUsage(material, fetchImpl);
+      return { providerId: spec.id, providerName: spec.name, configured: true, ok: true, status: summarize(spec.name, windows), windows };
+    } catch (err) {
+      return finishError(true, err instanceof Error ? err.message : "Request failed");
+    }
+  }
   const secret = resolved.value;
   if (!secret) {
-    return {
-      providerId: spec.id,
-      providerName: spec.name,
-      configured: false,
-      ok: false,
-      status: `${spec.name} \u2014 not configured`,
-      error: "Not configured"
-    };
+    return finishError(false, "not configured");
   }
   try {
     let windows;
-    if (spec.id === "opencode-go") {
-      windows = await fetchOpenCodeGoUsage(secret, fetchImpl);
-    } else if (spec.id === "deepseek") {
-      windows = await fetchDeepSeekBalance(secret, fetchImpl);
-    } else {
-      windows = await fetchCodexUsage(secret, resolved.accountId, fetchImpl);
+    let planLabel = null;
+    switch (spec.id) {
+      case "opencode-go":
+        windows = await fetchOpenCodeGoUsage(secret, fetchImpl);
+        break;
+      case "deepseek":
+        windows = await fetchDeepSeekBalance(secret, fetchImpl);
+        break;
+      case "codex":
+        windows = await fetchCodexUsage(secret, resolved.accountId, fetchImpl);
+        break;
+      case "claude":
+        windows = await fetchClaudeUsage(secret, fetchImpl);
+        break;
+      case "kimi-for-coding":
+        windows = await fetchKimiUsage(secret, fetchImpl);
+        break;
+      case "zai-coding-plan": {
+        const parsed = await fetchZaiUsage(secret, fetchImpl);
+        windows = parsed.windows;
+        planLabel = parsed.planLabel;
+        break;
+      }
+      case "zhipuai-coding-plan":
+        windows = await fetchZhipuaiUsage(secret, fetchImpl);
+        break;
+      case "minimax-coding-plan":
+        windows = await miniMaxFetcher(spec.id, "https://api.minimax.io/v1/api/openplatform/coding_plan/remains", false)(secret, fetchImpl);
+        break;
+      case "minimax-cn-coding-plan":
+        windows = await miniMaxFetcher(spec.id, "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains", true)(secret, fetchImpl);
+        break;
+      case "openrouter":
+        windows = await fetchOpenRouterCredits(secret, fetchImpl);
+        break;
+      case "github-copilot":
+        windows = await fetchCopilotUsage(secret, false, fetchImpl);
+        break;
+      case "github-copilot-addon":
+        windows = await fetchCopilotUsage(secret, true, fetchImpl);
+        break;
+      case "cursor": {
+        const token = resolveCursorCredential(resolved);
+        if (!token) return finishError(false, "Not configured (no saved access token)");
+        windows = await fetchCursorUsage(token, fetchImpl);
+        break;
+      }
     }
     return {
       providerId: spec.id,
@@ -1229,62 +2271,36 @@ async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential =
       configured: true,
       ok: true,
       status: summarize(spec.name, windows),
-      windows
+      windows,
+      planLabel
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Request failed";
-    return {
-      providerId: spec.id,
-      providerName: spec.name,
-      configured: true,
-      ok: false,
-      status: `${spec.name} \u2014 ${message}`,
-      error: message
-    };
+    return finishError(true, message);
   }
 }
 function summarize(name, windows) {
   const first = windows[0];
   if (!first) return `${name} \u2014 no data`;
   if (first.valueLabel) {
-    if (first.resetsAt) {
-      return `${name} \u2014 ${first.valueLabel} \xB7 resets ${formatReset(first.resetsAt)}`;
-    }
+    if (first.resetsAt) return `${name} \u2014 ${first.valueLabel} \xB7 resets ${formatResetDuration(first.resetsAt)}`;
     return `${name} \u2014 ${first.valueLabel}`;
   }
   if (first.percent != null) {
-    const suffix = first.resetsAt ? ` \xB7 resets ${formatReset(first.resetsAt)}` : "";
+    const suffix = first.resetsAt ? ` \xB7 resets ${formatResetDuration(first.resetsAt)}` : "";
     return `${name} \u2014 ${first.percent.toFixed(0)}%${suffix}`;
   }
   return name;
 }
-function formatReset(iso) {
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return iso;
-  const now = Date.now();
-  const diff = d.getTime() - now;
-  if (diff <= 0) return "soon";
-  const hours = diff / 36e5;
-  if (hours < 48 && hours > 24) return `${Math.round(hours / 24)}d`;
-  if (hours < 24) {
-    const mins = Math.max(1, Math.round(diff / 6e4));
-    if (mins < 60) return `${mins}m`;
-    return `${Math.round(hours)}h`;
-  }
-  return `${Math.round(hours / 24)}d`;
-}
 function resolveProviderUsageConfig(options) {
   const source = options && typeof options === "object" ? options.providerUsage : null;
   const value = source && typeof source === "object" ? source : {};
-  return {
-    "opencode-go": value["opencode-go"] === true,
-    deepseek: value.deepseek === true,
-    codex: value.codex === true
-  };
+  const out = {};
+  for (const id of USAGE_STAT_PROVIDER_IDS) {
+    out[id] = value[id] === true;
+  }
+  return out;
 }
-
-// src/provider-collapse.ts
-var PROVIDER_IDS = ["opencode-go", "deepseek", "codex"];
 
 // src/theme-map.ts
 import { RGBA } from "@opentui/core";
@@ -1301,23 +2317,86 @@ function resolveThemeColors(theme) {
   return { primary, muted, dim, green, red, amber, purple, cyan, border };
 }
 
-// src/provider-usage-blocks.tsx
-var PROVIDER_NAMES = {
-  "opencode-go": "OpenCode Go",
-  deepseek: "DeepSeek",
-  codex: "Codex"
+// src/settings.ts
+var SETTINGS_KEY = "usage-stat-settings";
+var LEGACY_KEY = "usage-stat-config";
+var DEFAULT_SETTINGS = {
+  showPerformance: true,
+  showPricing: true,
+  showTrend: true,
+  providerUsageDisplay: "used",
+  language: "auto"
 };
+function optionsToSettings(options) {
+  const out = {};
+  try {
+    const cfg = options && typeof options === "object" ? options : {};
+    if (cfg?.sidebar && typeof cfg.sidebar === "object") {
+      if (typeof cfg.sidebar.showPerformance === "boolean") out.showPerformance = cfg.sidebar.showPerformance;
+      if (typeof cfg.sidebar.showPricing === "boolean") out.showPricing = cfg.sidebar.showPricing;
+      if (typeof cfg.sidebar.showTrend === "boolean") out.showTrend = cfg.sidebar.showTrend;
+    }
+    if (cfg?.language === "zh" || cfg?.language === "en" || cfg?.language === "auto") out.language = cfg.language;
+    if (cfg?.providerUsageDisplay === "used" || cfg?.providerUsageDisplay === "remaining") {
+      out.providerUsageDisplay = cfg.providerUsageDisplay;
+    }
+  } catch {
+  }
+  return out;
+}
+function getSettingsStore(context) {
+  return context.storage.store(SETTINGS_KEY, {
+    initial: { ...DEFAULT_SETTINGS, ...optionsToSettings(context.options) }
+  });
+}
+var migrationDone = false;
+async function migrateLegacySettings(context) {
+  if (migrationDone) return;
+  try {
+    const [settings, mutate] = getSettingsStore(context);
+    const [legacy] = context.storage.store(LEGACY_KEY, { initial: {} });
+    const patch = {};
+    for (const key of ["showPerformance", "showPricing", "showTrend", "providerUsageDisplay", "language"]) {
+      const value = legacy?.[key];
+      if (value !== void 0 && value !== null && settings[key] !== value && settings[key] === DEFAULT_SETTINGS[key]) {
+        patch[key] = value;
+      }
+    }
+    if (Object.keys(patch).length > 0) {
+      await mutate((draft) => Object.assign(draft, patch));
+    }
+    migrationDone = true;
+  } catch {
+  }
+}
+
+// src/provider-usage-blocks.tsx
 var REFRESH_MS = 2 * 60 * 1e3;
+var PROVIDER_NAMES = Object.fromEntries(PROVIDERS.map((p) => [p.id, p.name]));
+var FALLBACK_COLOR = RGBA2.fromInts(80, 190, 255, 255);
 var PROVIDER_COLORS = {
   "opencode-go": RGBA2.fromInts(80, 190, 255, 255),
   deepseek: RGBA2.fromInts(78, 140, 255, 255),
-  codex: RGBA2.fromInts(205, 130, 255, 255)
+  codex: RGBA2.fromInts(205, 130, 255, 255),
+  claude: RGBA2.fromInts(217, 119, 87, 255),
+  "kimi-for-coding": RGBA2.fromInts(125, 110, 255, 255),
+  "zai-coding-plan": RGBA2.fromInts(255, 190, 80, 255),
+  "zhipuai-coding-plan": RGBA2.fromInts(70, 130, 246, 255),
+  "minimax-coding-plan": RGBA2.fromInts(255, 100, 140, 255),
+  "minimax-cn-coding-plan": RGBA2.fromInts(230, 90, 130, 255),
+  openrouter: RGBA2.fromInts(150, 120, 255, 255),
+  "ollama-cloud": RGBA2.fromInts(160, 168, 178, 255),
+  "github-copilot": RGBA2.fromInts(110, 150, 235, 255),
+  "github-copilot-addon": RGBA2.fromInts(130, 165, 250, 255),
+  google: RGBA2.fromInts(120, 185, 95, 255),
+  xai: RGBA2.fromInts(225, 225, 235, 255),
+  cursor: RGBA2.fromInts(200, 200, 210, 255)
 };
 function ProviderUsageBlocks(props) {
   const {
     context
   } = props;
-  const enabledIds = PROVIDER_IDS.filter((id) => resolveProviderUsageConfig(context.options)[id]);
+  const enabledIds = USAGE_STAT_PROVIDER_IDS.filter((id) => resolveProviderUsageConfig(context.options)[id]);
   const colors = resolveThemeColors(context.theme);
   const primaryColor = () => colors.primary;
   const mutedColor = () => colors.muted;
@@ -1325,10 +2404,32 @@ function ProviderUsageBlocks(props) {
   const greenColor = () => colors.green;
   const redColor = () => colors.red;
   const amberColor = () => colors.amber;
-  const cyanColor = () => colors.cyan;
+  let storedCollapse = null;
+  let collapseMutate = null;
+  try {
+    const [store, mutate] = context.storage.store("usage-stat-provider-collapse", {
+      initial: {}
+    });
+    storedCollapse = store;
+    collapseMutate = mutate;
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, provider collapse will not persist:", err);
+  }
+  const [localCollapse, setLocalCollapse] = createSignal({});
+  let settingsStore = null;
+  try {
+    const [store] = getSettingsStore(context);
+    settingsStore = store;
+  } catch {
+  }
+  const displayMode = () => settingsStore?.providerUsageDisplay === "remaining" ? "remaining" : "used";
+  const isCollapsed = (id) => {
+    const override = localCollapse()[id];
+    if (override !== void 0) return override;
+    return storedCollapse?.[id] !== false;
+  };
   const [states, setStates] = createSignal(enabledIds.map((id) => ({
     id,
-    collapsed: true,
     loading: false,
     result: null
   })));
@@ -1347,13 +2448,10 @@ function ProviderUsageBlocks(props) {
       };
     }));
   }
-  function initialRefresh() {
+  if (enabledIds.length > 0) {
     for (const id of enabledIds) {
       void refreshOne(id);
     }
-  }
-  if (enabledIds.length > 0) {
-    initialRefresh();
     const timers = [];
     for (const id of enabledIds) {
       timers.push(setInterval(() => {
@@ -1365,16 +2463,21 @@ function ProviderUsageBlocks(props) {
     });
   }
   function toggle(id) {
-    setStates((prev) => prev.map((s) => s.id === id ? {
-      ...s,
-      collapsed: !s.collapsed
-    } : s));
+    const next = !isCollapsed(id);
+    setLocalCollapse((prev) => ({
+      ...prev,
+      [id]: next
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft[id] = next;
+    }).catch(() => {
+    });
   }
   function statusColor(s) {
     if (s.loading) return mutedColor();
     if (!s.result) return dimColor();
     if (!s.result.ok) return redColor();
-    const first = s.result.windows?.[0];
+    const first = s.result.windows?.find((w) => w.percent != null);
     if (first?.percent != null) {
       if (first.percent >= 90) return redColor();
       if (first.percent >= 70) return amberColor();
@@ -1385,17 +2488,6 @@ function ProviderUsageBlocks(props) {
   function percentBar(percent, width) {
     const filled = Math.max(0, Math.min(width, Math.floor(percent / 100 * width)));
     return "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
-  }
-  function formatReset2(iso) {
-    const d = new Date(iso);
-    if (!Number.isFinite(d.getTime())) return iso;
-    const diff = d.getTime() - Date.now();
-    if (diff <= 0) return "now";
-    const mins = Math.round(diff / 6e4);
-    if (mins < 60) return `${mins}m`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 48) return `${hours}h`;
-    return `${Math.round(hours / 24)}d`;
   }
   return _$createComponent(Show, {
     get when() {
@@ -1411,22 +2503,19 @@ function ProviderUsageBlocks(props) {
           return states();
         },
         children: (state) => {
-          const isOpen = () => !state.collapsed;
+          const isOpen = () => !isCollapsed(state.id);
           const color = () => statusColor(state);
           const dot = () => {
-            if (state.loading) return "\u25CC";
+            if (state.loading && !state.result) return "\u25CC";
             if (!state.result) return "\u25CB";
             if (!state.result.ok) return "\u25CF";
-            const first = state.result.windows?.[0];
-            if (first == null) return "\u25CF";
-            if (first.percent == null) return "\u25C6";
+            if (state.result.windows?.[0]?.percent == null) return "\u25C6";
             return "\u25CF";
           };
           const headerText = () => {
-            if (state.loading) return `${t("providerRefreshing")}\u2026`;
-            const first = state.result?.windows?.[0];
-            if (state.result?.ok && first?.percent != null) return `${first.percent.toFixed(0)}% used`;
-            if (state.result?.ok && first?.valueLabel) return first.valueLabel;
+            if (state.loading && !state.result) return `${t("providerRefreshing")}\u2026`;
+            const summary = collapsedSummary(state.result?.windows, displayMode());
+            if (state.result?.ok && summary != null) return summary;
             const status = state.result?.status ?? t("providerNotConfigured");
             const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
             return status.startsWith(prefix) ? status.slice(prefix.length) : status;
@@ -1500,7 +2589,7 @@ function ProviderUsageBlocks(props) {
                       },
                       get children() {
                         var _el$13 = _$createElement("text");
-                        _$insertNode(_el$13, _$createTextNode(`enable via plugin config: providerUsage.&lt;id&gt; = true`));
+                        _$insert(_el$13, () => t("providerEnableHint"));
                         _$effect((_$p) => _$setProp(_el$13, "fg", dimColor(), _$p));
                         return _el$13;
                       }
@@ -1519,68 +2608,73 @@ function ProviderUsageBlocks(props) {
                       children: (win) => {
                         const label = win.label ? win.label + ": " : "";
                         if (win.percent != null) {
+                          const shownPercent = () => displayMode() === "remaining" ? 100 - win.percent : win.percent;
                           return (() => {
-                            var _el$15 = _$createElement("text"), _el$16 = _$createElement("span"), _el$17 = _$createTextNode(` `), _el$18 = _$createTextNode(`%`);
+                            var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createTextNode(` `), _el$17 = _$createTextNode(`%`);
+                            _$insertNode(_el$14, _el$15);
+                            _$insert(_el$14, label, _el$15);
                             _$insertNode(_el$15, _el$16);
-                            _$insert(_el$15, label, _el$16);
-                            _$insertNode(_el$16, _el$17);
-                            _$insertNode(_el$16, _el$18);
-                            _$insert(_el$16, () => percentBar(win.percent, 12), _el$17);
-                            _$insert(_el$16, () => win.percent.toFixed(0), _el$18);
+                            _$insertNode(_el$15, _el$17);
+                            _$insert(_el$15, () => percentBar(shownPercent(), 12), _el$16);
+                            _$insert(_el$15, () => Math.round(shownPercent()), _el$17);
                             _$insert(_el$15, (() => {
-                              var _c$2 = _$memo(() => !!win.resetsAt);
-                              return () => _c$2() ? (() => {
-                                var _el$19 = _$createElement("span"), _el$20 = _$createTextNode(` \xB7 `), _el$21 = _$createTextNode(` `);
-                                _$insertNode(_el$19, _el$20);
-                                _$insertNode(_el$19, _el$21);
-                                _$insert(_el$19, () => t("providerResets"), _el$21);
-                                _$insert(_el$19, () => formatReset2(win.resetsAt), null);
-                                _$effect((_$p) => _$setProp(_el$19, "style", {
+                              var _c$2 = _$memo(() => displayMode() === "remaining");
+                              return () => _c$2() ? ` ${t("left")}` : "";
+                            })(), null);
+                            _$insert(_el$14, (() => {
+                              var _c$3 = _$memo(() => !!win.resetsAt);
+                              return () => _c$3() ? (() => {
+                                var _el$18 = _$createElement("span"), _el$19 = _$createTextNode(` \xB7 `), _el$20 = _$createTextNode(` `);
+                                _$insertNode(_el$18, _el$19);
+                                _$insertNode(_el$18, _el$20);
+                                _$insert(_el$18, () => t("providerResets"), _el$20);
+                                _$insert(_el$18, () => formatResetDuration(win.resetsAt), null);
+                                _$effect((_$p) => _$setProp(_el$18, "style", {
                                   fg: dimColor()
                                 }, _$p));
-                                return _el$19;
+                                return _el$18;
                               })() : null;
                             })(), null);
                             _$effect((_p$) => {
                               var _v$5 = mutedColor(), _v$6 = {
-                                fg: statusColor(state)
+                                fg: color()
                               };
-                              _v$5 !== _p$.e && (_p$.e = _$setProp(_el$15, "fg", _v$5, _p$.e));
-                              _v$6 !== _p$.t && (_p$.t = _$setProp(_el$16, "style", _v$6, _p$.t));
+                              _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
+                              _v$6 !== _p$.t && (_p$.t = _$setProp(_el$15, "style", _v$6, _p$.t));
                               return _p$;
                             }, {
                               e: void 0,
                               t: void 0
                             });
-                            return _el$15;
+                            return _el$14;
                           })();
                         }
                         if (win.valueLabel) {
                           return (() => {
-                            var _el$22 = _$createElement("text"), _el$23 = _$createElement("span");
-                            _$insertNode(_el$22, _el$23);
-                            _$insert(_el$22, label, _el$23);
-                            _$insert(_el$23, () => win.valueLabel);
+                            var _el$21 = _$createElement("text"), _el$22 = _$createElement("span");
+                            _$insertNode(_el$21, _el$22);
+                            _$insert(_el$21, label, _el$22);
+                            _$insert(_el$22, () => win.valueLabel);
                             _$effect((_p$) => {
                               var _v$7 = mutedColor(), _v$8 = {
                                 fg: greenColor()
                               };
-                              _v$7 !== _p$.e && (_p$.e = _$setProp(_el$22, "fg", _v$7, _p$.e));
-                              _v$8 !== _p$.t && (_p$.t = _$setProp(_el$23, "style", _v$8, _p$.t));
+                              _v$7 !== _p$.e && (_p$.e = _$setProp(_el$21, "fg", _v$7, _p$.e));
+                              _v$8 !== _p$.t && (_p$.t = _$setProp(_el$22, "style", _v$8, _p$.t));
                               return _p$;
                             }, {
                               e: void 0,
                               t: void 0
                             });
-                            return _el$22;
+                            return _el$21;
                           })();
                         }
                         return (() => {
-                          var _el$24 = _$createElement("text"), _el$25 = _$createTextNode(`\u2014`);
-                          _$insertNode(_el$24, _el$25);
-                          _$insert(_el$24, label, _el$25);
-                          _$effect((_$p) => _$setProp(_el$24, "fg", mutedColor(), _$p));
-                          return _el$24;
+                          var _el$23 = _$createElement("text"), _el$24 = _$createTextNode(`\u2014`);
+                          _$insertNode(_el$23, _el$24);
+                          _$insert(_el$23, label, _el$24);
+                          _$effect((_$p) => _$setProp(_el$23, "fg", mutedColor(), _$p));
+                          return _el$23;
                         })();
                       }
                     });
@@ -1590,7 +2684,7 @@ function ProviderUsageBlocks(props) {
               }
             }), null);
             _$effect((_p$) => {
-              var _v$ = PROVIDER_COLORS[state.id] ?? cyanColor(), _v$2 = {
+              var _v$ = PROVIDER_COLORS[state.id] ?? FALLBACK_COLOR, _v$2 = {
                 fg: color()
               }, _v$3 = {
                 fg: primaryColor()
@@ -1619,17 +2713,25 @@ function ProviderUsageBlocks(props) {
 var client = null;
 function setV2Client(c) {
   client = c;
+  clearQueryCache();
 }
 function requireClient() {
   if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
   return client;
 }
-async function fetchAllSessions(limit = 500) {
+var SNAPSHOT_TTL_MS = 3e4;
+var snapshotPromise = null;
+var snapshotAt = 0;
+function clearQueryCache() {
+  snapshotPromise = null;
+  snapshotAt = 0;
+}
+async function loadSnapshot() {
   const c = requireClient();
   const all = [];
   let cursor;
   for (; ; ) {
-    const res = await c.session.list({ limit, cursor });
+    const res = await c.session.list({ limit: 500, cursor });
     const page = res?.data;
     if (!Array.isArray(page) || page.length === 0) break;
     all.push(...page);
@@ -1637,7 +2739,63 @@ async function fetchAllSessions(limit = 500) {
     if (!next) break;
     cursor = next;
   }
-  return all;
+  const messages = /* @__PURE__ */ new Map();
+  const batchSize = 8;
+  for (let i = 0; i < all.length; i += batchSize) {
+    const batch = all.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(async (s) => {
+      try {
+        return await fetchAllMessages(s.id);
+      } catch {
+        return null;
+      }
+    }));
+    for (let j = 0; j < batch.length; j++) {
+      if (results[j]) messages.set(batch[j].id, results[j]);
+    }
+  }
+  return { sessions: all, messages };
+}
+function snapshot() {
+  if (snapshotPromise && snapshotAt && Date.now() - snapshotAt > SNAPSHOT_TTL_MS) {
+    snapshotPromise = null;
+    snapshotAt = 0;
+  }
+  if (!snapshotPromise) {
+    const pending = loadSnapshot();
+    void pending.then(
+      (result) => {
+        snapshotAt = Date.now();
+      },
+      () => {
+      }
+    );
+    void pending.catch(() => {
+      if (snapshotPromise === pending) {
+        snapshotPromise = null;
+        snapshotAt = 0;
+      }
+    });
+    snapshotPromise = pending;
+  }
+  return snapshotPromise;
+}
+async function fetchAllSessions() {
+  return (await snapshot()).sessions;
+}
+async function loadAssistants(filters = {}) {
+  const snap = await snapshot();
+  const out = [];
+  for (const [sessionID, msgs] of snap.messages) {
+    for (const m of msgs) {
+      const a = asAssistant(m, sessionID);
+      if (!a) continue;
+      if (a.tokens.total <= 0) continue;
+      if (!matchesFilters(a, filters)) continue;
+      out.push(a);
+    }
+  }
+  return out;
 }
 async function fetchAllMessages(sessionID, limit = 1e3) {
   const c = requireClient();
@@ -1704,26 +2862,6 @@ function matchesFilters(a, filters) {
     if (filters.endDate && isValidDate(filters.endDate) && day > filters.endDate) return false;
   }
   return true;
-}
-async function loadAssistants(filters = {}) {
-  const sessions = await fetchAllSessions();
-  const out = [];
-  for (const s of sessions) {
-    let msgs;
-    try {
-      msgs = await fetchAllMessages(s.id);
-    } catch {
-      continue;
-    }
-    for (const m of msgs) {
-      const a = asAssistant(m, s.id);
-      if (!a) continue;
-      if (a.tokens.total <= 0) continue;
-      if (!matchesFilters(a, filters)) continue;
-      out.push(a);
-    }
-  }
-  return out;
 }
 function toSessionTokenData(assistants) {
   const models = /* @__PURE__ */ new Set();
@@ -1971,20 +3109,14 @@ async function getSessionTitle(sessionId) {
   }
 }
 async function getErrorStats(filters = {}) {
-  const sessions = await fetchAllSessions();
+  const snap = await snapshot();
   let successCount = 0;
   let failedCount = 0;
   const byModelMap = /* @__PURE__ */ new Map();
-  for (const s of sessions) {
-    let msgs;
-    try {
-      msgs = await fetchAllMessages(s.id);
-    } catch {
-      continue;
-    }
+  for (const [sessionID, msgs] of snap.messages) {
     for (const m of msgs) {
       if (m?.type !== "assistant") continue;
-      const a = asAssistant(m, s.id);
+      const a = asAssistant(m, sessionID);
       if (!a) continue;
       if (!matchesFilters(a, filters)) continue;
       const key = `${a.providerID}|${a.modelID}`;
@@ -2028,26 +3160,32 @@ async function getHourlyHeatmap(filters = {}) {
   return Array.from(map.values());
 }
 async function getUsageReport(filters = {}) {
-  const [summary, models, providers, daily, sessions, errors] = await Promise.all([
+  const [summary, models, providers, daily, sessions, errors, totalSessions] = await Promise.all([
     getSummary(filters),
     getModelBreakdown(filters),
     getProviderBreakdown(filters),
     getDailyBreakdown(filters),
     getSessionBreakdown(filters),
-    getErrorStats(filters)
+    getErrorStats(filters),
+    getSessionCount(filters)
   ]);
-  return { filters, summary, models, providers, daily, sessions, errors };
+  return { filters, summary, models, providers, daily, sessions, totalSessions, errors };
+}
+async function getSessionCount(filters = {}) {
+  const assistants = await loadAssistants(filters);
+  return new Set(assistants.map((a) => a.sessionID)).size;
 }
 
 // src/pricing.ts
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync3, existsSync as existsSync4 } from "node:fs";
-import { join as join4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync3, existsSync as existsSync5 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 import { execSync } from "node:child_process";
-var PRICING_PATH = join4(homedir4(), ".opencode", "usage-stat-pricing.json");
+var PRICING_PATH = join5(homedir5(), ".opencode", "usage-stat-pricing.json");
 var MODELS_DEV_URL = "https://models.dev/api.json";
 var MISSING_HIT_RATE = 0.94;
 var CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+var NON_CACHE_PROVIDERS = /* @__PURE__ */ new Set(["ollama", "ollama-cloud"]);
 var MODEL_PREFIX_MAP = [
   // DeepSeek
   { prefix: "deepseek-v4-pro", provider: "deepseek" },
@@ -2173,8 +3311,8 @@ function fetchAndCachePricing() {
 }
 function loadCachedPricing() {
   try {
-    if (existsSync4(PRICING_PATH)) {
-      const content = readFileSync4(PRICING_PATH, "utf-8");
+    if (existsSync5(PRICING_PATH)) {
+      const content = readFileSync5(PRICING_PATH, "utf-8");
       return JSON.parse(content);
     }
   } catch {
@@ -2232,7 +3370,7 @@ function estimateApiCost(providerID, modelID, requestCount, inputTokens, outputT
   const reasoningRate = pricing.reasoning ?? pricing.output ?? 0;
   const cacheReadRate = pricing.cache_read ?? 0;
   const cacheWriteRate = pricing.cache_write ?? 0;
-  const isMissing = isMissingCache(requestCount, cacheRead);
+  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead);
   let cost;
   if (isMissing) {
     const nonCacheInput = inputTokens * (1 - MISSING_HIT_RATE);
@@ -2245,8 +3383,8 @@ function estimateApiCost(providerID, modelID, requestCount, inputTokens, outputT
 }
 
 // src/html-common.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { existsSync as existsSync6, readFileSync as readFileSync6 } from "node:fs";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 function fmtTokens(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
@@ -2292,7 +3430,10 @@ function fmtDuration(ms) {
   return `${m}m ${s}s`;
 }
 function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function jsonForScript(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 function nowString() {
   const now = /* @__PURE__ */ new Date();
@@ -2300,19 +3441,17 @@ function nowString() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 function percentile2(sortedAsc, p) {
-  if (sortedAsc.length === 0) return 0;
-  const idx = Math.min(Math.floor(sortedAsc.length * p), sortedAsc.length - 1);
-  return sortedAsc[idx];
+  return percentileSorted(sortedAsc, p);
 }
 function embeddedEChartsScript() {
   const candidates = [
-    join5(dirname2(fileURLToPath(import.meta.url)), "..", "vendor", "echarts.min.js"),
-    join5(process.cwd(), "vendor", "echarts.min.js"),
-    join5(process.cwd(), "dist", "..", "vendor", "echarts.min.js")
+    join6(dirname2(fileURLToPath(import.meta.url)), "..", "vendor", "echarts.min.js"),
+    join6(process.cwd(), "vendor", "echarts.min.js"),
+    join6(process.cwd(), "dist", "..", "vendor", "echarts.min.js")
   ];
   for (const path of candidates) {
-    if (!existsSync5(path)) continue;
-    const source = readFileSync5(path, "utf8").replace(/<\/script/gi, "<\\/script");
+    if (!existsSync6(path)) continue;
+    const source = readFileSync6(path, "utf8").replace(/<\/script/gi, "<\\/script");
     return `<script>${source}</script>`;
   }
   return `<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>`;
@@ -2320,13 +3459,13 @@ function embeddedEChartsScript() {
 var HTML_HEAD_SHARED = embeddedEChartsScript();
 function embeddedBackgroundTexture() {
   const candidates = [
-    join5(dirname2(fileURLToPath(import.meta.url)), "..", "assets", "bg-texture.jpg"),
-    join5(process.cwd(), "assets", "bg-texture.jpg"),
-    join5(process.cwd(), "dist", "..", "assets", "bg-texture.jpg")
+    join6(dirname2(fileURLToPath(import.meta.url)), "..", "assets", "bg-texture.jpg"),
+    join6(process.cwd(), "assets", "bg-texture.jpg"),
+    join6(process.cwd(), "dist", "..", "assets", "bg-texture.jpg")
   ];
   for (const path of candidates) {
-    if (existsSync5(path)) {
-      const image = readFileSync5(path);
+    if (existsSync6(path)) {
+      const image = readFileSync6(path);
       const mime = image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : "image/jpeg";
       return `data:${mime};base64,` + image.toString("base64");
     }
@@ -2830,22 +3969,22 @@ window.addEventListener('resize', function() {
 });`;
 
 // src/model-icons.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "node:fs";
-import { join as join6, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
+import { join as join7, dirname as dirname3 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function resolveIconsDir() {
   const candidates = [];
   try {
     const url = import.meta.url;
-    if (url) candidates.push(join6(dirname3(fileURLToPath2(url)), "..", "icons"));
+    if (url) candidates.push(join7(dirname3(fileURLToPath2(url)), "..", "icons"));
   } catch {
   }
   const cwd = process.cwd();
-  for (const base of [cwd, join6(cwd, "dist", "..")]) {
-    candidates.push(join6(base, "icons"));
+  for (const base of [cwd, join7(cwd, "dist", "..")]) {
+    candidates.push(join7(base, "icons"));
   }
   for (const c of candidates) {
-    if (c && existsSync6(join6(c, "_default.svg"))) return c;
+    if (c && existsSync7(join7(c, "_default.svg"))) return c;
   }
   return null;
 }
@@ -2904,9 +4043,9 @@ function readIconDataUri(fileName) {
     _cache.set(fileName, "");
     return "";
   }
-  const filePath = join6(ICONS_DIR, fileName);
+  const filePath = join7(ICONS_DIR, fileName);
   try {
-    const buf = readFileSync6(filePath);
+    const buf = readFileSync7(filePath);
     let uri;
     if (fileName.endsWith(".svg")) {
       let text = buf.toString("utf8");
@@ -3025,8 +4164,8 @@ function renderModelCards(data) {
     return `
     <div class="model-card">
       <div class="model-card-header">
-        <span class="model-name">${modelIconImg(m.model, 18)}${m.model}</span>
-        <span class="model-provider">${m.provider}</span>
+        <span class="model-name">${modelIconImg(m.model, 18)}${escapeHtml(m.model)}</span>
+        <span class="model-provider">${escapeHtml(m.provider)}</span>
       </div>
       <div class="model-card-stats">
         <div class="stat-grid">
@@ -3116,13 +4255,13 @@ function renderTrendChartInit(data) {
     return slice.reduce((a, b) => a + b, 0) / slice.length;
   });
   return `
-var trendLabels = ${JSON.stringify(labels)};
-var trendInput = ${JSON.stringify(inputTokens)};
-var trendOutput = ${JSON.stringify(outputTokens)};
-var trendCache = ${JSON.stringify(cacheReadTokens)};
-var trendTotal = ${JSON.stringify(totalTokens)};
-var trendCost = ${JSON.stringify(costs)};
-var trendMA5 = ${JSON.stringify(ma5)};
+var trendLabels = ${jsonForScript(labels)};
+var trendInput = ${jsonForScript(inputTokens)};
+var trendOutput = ${jsonForScript(outputTokens)};
+var trendCache = ${jsonForScript(cacheReadTokens)};
+var trendTotal = ${jsonForScript(totalTokens)};
+var trendCost = ${jsonForScript(costs)};
+var trendMA5 = ${jsonForScript(ma5)};
 
 function initTrendChart() {
   var el = document.getElementById('trend-chart');
@@ -3168,8 +4307,8 @@ function renderDurationChartInit(data) {
   const p50 = data.p50Duration / 1e3;
   const p90 = data.p90Duration / 1e3;
   return `
-var durLabels = ${JSON.stringify(labels)};
-var durData = ${JSON.stringify(durations)};
+var durLabels = ${jsonForScript(labels)};
+var durData = ${jsonForScript(durations)};
 var durP50 = ${p50.toFixed(2)};
 var durP90 = ${p90.toFixed(2)};
 
@@ -3210,8 +4349,8 @@ function renderCacheTrendInit(data) {
     return cacheHitRate(m.inputTokens, m.cacheRead) * 100;
   });
   return `
-var cacheLabels = ${JSON.stringify(labels)};
-var cacheHitData = ${JSON.stringify(hitRates)};
+var cacheLabels = ${jsonForScript(labels)};
+var cacheHitData = ${jsonForScript(hitRates)};
 
 function initCacheTrendChart() {
   var el = document.getElementById('cache-trend-chart');
@@ -3254,9 +4393,9 @@ function renderApiCostSection(data) {
   const tableRows = rows.map((m) => {
     const apiStr = m.apiEquivCost != null ? m.estimated ? `<span style="color:var(--missing)">~${fmtCost(m.apiEquivCost)}</span>` : fmtCost(m.apiEquivCost) : '<span style="color:var(--text-faint)">N/A</span>';
     const estTag = m.estimated ? ` <span style="color:var(--missing);font-size:0.8em">(est.)</span>` : "";
-    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${m.pricingProvider}</span>` : "-";
+    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : "-";
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td><td>${m.provider}</td><td>${pricingSrc}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
       <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
       <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`;
@@ -3296,7 +4435,7 @@ function renderInsights(data) {
         icon: "$",
         bg: "rgba(255,184,0,0.15)",
         title: "Most expensive request",
-        value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${mostExpensive.model})`
+        value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${escapeHtml(mostExpensive.model)})`
       });
     }
   }
@@ -3308,7 +4447,7 @@ function renderInsights(data) {
       value: `Request <span class="accent">#${data.peakTokensIndex + 1}</span> with <span class="accent">${fmtTokens(data.peakTokens)}</span> tokens`
     });
   }
-  let bestStreak = 0, streakStart = 0, bestStart = 0;
+  let bestStreak = 0, streakStart = -1, bestStart = 0;
   for (let i = 0; i < data.messages.length; i++) {
     const m = data.messages[i];
     if (!isMissingCache(1, m.cacheRead) && cacheHitRate(m.inputTokens, m.cacheRead) >= 0.85) {
@@ -3340,7 +4479,7 @@ function renderInsights(data) {
         icon: "\u23F1",
         bg: "rgba(255,71,87,0.15)",
         title: "Slowest response",
-        value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${slowest.model})`
+        value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${escapeHtml(slowest.model)})`
       });
     }
   }
@@ -3575,7 +4714,8 @@ function renderKpiCards2(data) {
   const dailyCount = data.daily.length;
   const avgDailyTokens = dailyCount > 0 ? s.totalTokens / dailyCount : 0;
   const avgDailyColor = avgDailyUsageColor(avgDailyTokens);
-  const costPerSession = data.sessions.length > 0 ? s.totalCost / data.sessions.length : 0;
+  const totalSessions = data.totalSessions ?? data.sessions.length;
+  const costPerSession = totalSessions > 0 ? s.totalCost / totalSessions : 0;
   return `
     <div class="kpi-row cols-9" style="grid-template-columns:repeat(9,1fr)">
       <div class="kpi-card">
@@ -3592,7 +4732,7 @@ function renderKpiCards2(data) {
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Sessions</div>
-        <div class="kpi-value" data-countup="${data.sessions.length}">${data.sessions.length}</div>
+        <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Avg Daily Tokens</div>
@@ -3662,16 +4802,16 @@ function renderModelChartInit(data) {
   const requestData = rev.map((m) => m.requests);
   const iconUris = rev.map((m) => getModelIconDataUri(m.model));
   const richEntries = iconUris.map(
-    (uri, i) => `i${i}:{backgroundColor:{image:${JSON.stringify(uri)}},width:14,height:14,align:'center',verticalAlign:'middle'}`
+    (uri, i) => `i${i}:{backgroundColor:{image:${jsonForScript(uri)}},width:14,height:14,align:'center',verticalAlign:'middle'}`
   ).join(",");
-  return `var modelNames = ${JSON.stringify(names)};
-var modelInput = ${JSON.stringify(inputData)};
-var modelOutput = ${JSON.stringify(outputData)};
-var modelCache = ${JSON.stringify(cacheData)};
-var modelReasoning = ${JSON.stringify(reasoningData)};
-var modelCost = ${JSON.stringify(costData)};
-var modelApiCost = ${JSON.stringify(apiCostData)};
-var modelReq = ${JSON.stringify(requestData)};
+  return `var modelNames = ${jsonForScript(names)};
+var modelInput = ${jsonForScript(inputData)};
+var modelOutput = ${jsonForScript(outputData)};
+var modelCache = ${jsonForScript(cacheData)};
+var modelReasoning = ${jsonForScript(reasoningData)};
+var modelCost = ${jsonForScript(costData)};
+var modelApiCost = ${jsonForScript(apiCostData)};
+var modelReq = ${jsonForScript(requestData)};
 var modelView = 'tokens';
 var modelIconRich = {${richEntries}};
 
@@ -3765,8 +4905,8 @@ function renderProviderDonutInit(data) {
   const items = top.map((p) => ({ name: p.provider, value: p.totalCost }));
   if (restCost > 0) items.push({ name: "Other", value: restCost });
   const colors = ["#FFB800", "#00D1FF", "#00F593", "#B545FF", "#FF8C00", "#4FC3F7", "#FF6B6B", "#B478FF", "#555568"];
-  return `var provDonutData = ${JSON.stringify(items)};
-var provDonutColors = ${JSON.stringify(colors)};
+  return `var provDonutData = ${jsonForScript(items)};
+var provDonutColors = ${jsonForScript(colors)};
 function initProviderDonut() {
   var el = document.getElementById('provider-donut');
   if (!el) return;
@@ -3795,11 +4935,11 @@ function renderApiCostSection2(data) {
   const tableRows = rows.map((m) => {
     const apiStr = m.apiEquivCost != null ? m.estimated ? `<span style="color:var(--missing)">~${fmtCost(m.apiEquivCost)}</span>` : fmtCost(m.apiEquivCost) : '<span style="color:var(--text-faint)">N/A</span>';
     const estTag = m.estimated ? ` <span style="color:var(--missing);font-size:0.8em">(est.)</span>` : "";
-    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${m.pricingProvider}</span>` : "-";
+    const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : "-";
     const totalTok = m.inputTokens + m.outputTokens + m.reasoningTokens + m.cacheRead + m.cacheWrite;
     const costPer1M = totalTok > 0 && m.apiEquivCost != null ? `$${(m.apiEquivCost / totalTok * 1e6).toFixed(4)}` : "-";
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td><td>${m.provider}</td><td>${pricingSrc}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
       <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
       <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td><td>${costPer1M}</td>
     </tr>`;
@@ -3836,7 +4976,7 @@ function renderProviderCards(data) {
     const sharePct = totalTokens > 0 ? (p.totalTokens / totalTokens * 100).toFixed(1) : "0";
     return `
     <div class="provider-card" style="border-color:${providerBorderColor(p.provider)}">
-      <div class="provider-name">${p.provider}</div>
+      <div class="provider-name">${escapeHtml(p.provider)}</div>
       <div class="provider-stat"><span class="stat-label">Tokens</span><span>${fmtTokens(p.totalTokens)} <span style="color:var(--text-faint)">(${sharePct}%)</span></span></div>
       <div class="provider-stat"><span class="stat-label">Cost</span><span>${fmtCost(p.totalCost)}</span></div>
       <div class="provider-stat"><span class="stat-label">Requests</span><span>${p.requests}</span></div>
@@ -3860,8 +5000,8 @@ function renderModelAnalyticsSection(data) {
     const apiCostStr = apiItem?.apiEquivCost != null ? apiItem.estimated ? `<span style="color:var(--missing)">~${fmtCost(apiItem.apiEquivCost)}</span>` : fmtCost(apiItem.apiEquivCost) : "-";
     const costPer1M = m.totalTokens > 0 && m.totalCost > 0 ? `$${(m.totalCost / m.totalTokens * 1e6).toFixed(4)}` : "-";
     return `<tr>
-      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${m.model}</span></div></td>
-      <td>${m.provider}</td>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
+      <td>${escapeHtml(m.provider)}</td>
       <td>${m.requests}</td>
       <td>${m.sessions}</td>
       <td>${fmtTokens(m.totalTokens)}</td>
@@ -3887,7 +5027,7 @@ function renderModelAnalyticsSection(data) {
     const errorRows = errors.byModel.filter((m) => m.failed > 0).map((m) => {
       const modelRate = m.total > 0 ? (m.failed / m.total * 100).toFixed(1) + "%" : "-";
       return `<tr>
-          <td>${m.provider}</td>
+          <td>${escapeHtml(m.provider)}</td>
           <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
           <td>${m.total}</td>
           <td style="color:var(--danger)">${m.failed}</td>
@@ -3949,9 +5089,9 @@ function renderModelAnalyticsSection(data) {
 function renderSessionTable(data) {
   const rows = data.sessions.map((s) => {
     return `<tr>
-      <td>${s.day}</td>
-      <td>${s.provider}</td>
-      <td><div class="model-cell">${modelIconImg(s.model, 16)}<span class="model-name-text" title="${escapeHtml(s.model)}">${s.model}</span></div></td>
+      <td>${escapeHtml(s.day)}</td>
+      <td>${escapeHtml(s.provider)}</td>
+      <td><div class="model-cell">${modelIconImg(s.model, 16)}<span class="model-name-text" title="${escapeHtml(s.model)}">${escapeHtml(s.model)}</span></div></td>
       <td>${s.requests}</td>
       <td>${fmtTokens(s.totalTokens)}</td>
       <td>${fmtTokens(s.inputTokens)}</td>
@@ -3994,12 +5134,12 @@ function renderDailyTrendInit(data) {
     return cumCost;
   });
   return `
-var dailyDays = ${JSON.stringify(days)};
-var dailyTokens = ${JSON.stringify(tokens)};
-var dailyCosts = ${JSON.stringify(costs)};
-var dailyRequests = ${JSON.stringify(requests)};
-var dailyMA7 = ${JSON.stringify(ma7)};
-var dailyCumCost = ${JSON.stringify(cumCosts)};
+var dailyDays = ${jsonForScript(days)};
+var dailyTokens = ${jsonForScript(tokens)};
+var dailyCosts = ${jsonForScript(costs)};
+var dailyRequests = ${jsonForScript(requests)};
+var dailyMA7 = ${jsonForScript(ma7)};
+var dailyCumCost = ${jsonForScript(cumCosts)};
 
 function initDailyChart() {
   var el = document.getElementById('daily-chart');
@@ -4043,7 +5183,7 @@ function renderHeatmapInit(data) {
   const minDate = days.length > 0 ? days[0].day : "";
   const maxDate = days.length > 0 ? days[days.length - 1].day : "";
   return `
-var heatData = ${JSON.stringify(heatData)};
+var heatData = ${jsonForScript(heatData)};
 function initHeatmapChart() {
   var el = document.getElementById('heatmap-chart');
   if (!el) return;
@@ -4074,10 +5214,10 @@ function renderHourlyHeatmapInit(data) {
   const hours = [];
   for (let i = 0; i < 24; i++) hours.push(i);
   return `
-var hourlyData = ${JSON.stringify(heatData)};
+var hourlyData = ${jsonForScript(heatData)};
 var hourlyMax = ${maxVal};
-var hourLabels = ${JSON.stringify(hours)};
-var dowLabels = ${JSON.stringify(dowNames)};
+var hourLabels = ${jsonForScript(hours)};
+var dowLabels = ${jsonForScript(dowNames)};
 function initHourlyHeatmap() {
   var el = document.getElementById('hourly-heatmap');
   if (!el) return;
@@ -4117,9 +5257,9 @@ function renderCostTrendInit(data) {
     return cumCost;
   });
   return `
-var costDays = ${JSON.stringify(days)};
-var dailyCostArr = ${JSON.stringify(costs)};
-var cumCostArr = ${JSON.stringify(cumCosts)};
+var costDays = ${jsonForScript(days)};
+var dailyCostArr = ${jsonForScript(costs)};
+var cumCostArr = ${jsonForScript(cumCosts)};
 function initCostTrend() {
   var el = document.getElementById('cost-trend-chart');
   if (!el) return;
@@ -4163,7 +5303,7 @@ function generateTotalUsageHtml(data) {
   const heatmapJs = renderHeatmapInit(data);
   const hourlyHeatmapJs = (data.hourlyHeatmap ?? []).length > 0 ? renderHourlyHeatmapInit(data) : "";
   const costTrendJs = data.daily.length > 0 ? renderCostTrendInit(data) : "";
-  const jsonData = JSON.stringify(data);
+  const jsonData = jsonForScript(data);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4315,13 +5455,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // src/commands.tsx
 import { execSync as execSync2, spawn } from "node:child_process";
-import { existsSync as existsSync7, mkdirSync, writeFileSync as writeFileSync4, readdirSync, statSync as statSync2, unlinkSync } from "node:fs";
-import { join as join7 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { existsSync as existsSync8, mkdirSync, writeFileSync as writeFileSync4, readdirSync, statSync as statSync2, unlinkSync } from "node:fs";
+import { join as join8 } from "node:path";
+import { homedir as homedir6 } from "node:os";
 var REPORT_PREFIX = "usage-stat-";
 function ensureReportDir() {
-  const dir = join7(homedir5(), ".opencode", "reports");
-  if (!existsSync7(dir)) mkdirSync(dir, {
+  const dir = join8(homedir6(), ".opencode", "reports");
+  if (!existsSync8(dir)) mkdirSync(dir, {
     recursive: true
   });
   return dir;
@@ -4361,8 +5501,8 @@ function cleanupOldReports(dir) {
   try {
     const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && f.endsWith(".html")).map((f) => ({
       name: f,
-      path: join7(dir, f),
-      mtime: statSync2(join7(dir, f)).mtimeMs
+      path: join8(dir, f),
+      mtime: statSync2(join8(dir, f)).mtimeMs
     })).sort((a, b) => b.mtime - a.mtime);
     if (files.length > MAX_REPORTS) {
       for (const f of files.slice(MAX_REPORTS)) {
@@ -4443,7 +5583,7 @@ async function showHtmlReport(context, filters = {}) {
     const data = await buildCombinedData(context, filters);
     const html = generateTotalUsageHtml(data);
     const dir = ensureReportDir();
-    const filePath = join7(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
+    const filePath = join8(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
     writeFileSync4(filePath, html, "utf-8");
     cleanupOldReports(dir);
     context.ui.toast.show({
@@ -4478,7 +5618,7 @@ async function showHtmlSessionReport(context) {
     const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors);
     const html = generateSessionUsageHtml(data);
     const dir = ensureReportDir();
-    const filePath = join7(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`);
+    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`);
     writeFileSync4(filePath, html, "utf-8");
     cleanupOldReports(dir);
     context.ui.toast.show({
@@ -4498,7 +5638,7 @@ async function showJsonExport(context) {
   try {
     const data = await buildCombinedData(context, {});
     const dir = ensureReportDir();
-    const filePath = join7(dir, `${REPORT_PREFIX}data-${dateTimeStamp()}.json`);
+    const filePath = join8(dir, `${REPORT_PREFIX}data-${dateTimeStamp()}.json`);
     writeFileSync4(filePath, JSON.stringify(data, null, 2), "utf-8");
     context.ui.toast.show({
       message: `JSON: ${filePath}`,
@@ -4554,8 +5694,7 @@ async function showHtmlReportRangeMenu(context) {
 }
 async function showUsageMenu(context) {
   try {
-    const lang = await loadLanguageFromStorage(context);
-    if (lang) setLanguage(lang);
+    setLanguage(loadSettings(context).language);
   } catch {
   }
   const choice = await context.ui.dialog.select({
@@ -4594,16 +5733,9 @@ async function showUsageMenu(context) {
       break;
   }
 }
-var DEFAULT_SETTINGS = {
-  showPerformance: true,
-  showPricing: true,
-  showTrend: true
-};
-async function loadSidebarSettings(context) {
+function loadSettings(context) {
   try {
-    const [store] = context.storage.store("usage-stat-config", {
-      initial: DEFAULT_SETTINGS
-    });
+    const [store] = getSettingsStore(context);
     return {
       ...DEFAULT_SETTINGS,
       ...store
@@ -4614,20 +5746,14 @@ async function loadSidebarSettings(context) {
     };
   }
 }
-async function loadLanguageFromStorage(context) {
-  try {
-    const [store] = context.storage.store("usage-stat-config", {
-      initial: {
-        language: "auto"
-      }
-    });
-    return store.language ?? null;
-  } catch {
-    return null;
-  }
+async function mutateSettings(context, mutation) {
+  const [, mutate] = getSettingsStore(context);
+  await mutate(mutation);
 }
 async function showSettingsDialog(context) {
-  const cfg = await loadSidebarSettings(context);
+  await migrateLegacySettings(context);
+  const cfg = loadSettings(context);
+  const displayLabel = cfg.providerUsageDisplay === "remaining" ? `${t("displayRemaining")} (${t("left")})` : t("displayUsed");
   const choice = await context.ui.dialog.select({
     title: t("settingsTitle"),
     placeholder: t("settingsPlaceholder"),
@@ -4644,6 +5770,10 @@ async function showSettingsDialog(context) {
       value: "showTrend",
       description: t("descShowTrend")
     }, {
+      title: `${t("settingsDisplayMode")}: ${displayLabel} \u25B8`,
+      value: "providerUsageDisplay",
+      description: t("descSettingsDisplay")
+    }, {
       title: `${t("settingsLanguage")} \u25B8`,
       value: "language",
       description: t("descSettingsLanguage")
@@ -4654,27 +5784,45 @@ async function showSettingsDialog(context) {
     }]
   });
   if (!choice) return;
-  try {
-    const [, mutate] = context.storage.store("usage-stat-config", {
-      initial: DEFAULT_SETTINGS
-    });
-    if (choice === "language") {
-      await showLanguageMenu(context);
-    } else if (choice !== "done") {
-      await mutate((d) => {
-        d[choice] = !d[choice];
+  if (choice === "language") {
+    await showLanguageMenu(context);
+  } else if (choice === "providerUsageDisplay") {
+    await showDisplayModeMenu(context);
+  } else if (choice !== "done") {
+    try {
+      await mutateSettings(context, (draft) => {
+        draft[choice] = !draft[choice];
       });
       await showSettingsDialog(context);
+    } catch {
     }
+  }
+}
+async function showDisplayModeMenu(context) {
+  const current = loadSettings(context).providerUsageDisplay;
+  const choice = await context.ui.dialog.select({
+    title: t("settingsDisplayMode"),
+    placeholder: t("settingsPlaceholder"),
+    options: [{
+      title: `${current === "used" ? "\u2713 " : "  "}${t("displayUsed")}`,
+      value: "used",
+      description: "n% used"
+    }, {
+      title: `${current === "remaining" ? "\u2713 " : "  "}${t("displayRemaining")} (${t("left")})`,
+      value: "remaining",
+      description: `${t("displayRemaining")} \u2014 n% left`
+    }]
+  });
+  if (!choice) return;
+  try {
+    await mutateSettings(context, (draft) => {
+      draft.providerUsageDisplay = choice;
+    });
   } catch {
   }
 }
 async function showLanguageMenu(context) {
-  let current = "auto";
-  try {
-    current = await loadLanguageFromStorage(context) ?? "auto";
-  } catch {
-  }
+  const current = loadSettings(context).language;
   const choice = await context.ui.dialog.select({
     title: t("settingsLanguage"),
     placeholder: t("settingsLanguage"),
@@ -4692,13 +5840,8 @@ async function showLanguageMenu(context) {
   if (!choice) return;
   setLanguage(choice);
   try {
-    const [, mutate] = context.storage.store("usage-stat-config", {
-      initial: {
-        language: "auto"
-      }
-    });
-    await mutate((d) => {
-      d.language = choice;
+    await mutateSettings(context, (draft) => {
+      draft.language = choice;
     });
   } catch {
   }
@@ -4737,14 +5880,15 @@ function registerCommands(context) {
     }, {
       id: "usage-stat.total-usage",
       title: "Total Usage",
-      description: "Generate a cumulative HTML usage report (all time) locally",
+      description: "Generate a cumulative HTML usage report locally (optionally /total-usage 7 for last 7 days)",
       group: "Stats",
       palette: true,
       slash: {
-        name: "total-usage"
+        name: "total-usage",
+        arguments: true
       },
-      run: () => {
-        void showHtmlReport(context, getPresetRange("all"));
+      run: (input) => {
+        void showHtmlReport(context, parseDaysFilter(input));
       }
     }]
   }));
@@ -4818,30 +5962,65 @@ function UsageStatPanel(props) {
     perfTracker
   } = props;
   registerCommands(context);
-  const [config, setConfig] = createSignal2(loadConfig(context));
-  setLanguage(config().language);
-  createEffect(() => setLanguage(config().language));
+  const optionConfig = loadConfig(context);
+  let settings = null;
+  try {
+    const [store] = getSettingsStore(context);
+    settings = store;
+    migrateLegacySettings(context);
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err);
+  }
+  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance;
+  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
+  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
+  setLanguage(settings ? settings.language : optionConfig.language);
+  createEffect(() => setLanguage(settings ? settings.language : optionConfig.language));
   const t2 = (key) => {
-    void config().language;
+    void settings?.language;
     return t(key);
   };
   const isEnglish = (str) => /^[a-zA-Z\s\.\/]+$/.test(str);
-  const [collapse, setCollapse] = createSignal2(COLLAPSE_INITIAL);
-  let collapseMutate = () => Promise.resolve();
+  let storedCollapse = null;
+  let collapseMutate = null;
   try {
     const [store, mutate] = context.storage.store("usage-stat-collapse", {
       initial: COLLAPSE_INITIAL
     });
-    const read = () => store;
-    createEffect(() => {
-      const s = read();
-      setCollapse({
-        ...s
-      });
-    });
+    storedCollapse = store;
     collapseMutate = mutate;
-  } catch {
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err);
   }
+  const [localCollapse, setLocalCollapse] = createSignal2({});
+  function toggleGlobal() {
+    const next = !(localCollapse().global ?? storedCollapse?.global ?? false);
+    setLocalCollapse((prev) => ({
+      ...prev,
+      global: next
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.global = next;
+    }).catch(() => {
+    });
+  }
+  function toggleModel(key) {
+    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false;
+    const next = !current;
+    setLocalCollapse((prev) => ({
+      ...prev,
+      models: {
+        ...prev.models,
+        [key]: next
+      }
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.models[key] = next;
+    }).catch(() => {
+    });
+  }
+  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false;
+  const isModelCollapsed = (key) => (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true;
   const [panelWidth, setPanelWidth] = createSignal2(38);
   let outerBoxRef = null;
   const colors = resolveThemeColors(context.theme);
@@ -4984,29 +6163,8 @@ function UsageStatPanel(props) {
     return " " + "\u2500".repeat(w - 2) + " ";
   };
   const toggle = {
-    global: () => {
-      const next = !collapse().global;
-      setCollapse((current) => ({
-        ...current,
-        global: next
-      }));
-      void collapseMutate((draft) => {
-        draft.global = next;
-      });
-    },
-    model: (key) => {
-      const next = collapse().models[key] !== true;
-      setCollapse((current) => ({
-        ...current,
-        models: {
-          ...current.models,
-          [key]: next
-        }
-      }));
-      void collapseMutate((draft) => {
-        draft.models[key] = next;
-      });
-    }
+    global: toggleGlobal,
+    model: toggleModel
   };
   return (() => {
     var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("text");
@@ -5026,10 +6184,10 @@ function UsageStatPanel(props) {
     _$setProp2(_el$2, "justifyContent", "space-between");
     _$setProp2(_el$2, "paddingX", 1);
     _$insertNode2(_el$3, _el$4);
-    _$insert2(_el$3, () => collapse().global ? "\u25B6" : "\u25BE", _el$4);
+    _$insert2(_el$3, () => isPanelCollapsed() ? "\u25B6" : "\u25BE", _el$4);
     _$insert2(_el$3, () => t2("panelTitle"), null);
     _$insert2(_el$5, (() => {
-      var _c$ = _$memo2(() => !!collapse().global);
+      var _c$ = _$memo2(() => !!isPanelCollapsed());
       return () => _c$() ? [_$memo2(() => formatTokens(sessionTotals().totalTokens)), _$memo2(() => _$memo2(() => globalHitRate() >= 0)() ? (() => {
         var _el$10 = _$createElement2("span");
         _$insert2(_el$10, () => ` (${globalHitRate().toFixed(1)}% hit)`);
@@ -5051,7 +6209,7 @@ function UsageStatPanel(props) {
     }), null);
     _$insert2(_el$, _$createComponent2(Show2, {
       get when() {
-        return !collapse().global;
+        return !isPanelCollapsed();
       },
       get children() {
         return [(() => {
@@ -5110,7 +6268,7 @@ function UsageStatPanel(props) {
           return _el$7;
         })(), _$createComponent2(Show2, {
           get when() {
-            return _$memo2(() => !!config().sidebar.showPricing)() && sessionTotals().totalCost > 0;
+            return _$memo2(() => !!showPricing())() && sessionTotals().totalCost > 0;
           },
           get children() {
             var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("text"), _el$0 = _$createTextNode2(`: `), _el$1 = _$createElement2("span");
@@ -5140,13 +6298,13 @@ function UsageStatPanel(props) {
             return modelStats();
           },
           children: ([key, stat]) => {
-            const isExpanded = () => collapse().models[key] !== true;
+            const isExpanded = () => !isModelCollapsed(key);
             const hitDenom = stat.totalInput + stat.cacheRead;
             const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
             const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
             const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
             const trendStr = () => {
-              if (!config().sidebar.showTrend) return "";
+              if (!showTrend()) return "";
               const td = modelTrend().find((h) => h.key === key);
               if (!td?.trend || td.trend === 0) return "";
               return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
@@ -5172,7 +6330,8 @@ function UsageStatPanel(props) {
               const label = `${t2("cost")}:`;
               return label + " ".repeat(targetW() - getVisualWidth(label));
             };
-            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11);
+            const trendBudget = () => showTrend() ? 7 : 0;
+            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11 - trendBudget());
             return (() => {
               var _el$15 = _$createElement2("box"), _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("span"), _el$20 = _$createTextNode2(` `), _el$21 = _$createElement2("span"), _el$22 = _$createElement2("text");
               _$insertNode2(_el$15, _el$16);
@@ -5281,7 +6440,7 @@ function UsageStatPanel(props) {
                   })(), null);
                   _$insert2(_el$23, _$createComponent2(Show2, {
                     get when() {
-                      return _$memo2(() => !!config().sidebar.showPerformance)() && !!perfStats().models[key];
+                      return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
                     },
                     get children() {
                       var _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(` `), _el$29 = _$createElement2("span"), _el$30 = _$createTextNode2(`  `), _el$31 = _$createTextNode2(` `), _el$32 = _$createElement2("span"), _el$33 = _$createTextNode2(`  `), _el$34 = _$createTextNode2(` `), _el$35 = _$createElement2("span");
@@ -5324,7 +6483,7 @@ function UsageStatPanel(props) {
                   }), null);
                   _$insert2(_el$23, _$createComponent2(Show2, {
                     get when() {
-                      return _$memo2(() => !!config().sidebar.showPricing)() && stat.totalCost > 0;
+                      return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
                     },
                     get children() {
                       var _el$36 = _$createElement2("text");
@@ -5583,21 +6742,27 @@ var plugin = define({
     cleanups.push(unsubCreated);
     const disposeSlot = context.ui.slot({
       append: "sidebar.content",
-      render: ({
-        sessionID
-      }) => {
-        sidebarRevision();
-        if (sessionID && sessionID !== currentSessionID) {
-          currentSessionID = sessionID;
-          currentFamily = familyFor(sessionID);
-          perfTracker.loadSessions(currentFamily);
-          setAllTokenMessages([]);
-          void syncFamilyTree(sessionID);
-        }
+      render: (slotProps) => {
+        createEffect2(() => {
+          const sessionID = slotProps.sessionID;
+          sidebarRevision();
+          if (sessionID && sessionID !== currentSessionID) {
+            currentSessionID = sessionID;
+            currentFamily = familyFor(sessionID);
+            for (const knownId of [...knownCompleted.keys()]) {
+              if (!currentFamily.includes(knownId)) knownCompleted.delete(knownId);
+            }
+            perfTracker.loadSessions(currentFamily);
+            setAllTokenMessages([]);
+            void syncFamilyTree(sessionID);
+          }
+        });
         return _$createComponent3(UsageStatPanel, {
           context,
           perfTracker,
-          sessionID,
+          get sessionID() {
+            return slotProps.sessionID ?? "";
+          },
           revision: sidebarRevision,
           allTokenMessages
         });

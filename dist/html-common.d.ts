@@ -5,8 +5,10 @@ export declare function fmtTime(ts: number | null): string;
 export declare function fmtDateTime(ts: number): string;
 export declare function fmtDuration(ms: number | null): string;
 export declare function escapeHtml(s: string): string;
+/** JSON for inline <script>: escapes "<" so embedded strings can never close the tag or inject markup. */
+export declare function jsonForScript(value: unknown): string;
 export declare function nowString(): string;
-/** Percentile of a sorted numeric array */
+/** Percentile of a sorted numeric array (linear interpolation, shared impl). */
 export declare function percentile(sortedAsc: number[], p: number): number;
 export declare const HTML_HEAD_SHARED: string;
 export declare const BG_ANIMATION_HTML: string;

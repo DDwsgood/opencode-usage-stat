@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { percentileSorted } from "./formatter.js"
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + "B"
@@ -55,7 +56,12 @@ export function fmtDuration(ms: number | null): string {
 }
 
 export function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+}
+
+/** JSON for inline <script>: escapes "<" so embedded strings can never close the tag or inject markup. */
+export function jsonForScript(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c")
 }
 
 export function nowString(): string {
@@ -64,11 +70,9 @@ export function nowString(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
 }
 
-/** Percentile of a sorted numeric array */
+/** Percentile of a sorted numeric array (linear interpolation, shared impl). */
 export function percentile(sortedAsc: number[], p: number): number {
-  if (sortedAsc.length === 0) return 0
-  const idx = Math.min(Math.floor(sortedAsc.length * p), sortedAsc.length - 1)
-  return sortedAsc[idx]
+  return percentileSorted(sortedAsc, p)
 }
 
 // ---------------------------------------------------------------------------

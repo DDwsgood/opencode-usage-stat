@@ -94,6 +94,8 @@ export interface UsageReport {
     providers: ProviderBreakdownItem[];
     daily: DailyBreakdownItem[];
     sessions: SessionBreakdownItem[];
+    /** Untruncated session count matching the filters (sessions[] is capped by limit). */
+    totalSessions?: number;
     errors?: ErrorStats;
 }
 export interface ApiCostModelItem {
@@ -128,6 +130,8 @@ export interface CombinedReportData {
     providers: ProviderBreakdownItem[];
     daily: DailyBreakdownItem[];
     sessions: SessionBreakdownItem[];
+    /** Untruncated session count matching the filters. */
+    totalSessions?: number;
     meta: HtmlReportMeta;
     apiCost?: ApiCostAnalysis;
     errors?: ErrorStats;
@@ -158,8 +162,21 @@ export declare function isMissingCache(requestCount: number, totalCacheRead: num
 export declare function formatTokens(n: number): string;
 export declare function formatCost(n: number): string;
 export declare function formatDuration(ms: number | null): string;
+/**
+ * Relative time until an ISO reset timestamp ("now"/"5m"/"3h"/"2d").
+ * Single shared implementation (previously duplicated with diverging behavior
+ * in provider-usage.ts and provider-usage-blocks.tsx).
+ */
+export declare function formatResetDuration(iso: string): string;
+/** Linear-interpolation percentile over a sorted-ascending array. */
+export declare function percentileSorted(sortedAsc: number[], p: number): number;
 export declare function cacheHitRate(input: number, cacheRead: number): number;
 export declare function getPresetRange(preset: "all" | "7d" | "30d" | "month"): Pick<UsageFilters, "startDate" | "endDate">;
+/**
+ * Parse `/total-usage [days]` raw slash input into a date-range filter.
+ * Accepts an integer 1..3650; anything else falls back to the all-time range.
+ */
+export declare function parseDaysFilter(input: string | undefined): Pick<UsageFilters, "startDate" | "endDate">;
 export declare function formatFilters(filters: UsageFilters): string;
 export declare function formatStatusBar(data: SessionTokenData): string;
 export interface SessionPerfStats {

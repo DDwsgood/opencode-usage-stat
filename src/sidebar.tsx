@@ -13,6 +13,8 @@ import { ProviderUsageBlocks } from "./provider-usage-blocks.jsx"
 import { registerCommands } from "./commands.jsx"
 import type { ThemeColorMap } from "./theme-map.js"
 import { resolveThemeColors } from "./theme-map.js"
+import { getSettingsStore, migrateLegacySettings } from "./settings.js"
+import type { UsageStatSettings, LanguageSetting } from "./settings.js"
 
 export interface SidebarConfig {
   sidebar: {
@@ -70,7 +72,11 @@ function hitRateColor(rate: number): RGBA {
   return RGBA.fromInts(244, 67, 54, 255)
 }
 
-/** V2 storage-backed collapse state */
+/**
+ * V2 storage-backed collapse state. The storage store itself is the single
+ * source of truth (tokenwatch pattern): no local signal copy, no createEffect
+ * sync — mutations land reactively and survive TUI restarts.
+ */
 interface CollapseState {
   global: boolean
   models: Record<string, boolean>
@@ -114,30 +120,62 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
   const { context, perfTracker } = props
   // V2 keymap layers must be created inside a rendered Solid component owner.
   registerCommands(context)
-  const [config, setConfig] = createSignal<SidebarConfig>(loadConfig(context))
+
+  const optionConfig = loadConfig(context)
+
+  // ── Shared persisted settings (single reactive store) ──
+  // The store's initial value is seeded from plugin options on first creation,
+  // so stored values are authoritative afterwards.
+  let settings: UsageStatSettings | null = null
+  try {
+    const [store] = getSettingsStore(context)
+    settings = store
+    migrateLegacySettings(context)
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err)
+  }
+  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance
+  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing
+  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend
+
   // Sync language from persisted/native config
-  setLanguage(config().language)
-  createEffect(() => setLanguage(config().language))
+  setLanguage(settings ? settings.language : optionConfig.language)
+  createEffect(() => setLanguage((settings ? settings.language : optionConfig.language) as LanguageSetting))
 
   const t = (key: string) => {
-    void config().language
+    void settings?.language
     return baseT(key)
   }
   const isEnglish = (str: string) => /^[a-zA-Z\s\.\/]+$/.test(str)
 
   // ── V2 storage-backed state ──
-  const [collapse, setCollapse] = createSignal<CollapseState>(COLLAPSE_INITIAL)
-  type CollapseMutator = (draft: CollapseState) => void
-  let collapseMutate: (mutation: CollapseMutator) => Promise<void> | void = () => Promise.resolve()
+  // Storage store is the source of truth when available; a local mirror keeps
+  // the panel interactive when storage throws (e.g. no persistable state).
+  let storedCollapse: CollapseState | null = null
+  let collapseMutate: ((mutation: (draft: CollapseState) => void) => Promise<void>) | null = null
   try {
     const [store, mutate] = context.storage.store<CollapseState>("usage-stat-collapse", { initial: COLLAPSE_INITIAL })
-    const read = () => store
-    createEffect(() => {
-      const s = read()
-      setCollapse({ ...s })
-    })
+    storedCollapse = store as CollapseState
     collapseMutate = mutate
-  } catch { /* storage unavailable */ }
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err)
+  }
+  const [localCollapse, setLocalCollapse] = createSignal<{ global?: boolean; models?: Record<string, boolean> }>({})
+
+  function toggleGlobal(): void {
+    const next = !(localCollapse().global ?? storedCollapse?.global ?? false)
+    setLocalCollapse(prev => ({ ...prev, global: next }))
+    if (collapseMutate) void collapseMutate(draft => { draft.global = next }).catch(() => { /* ignore */ })
+  }
+  function toggleModel(key: string): void {
+    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false
+    const next = !current
+    setLocalCollapse(prev => ({ ...prev, models: { ...prev.models, [key]: next } }))
+    if (collapseMutate) void collapseMutate(draft => { draft.models[key] = next }).catch(() => { /* ignore */ })
+  }
+  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false
+  const isModelCollapsed = (key: string) =>
+    (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true
 
   const [panelWidth, setPanelWidth] = createSignal(38)
   let outerBoxRef: any = null
@@ -248,16 +286,8 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
   }
 
   const toggle = {
-    global: () => {
-      const next = !collapse().global
-      setCollapse(current => ({ ...current, global: next }))
-      void collapseMutate(draft => { draft.global = next })
-    },
-    model: (key: string) => {
-      const next = collapse().models[key] !== true
-      setCollapse(current => ({ ...current, models: { ...current.models, [key]: next } }))
-      void collapseMutate(draft => { draft.models[key] = next })
-    },
+    global: toggleGlobal,
+    model: toggleModel,
   }
 
   return (
@@ -273,9 +303,9 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
     >
       {/* Header */}
       <box flexDirection="row" justifyContent="space-between" onMouseDown={toggle.global} paddingX={1}>
-        <text fg={primaryColor()}>{collapse().global ? "▶" : "▾"} {t("panelTitle")}</text>
+        <text fg={primaryColor()}>{isPanelCollapsed() ? "▶" : "▾"} {t("panelTitle")}</text>
         <text fg={mutedColor()}>
-          {collapse().global ? (
+          {isPanelCollapsed() ? (
             <>{formatTokens(sessionTotals().totalTokens)}
               {globalHitRate() >= 0 ? <span style={{ fg: hitRateColor(globalHitRate()) } as any}>{` (${globalHitRate().toFixed(1)}% hit)`}</span> : ""}
             </>
@@ -288,7 +318,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
       {/* Provider Usage reveals collapsed after quota changes in this TUI session. */}
       <ProviderUsageBlocks context={context} />
 
-      <Show when={!collapse().global}>
+      <Show when={!isPanelCollapsed()}>
         <text fg={borderColor()}>{divider()}</text>
 
         {/* Global stats */}
@@ -315,7 +345,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
           </For>
         </box>
 
-        <Show when={config().sidebar.showPricing && sessionTotals().totalCost > 0}>
+        <Show when={showPricing() && sessionTotals().totalCost > 0}>
           <box flexDirection="row" justifyContent="center" marginTop={1}>
             <text fg={mutedColor()}>{t("cost")}: <span style={{ fg: greenColor() } as any}>{formatCost(sessionTotals().totalCost)}</span></text>
           </box>
@@ -324,14 +354,14 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
         {/* Model blocks */}
         <For each={modelStats()}>
           {([key, stat]) => {
-            const isExpanded = () => collapse().models[key] !== true
+            const isExpanded = () => !isModelCollapsed(key)
             const hitDenom = stat.totalInput + stat.cacheRead
             const hitRate = hitDenom > 0 ? (stat.cacheRead / hitDenom) * 100 : 0
             const isMissing = isMissingCache(stat.requestCount, stat.cacheRead)
             const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite
 
             const trendStr = () => {
-              if (!config().sidebar.showTrend) return ""
+              if (!showTrend()) return ""
               const td = modelTrend().find(h => h.key === key)
               if (!td?.trend || td.trend === 0) return ""
               return td.trend > 0 ? ` ${t("trendUp")}${td.trend.toFixed(1)}%` : ` ${t("trendDown")}${Math.abs(td.trend).toFixed(1)}%`
@@ -362,7 +392,9 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
               const label = `${t("cost")}:`
               return label + " ".repeat(targetW() - getVisualWidth(label))
             }
-            const modelBarWidth = () => Math.max(8, (panelWidth() - 4) - targetW() - 11)
+            // Reserve room for the trend suffix so narrow panels don't overflow (3.3).
+            const trendBudget = () => showTrend() ? 7 : 0
+            const modelBarWidth = () => Math.max(8, (panelWidth() - 4) - targetW() - 11 - trendBudget())
 
             return (
               <box flexDirection="column" marginTop={1}>
@@ -412,7 +444,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
                       {trendStr() ? <span style={{ fg: trendColor() } as any}>{trendStr()}</span> : null}
                     </text>
 
-                    <Show when={config().sidebar.showPerformance && !!perfStats().models[key]}>
+                    <Show when={showPerformance() && !!perfStats().models[key]}>
                       <text fg={mutedColor()} marginTop={1}>
                         {t("ttft")} <span style={{ fg: primaryColor() } as any}>{formatDuration(perfStats().models[key]?.avgTTFT ?? null)}</span>
                         {"  "}{t("tps")} <span style={{ fg: primaryColor() } as any}>{perfStats().models[key]?.avgTPS?.toFixed(1) ?? "—"}</span>
@@ -420,7 +452,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
                       </text>
                     </Show>
 
-                    <Show when={config().sidebar.showPricing && stat.totalCost > 0}>
+                    <Show when={showPricing() && stat.totalCost > 0}>
                       <text fg={mutedColor()}>{paddedCostPrefix()}{formatCost(stat.totalCost)}</text>
                     </Show>
                   </box>

@@ -21,6 +21,9 @@ const MISSING_HIT_RATE = 0.94
 /** Cache valid for 24 hours */
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
+/** Providers whose upstreams never report cache data — MISSING heuristics don't apply. */
+const NON_CACHE_PROVIDERS = new Set(["ollama", "ollama-cloud"])
+
 /** Single model pricing (per million tokens USD) */
 export interface ModelPricing {
   input?: number
@@ -312,7 +315,9 @@ export function estimateApiCost(
   const cacheReadRate = pricing.cache_read ?? 0
   const cacheWriteRate = pricing.cache_write ?? 0
 
-  const isMissing = isMissingCache(requestCount, cacheRead)
+  // Local / non-cache upstreams never report cacheRead; billing them at an
+  // assumed hit rate would fabricate savings, so use real token counts only.
+  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead)
 
   let cost: number
   if (isMissing) {

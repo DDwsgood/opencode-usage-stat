@@ -18,12 +18,14 @@ import {
   setV2Client,
 } from "./queries.js"
 import type { UsageFilters, ApiCostAnalysis, ApiCostModelItem, CombinedReportData, HtmlReportMeta, SessionTokenData, ModelBreakdownItem, MessageRow, ErrorStats } from "./formatter.js"
-import { getPresetRange } from "./formatter.js"
+import { getPresetRange, parseDaysFilter } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
 import { readLogs } from "./perf-tracker.js"
 import { readPersistedStats } from "./stats-store.js"
 import { t, setLanguage } from "./i18n.js"
 import type { SupportedLanguage } from "./i18n.js"
+import { getSettingsStore, migrateLegacySettings, DEFAULT_SETTINGS } from "./settings.js"
+import type { UsageStatSettings } from "./settings.js"
 import { generateSessionUsageHtml, buildSessionReportData } from "./session-usage-html.js"
 import { generateTotalUsageHtml } from "./total-usage-html.js"
 import { execSync, spawn } from "node:child_process"
@@ -235,8 +237,7 @@ async function showHtmlReportRangeMenu(context: Context): Promise<void> {
 
 async function showUsageMenu(context: Context): Promise<void> {
   try {
-    const lang = await loadLanguageFromStorage(context)
-    if (lang) setLanguage(lang)
+    setLanguage(loadSettings(context).language)
   } catch { /* ignore */ }
   const choice = await context.ui.dialog.select<string>({
     title: t("panelTitle"),
@@ -256,34 +257,25 @@ async function showUsageMenu(context: Context): Promise<void> {
   }
 }
 
-interface SidebarSettings {
-  showPerformance: boolean
-  showPricing: boolean
-  showTrend: boolean
-}
-
-const DEFAULT_SETTINGS: SidebarSettings = { showPerformance: true, showPricing: true, showTrend: true }
-
-async function loadSidebarSettings(context: Context): Promise<SidebarSettings> {
+/** Snapshot of the shared settings store (falls back to defaults). */
+function loadSettings(context: Context): UsageStatSettings {
   try {
-    const [store] = context.storage.store<SidebarSettings>("usage-stat-config", { initial: DEFAULT_SETTINGS })
+    const [store] = getSettingsStore(context)
     return { ...DEFAULT_SETTINGS, ...store }
   } catch {
     return { ...DEFAULT_SETTINGS }
   }
 }
 
-async function loadLanguageFromStorage(context: Context): Promise<SupportedLanguage | "auto" | null> {
-  try {
-    const [store] = context.storage.store<{ language?: SupportedLanguage | "auto" }>("usage-stat-config", { initial: { language: "auto" } })
-    return store.language ?? null
-  } catch {
-    return null
-  }
+async function mutateSettings(context: Context, mutation: (draft: UsageStatSettings) => void): Promise<void> {
+  const [, mutate] = getSettingsStore(context)
+  await mutate(mutation)
 }
 
 async function showSettingsDialog(context: Context): Promise<void> {
-  const cfg = await loadSidebarSettings(context)
+  await migrateLegacySettings(context)
+  const cfg = loadSettings(context)
+  const displayLabel = cfg.providerUsageDisplay === "remaining" ? `${t("displayRemaining")} (${t("left")})` : t("displayUsed")
   const choice = await context.ui.dialog.select<string>({
     title: t("settingsTitle"),
     placeholder: t("settingsPlaceholder"),
@@ -291,27 +283,45 @@ async function showSettingsDialog(context: Context): Promise<void> {
       { title: `${cfg.showPerformance ? "✓ " : "  "}${t("showPerformance")}`, value: "showPerformance", description: t("descShowPerformance") },
       { title: `${cfg.showPricing ? "✓ " : "  "}${t("showPricing")}`, value: "showPricing", description: t("descShowPricing") },
       { title: `${cfg.showTrend ? "✓ " : "  "}${t("showTrend")}`, value: "showTrend", description: t("descShowTrend") },
+      { title: `${t("settingsDisplayMode")}: ${displayLabel} ▸`, value: "providerUsageDisplay", description: t("descSettingsDisplay") },
       { title: `${t("settingsLanguage")} ▸`, value: "language", description: t("descSettingsLanguage") },
       { title: t("done"), value: "done", description: t("closeSettings") },
     ],
   })
   if (!choice) return
-  try {
-    const [, mutate] = context.storage.store<SidebarSettings>("usage-stat-config", { initial: DEFAULT_SETTINGS })
-    if (choice === "language") {
-      await showLanguageMenu(context)
-    } else if (choice !== "done") {
-      await mutate((d: SidebarSettings) => { (d as any)[choice] = !(d as any)[choice] })
+  if (choice === "language") {
+    await showLanguageMenu(context)
+  } else if (choice === "providerUsageDisplay") {
+    await showDisplayModeMenu(context)
+  } else if (choice !== "done") {
+    try {
+      await mutateSettings(context, draft => {
+        (draft as unknown as Record<string, unknown>)[choice] =
+          !(draft as unknown as Record<string, boolean>)[choice]
+      })
       await showSettingsDialog(context)
-    }
+    } catch { /* storage unavailable */ }
+  }
+}
+
+async function showDisplayModeMenu(context: Context): Promise<void> {
+  const current = loadSettings(context).providerUsageDisplay
+  const choice = await context.ui.dialog.select<"used" | "remaining">({
+    title: t("settingsDisplayMode"),
+    placeholder: t("settingsPlaceholder"),
+    options: [
+      { title: `${current === "used" ? "✓ " : "  "}${t("displayUsed")}`, value: "used", description: "n% used" },
+      { title: `${current === "remaining" ? "✓ " : "  "}${t("displayRemaining")} (${t("left")})`, value: "remaining", description: `${t("displayRemaining")} — n% left` },
+    ],
+  })
+  if (!choice) return
+  try {
+    await mutateSettings(context, draft => { draft.providerUsageDisplay = choice })
   } catch { /* ignore */ }
 }
 
 async function showLanguageMenu(context: Context): Promise<void> {
-  let current: SupportedLanguage | "auto" = "auto"
-  try {
-    current = (await loadLanguageFromStorage(context)) ?? "auto"
-  } catch { /* defaults */ }
+  const current = loadSettings(context).language
   const choice = await context.ui.dialog.select<SupportedLanguage | "auto">({
     title: t("settingsLanguage"),
     placeholder: t("settingsLanguage"),
@@ -324,10 +334,11 @@ async function showLanguageMenu(context: Context): Promise<void> {
   if (!choice) return
   setLanguage(choice)
   try {
-    const [, mutate] = context.storage.store<{ language?: SupportedLanguage | "auto" }>("usage-stat-config", { initial: { language: "auto" } })
-    await mutate((d) => { d.language = choice })
+    await mutateSettings(context, draft => { draft.language = choice })
   } catch { /* ignore */ }
 }
+
+export { parseDaysFilter } from "./formatter.js"
 
 /** Register the V2 keymap layer with /usage slash commands (never sends to LLM). */
 export function registerCommands(context: Context): void {
@@ -359,11 +370,11 @@ export function registerCommands(context: Context): void {
       {
         id: "usage-stat.total-usage",
         title: "Total Usage",
-        description: "Generate a cumulative HTML usage report (all time) locally",
+        description: "Generate a cumulative HTML usage report locally (optionally /total-usage 7 for last 7 days)",
         group: "Stats",
         palette: true,
-        slash: { name: "total-usage" },
-        run: () => { void showHtmlReport(context, getPresetRange("all")) },
+        slash: { name: "total-usage", arguments: true },
+        run: (input?: string) => { void showHtmlReport(context, parseDaysFilter(input)) },
       },
     ],
   }))

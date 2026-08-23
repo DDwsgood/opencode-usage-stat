@@ -2,8 +2,9 @@
 //
 // Resolution order:
 //   1. OpenCode V2 credential table (~/.local/share/opencode/opencode.db)
-//   2. process.env (DEEPSEEK_API_KEY, OPENCODE_GO_API_KEY / OPENCODE_API_KEY)
-//   3. Safe .env parse: homedir/.env, then each ancestor of cwd, then an inferred
+//   2. OpenCode OAuth auth file (~/.local/share/opencode/auth.json)
+//   3. process.env (DEEPSEEK_API_KEY, OPENCODE_GO_API_KEY / OPENCODE_API_KEY, ...)
+//   4. Safe .env parse: homedir/.env, then each ancestor of cwd, then an inferred
 //      WSL Windows home .env (never a hardcoded user path).
 //
 // NEVER log, print, copy, or write out secret values. Only booleans/status are
@@ -20,6 +21,8 @@ export interface AuthEntry {
   key?: string
   token?: string
   access?: string
+  refresh?: string
+  expires?: number
   accountId?: string | null
 }
 
@@ -27,6 +30,12 @@ function getDataHome(): string {
   const xdg = process.env.XDG_DATA_HOME
   if (xdg && xdg.trim()) return xdg.trim()
   return join(homedir(), ".local", "share")
+}
+
+function getConfigHome(): string {
+  const xdg = process.env.XDG_CONFIG_HOME
+  if (xdg && xdg.trim()) return xdg.trim()
+  return join(homedir(), ".config")
 }
 
 export function credentialDatabasePath(): string {
@@ -60,16 +69,98 @@ export function parseCredentialValue(raw: unknown): AuthEntry | null {
             ?? text((entry.account as Record<string, unknown>).account_id)
         : undefined)
 
+    const expiresRaw = entry.expires
+    let expires: number | undefined
+    if (typeof expiresRaw === "number" && Number.isFinite(expiresRaw)) {
+      expires = expiresRaw
+    } else if (typeof expiresRaw === "string" && expiresRaw.trim() !== "" && Number.isFinite(Number(expiresRaw))) {
+      expires = Number(expiresRaw)
+    }
+    // Normalize epoch seconds to milliseconds (ResolvedCredential.expires is ms).
+    if (expires != null && expires > 0 && expires < 1e12) {
+      expires *= 1000
+    }
+
     return {
       type: text(entry.type),
       key: text(entry.key),
       token: text(entry.token),
       access: text(entry.access),
+      refresh: text(entry.refresh) as string | undefined,
+      expires,
       accountId: accountId ?? null,
     }
   } catch {
     return null
   }
+}
+
+// ── auth.json (~/.local/share/opencode/auth.json) ──
+
+export function authJsonPath(): string {
+  return join(getDataHome(), "opencode", "auth.json")
+}
+
+/** Read the OpenCode OAuth auth file. Returns {} on any failure; never throws. */
+export function readAuthJson(): Record<string, unknown> {
+  try {
+    const file = authJsonPath()
+    if (!existsSync(file)) return {}
+    const content = readFileSync(file, "utf8").trim()
+    if (!content) return {}
+    const parsed = JSON.parse(content)
+    if (!parsed || typeof parsed !== "object") return {}
+    return parsed as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+function normalizeAuthEntry(entry: unknown): AuthEntry | null {
+  if (!entry) return null
+  if (typeof entry === "string") return parseCredentialValue(JSON.stringify({ token: entry }))
+  if (typeof entry === "object") {
+    if ((entry as Record<string, unknown>).oauth && typeof (entry as Record<string, unknown>).oauth === "object") {
+      return parseCredentialValue((entry as Record<string, unknown>).oauth)
+    }
+    return parseCredentialValue(entry)
+  }
+  return null
+}
+
+/** First matching, non-empty auth.json entry for `aliases` (in order). */
+export function authJsonEntry(aliases: string[]): AuthEntry | null {
+  if (aliases.length === 0) return null
+  const auth = readAuthJson()
+  for (const alias of aliases) {
+    const raw = auth[alias]
+    const entry = raw ? normalizeAuthEntry(raw) : null
+    if (entry && isNonEmpty(entry.key ?? entry.token ?? entry.access ?? entry.refresh)) return entry
+  }
+  return null
+}
+
+/**
+ * Secure per-provider credential JSON (cookies / refresh tokens that never go
+ * through env). Checked in order:
+ *   1. ~/.config/openchamber/quota/<id>.json   (reuse OpenChamber credentials)
+ *   2. ~/.config/opencode/usage-stat/<id>.json (this plugin's own store, 0600)
+ */
+export function readSecureProviderJson(providerId: string): Record<string, unknown> | null {
+  const candidates = [
+    join(getConfigHome(), "openchamber", "quota", `${providerId}.json`),
+    join(getConfigHome(), "opencode", "usage-stat", `${providerId}.json`),
+  ]
+  for (const file of candidates) {
+    try {
+      if (!existsSync(file)) continue
+      const content = readFileSync(file, "utf8").trim()
+      if (!content) continue
+      const parsed = JSON.parse(content)
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>
+    } catch { /* ignore */ }
+  }
+  return null
 }
 
 interface CredentialRow {
@@ -224,8 +315,12 @@ export interface ResolvedCredential {
   value: string | null
   /** accountId for Codex/OpenAI style entries. */
   accountId: string | null
+  /** OAuth refresh token when the source entry carries one (auth.json only). */
+  refresh: string | null
+  /** Access-token expiry (epoch ms) when known. */
+  expires: number | null
   /** Which source the secret came from (used only to surface "configured" status). */
-  source: "sqlite" | "env" | "dotenv" | null
+  source: "sqlite" | "auth" | "env" | "dotenv" | null
 }
 
 function isNonEmpty(s: string | null | undefined): s is string {
@@ -245,25 +340,45 @@ export function resolveCredential(opts: {
   if (entry) {
     const value = entry.key ?? entry.token ?? entry.access ?? null
     if (isNonEmpty(value)) {
-      return { value, accountId: isNonEmpty(entry.accountId) ? entry.accountId : null, source: "sqlite" }
+      return {
+        value,
+        accountId: isNonEmpty(entry.accountId) ? entry.accountId : null,
+        refresh: isNonEmpty(entry.refresh) ? entry.refresh : null,
+        expires: typeof entry.expires === "number" ? entry.expires : null,
+        source: "sqlite",
+      }
     }
   }
-  // 2. process.env
+  // 2. OpenCode OAuth auth.json (~/.local/share/opencode/auth.json)
+  const authEntry = authJsonEntry(opts.aliases)
+  if (authEntry) {
+    const value = authEntry.key ?? authEntry.token ?? authEntry.access ?? null
+    if (isNonEmpty(value)) {
+      return {
+        value,
+        accountId: isNonEmpty(authEntry.accountId) ? authEntry.accountId : null,
+        refresh: isNonEmpty(authEntry.refresh) ? authEntry.refresh : null,
+        expires: typeof authEntry.expires === "number" ? authEntry.expires : null,
+        source: "auth",
+      }
+    }
+  }
+  // 3. process.env
   for (const key of opts.envKeys) {
     const v = process.env[key]
     if (isNonEmpty(v)) {
-      return { value: v, accountId: null, source: "env" }
+      return { value: v, accountId: null, refresh: null, expires: null, source: "env" }
     }
   }
-  // 3. .env (homedir + cwd ancestors + inferred WSL Windows home)
+  // 4. .env (homedir + cwd ancestors + inferred WSL Windows home)
   const dot = loadDotEnv()
   for (const key of opts.envKeys) {
     const v = dot[key]
     if (isNonEmpty(v)) {
-      return { value: v, accountId: null, source: "dotenv" }
+      return { value: v, accountId: null, refresh: null, expires: null, source: "dotenv" }
     }
   }
-  return { value: null, accountId: null, source: null }
+  return { value: null, accountId: null, refresh: null, expires: null, source: null }
 }
 
 /** Whether this credential is configured without exposing the secret. */

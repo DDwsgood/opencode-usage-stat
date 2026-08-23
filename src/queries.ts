@@ -27,6 +27,7 @@ let client: OpenCodeClient | null = null
 /** Bind the TUI plugin's V2 client. Must be called before any query. */
 export function setV2Client(c: OpenCodeClient): void {
   client = c
+  clearQueryCache()
 }
 
 export function getV2Client(): OpenCodeClient | null {
@@ -38,13 +39,30 @@ function requireClient(): OpenCodeClient {
   return client
 }
 
-/** Fetch all sessions with cursor pagination. */
-async function fetchAllSessions(limit = 500): Promise<SessionInfo[]> {
+// ── Snapshot cache ──
+// A full session+message scan used to run once per aggregate function (≈6x
+// duplicated work per report). All aggregates now share one cached snapshot.
+const SNAPSHOT_TTL_MS = 30_000
+let snapshotPromise: Promise<Snapshot> | null = null
+let snapshotAt = 0
+
+interface Snapshot {
+  sessions: SessionInfo[]
+  messages: Map<string, SessionMessageInfo[]>
+}
+
+/** Invalidate the snapshot (called when the client is rebound or data changes materially). */
+export function clearQueryCache(): void {
+  snapshotPromise = null
+  snapshotAt = 0
+}
+
+async function loadSnapshot(): Promise<Snapshot> {
   const c = requireClient()
   const all: SessionInfo[] = []
   let cursor: string | undefined
   for (;;) {
-    const res = await c.session.list({ limit, cursor })
+    const res = await c.session.list({ limit: 500, cursor })
     const page = res?.data
     if (!Array.isArray(page) || page.length === 0) break
     all.push(...page)
@@ -52,7 +70,66 @@ async function fetchAllSessions(limit = 500): Promise<SessionInfo[]> {
     if (!next) break
     cursor = next
   }
-  return all
+
+  const messages = new Map<string, SessionMessageInfo[]>()
+  const batchSize = 8
+  for (let i = 0; i < all.length; i += batchSize) {
+    const batch = all.slice(i, i + batchSize)
+    const results = await Promise.all(batch.map(async s => {
+      try {
+        return await fetchAllMessages(s.id)
+      } catch {
+        return null // skip sessions we cannot read
+      }
+    }))
+    for (let j = 0; j < batch.length; j++) {
+      if (results[j]) messages.set(batch[j].id, results[j]!)
+    }
+  }
+  return { sessions: all, messages }
+}
+
+function snapshot(): Promise<Snapshot> {
+  if (snapshotPromise && snapshotAt && Date.now() - snapshotAt > SNAPSHOT_TTL_MS) {
+    snapshotPromise = null
+    snapshotAt = 0
+  }
+  if (!snapshotPromise) {
+    const pending = loadSnapshot()
+    void pending.then(
+      result => { snapshotAt = Date.now() },
+      () => { /* failure below clears the cache so the next call can retry */ },
+    )
+    void pending.catch(() => {
+      if (snapshotPromise === pending) {
+        snapshotPromise = null
+        snapshotAt = 0
+      }
+    })
+    snapshotPromise = pending
+  }
+  return snapshotPromise
+}
+
+/** Fetch all sessions (shared snapshot; cached briefly to avoid refetches). */
+async function fetchAllSessions(): Promise<SessionInfo[]> {
+  return (await snapshot()).sessions
+}
+
+/** Load raw assistant message data filtered by filters (excludes zero-token failures). */
+async function loadAssistants(filters: UsageFilters = {}): Promise<RawAssistant[]> {
+  const snap = await snapshot()
+  const out: RawAssistant[] = []
+  for (const [sessionID, msgs] of snap.messages) {
+    for (const m of msgs) {
+      const a = asAssistant(m, sessionID)
+      if (!a) continue
+      if (a.tokens.total <= 0) continue
+      if (!matchesFilters(a, filters)) continue
+      out.push(a)
+    }
+  }
+  return out
 }
 
 /** Fetch all message projections for a session, with cursor pagination. */
@@ -144,28 +221,6 @@ function matchesFilters(a: RawAssistant, filters: UsageFilters): boolean {
     if (filters.endDate && isValidDate(filters.endDate) && day > filters.endDate) return false
   }
   return true
-}
-
-/** Load raw assistant message data filtered by filters (excludes zero-token failures). */
-async function loadAssistants(filters: UsageFilters = {}): Promise<RawAssistant[]> {
-  const sessions = await fetchAllSessions()
-  const out: RawAssistant[] = []
-  for (const s of sessions) {
-    let msgs: SessionMessageInfo[]
-    try {
-      msgs = await fetchAllMessages(s.id)
-    } catch {
-      continue // skip sessions we cannot read
-    }
-    for (const m of msgs) {
-      const a = asAssistant(m, s.id)
-      if (!a) continue
-      if (a.tokens.total <= 0) continue
-      if (!matchesFilters(a, filters)) continue
-      out.push(a)
-    }
-  }
-  return out
 }
 
 function toSessionTokenData(assistants: RawAssistant[]): SessionTokenData {
@@ -431,20 +486,14 @@ export async function getSessionTitle(sessionId: string): Promise<string> {
 
 /** 失败请求统计 (assistant with tokens all zero, or error finish) */
 export async function getErrorStats(filters: UsageFilters = {}): Promise<ErrorStats> {
-  const sessions = await fetchAllSessions()
+  const snap = await snapshot()
   let successCount = 0
   let failedCount = 0
   const byModelMap = new Map<string, { provider: string; model: string; failed: number; total: number }>()
-  for (const s of sessions) {
-    let msgs: SessionMessageInfo[]
-    try {
-      msgs = await fetchAllMessages(s.id)
-    } catch {
-      continue
-    }
+  for (const [sessionID, msgs] of snap.messages) {
     for (const m of msgs) {
       if (m?.type !== "assistant") continue
-      const a = asAssistant(m, s.id)
+      const a = asAssistant(m, sessionID)
       if (!a) continue
       if (!matchesFilters(a, filters)) continue
       const key = `${a.providerID}|${a.modelID}`
@@ -491,50 +540,40 @@ export async function getHourlyHeatmap(filters: UsageFilters = {}): Promise<Hour
 }
 
 export async function getUsageReport(filters: UsageFilters = {}): Promise<UsageReport> {
-  const [summary, models, providers, daily, sessions, errors] = await Promise.all([
+  const [summary, models, providers, daily, sessions, errors, totalSessions] = await Promise.all([
     getSummary(filters),
     getModelBreakdown(filters),
     getProviderBreakdown(filters),
     getDailyBreakdown(filters),
     getSessionBreakdown(filters),
     getErrorStats(filters),
+    getSessionCount(filters),
   ])
-  return { filters, summary, models, providers, daily, sessions, errors }
+  return { filters, summary, models, providers, daily, sessions, totalSessions, errors }
 }
 
 /** Available model IDs across all sessions (used by filters / exports). */
 export async function getAvailableModels(): Promise<string[]> {
   const list = new Set<string>()
-  const sessions = await fetchAllSessions()
-  for (const s of sessions) {
-    let msgs: SessionMessageInfo[]
-    try {
-      msgs = await fetchAllMessages(s.id)
-    } catch {
-      continue
-    }
-    for (const m of msgs) {
-      const a = asAssistant(m, s.id)
-      if (a && a.tokens.total > 0) list.add(a.modelID)
-    }
+  for (const a of await loadAssistants()) {
+    list.add(a.modelID)
   }
   return Array.from(list).sort()
 }
 
 export async function getAvailableProviders(): Promise<string[]> {
   const list = new Set<string>()
-  const sessions = await fetchAllSessions()
-  for (const s of sessions) {
-    let msgs: SessionMessageInfo[]
-    try {
-      msgs = await fetchAllMessages(s.id)
-    } catch {
-      continue
-    }
-    for (const m of msgs) {
-      const a = asAssistant(m, s.id)
-      if (a && a.tokens.total > 0) list.add(a.providerID)
-    }
+  for (const a of await loadAssistants()) {
+    list.add(a.providerID)
   }
   return Array.from(list).sort()
+}
+
+/**
+ * Real session count for the given filters (untruncated). Report KPIs must use
+ * this instead of the session table array, which is capped by `limit`.
+ */
+export async function getSessionCount(filters: UsageFilters = {}): Promise<number> {
+  const assistants = await loadAssistants(filters)
+  return new Set(assistants.map(a => a.sessionID)).size
 }

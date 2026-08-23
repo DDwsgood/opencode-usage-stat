@@ -97,8 +97,22 @@ Provider usage checks are disabled by default. Enable them explicitly in the TUI
         "providerUsage": {
           "opencode-go": true,
           "deepseek": false,
-          "codex": true
-        }
+          "codex": true,
+          "claude": true,
+          "kimi-for-coding": false,
+          "zai-coding-plan": false,
+          "zhipuai-coding-plan": false,
+          "minimax-coding-plan": false,
+          "minimax-cn-coding-plan": false,
+          "openrouter": true,
+          "ollama-cloud": false,
+          "github-copilot": false,
+          "github-copilot-addon": false,
+          "google": false,
+          "xai": false,
+          "cursor": false
+        },
+        "providerUsageDisplay": "used"
       }
     }
   ]
@@ -107,18 +121,54 @@ Provider usage checks are disabled by default. Enable them explicitly in the TUI
 
 Only providers set to `true` are queried. The plugin reads credentials **at runtime only** and never prints, logs, or writes secrets.
 
+### Supported providers
+
+| Provider id | Name | Credential |
+|---|---|---|
+| `opencode-go` | OpenCode Go | API key |
+| `deepseek` | DeepSeek | API key |
+| `codex` | Codex / ChatGPT | OAuth access token (+ optional account id) |
+| `claude` | Claude Pro/Max | Claude Code OAuth access token (auth.json) |
+| `kimi-for-coding` | Kimi for Coding | API key |
+| `zai-coding-plan` | z.ai Coding Plan | API key |
+| `zhipuai-coding-plan` | Zhipu AI Coding Plan | API key |
+| `minimax-coding-plan` | MiniMax Coding Plan (intl) | API key |
+| `minimax-cn-coding-plan` | MiniMax Coding Plan (CN) | API key |
+| `openrouter` | OpenRouter | API key |
+| `ollama-cloud` | Ollama Cloud | session cookie (secure JSON file) |
+| `github-copilot` / `github-copilot-addon` | GitHub Copilot | OAuth access token |
+| `google` | Google Gemini / Antigravity | OAuth refresh token (auth.json / antigravity-accounts.json) |
+| `xai` | xAI / Grok | OAuth access + refresh token (auth.json) |
+| `cursor` | Cursor | access token (secure JSON file) |
+
+While collapsed, each provider row shows the short-form usage `n%/m%` where
+*n* is the 5-hour/session window and *m* the weekly/7-day window (monthly or
+billing-cycle totals are only shown when expanded). Expanding a row lists every
+quota window with reset times. The display mode — used vs remaining percentage —
+can be switched via `/usage ▸ Settings ▸ Provider Usage Display Mode`, or set
+with the `providerUsageDisplay: "used" | "remaining"` plugin option.
+
 Resolution order (per provider):
 
-1. **OpenCode V2 credential database** — `~/.local/share/opencode/opencode.db` (respects `XDG_DATA_HOME` and `OPENCODE_DB`):
-   - OpenCode Go: integrations `opencode-go`, `opencode`, or `zen`
-   - DeepSeek: integration `deepseek`
-   - Codex: integrations `openai`, `codex`, or `chatgpt`
-2. **Environment variables**:
+1. **OpenCode V2 credential database** — `~/.local/share/opencode/opencode.db` (respects `XDG_DATA_HOME` and `OPENCODE_DB`)
+2. **OpenCode OAuth auth file** — `~/.local/share/opencode/auth.json` (Claude, Codex, Copilot, Gemini/Antigravity, xAI)
+3. **Environment variables**:
    - OpenCode Go: `OPENCODE_GO_API_KEY` or `OPENCODE_API_KEY`
    - DeepSeek: `DEEPSEEK_API_KEY`
-3. **Safe `.env` parse** (no shell evaluation): `~/.env`, then ancestor directories of the working directory, then an inferred WSL Windows home `.env` — no hardcoded user paths.
+   - Kimi: `KIMI_FOR_CODING_API_KEY` or `KIMI_API_KEY`
+   - z.ai: `ZAI_API_KEY`; Zhipu: `ZHIPUAI_CODING_PLAN_API_KEY` / `ZHIPU_API_KEY`
+   - MiniMax: `MINIMAX_CODING_PLAN_API_KEY`; MiniMax CN: `MINIMAX_CN_CODING_PLAN_API_KEY`
+   - OpenRouter: `OPENROUTER_API_KEY`
+4. **Secure per-provider JSON files** (0600-style local secrets):
+   - Ollama Cloud cookie: `~/.config/openchamber/quota/ollama-cloud.json` (`{"cookie": "..."}`) or `~/.config/opencode/usage-stat/ollama-cloud.json`
+   - Cursor access token: `~/.config/openchamber/quota/cursor.json` (`{"accessToken": "..."}`) or `~/.config/opencode/usage-stat/cursor.json`
+5. **Safe `.env` parse** (no shell evaluation): `~/.env`, then ancestor directories of the working directory, then an inferred WSL Windows home `.env` — no hardcoded user paths.
 
-**Codex note:** Codex quota uses the OpenCode V2 **OAuth access token** from SQLite (with optional `ChatGPT-Account-Id` header) — **not a cookie**. Do not hardcode API keys in plugin configuration or source.
+**Codex note:** Codex quota uses the OpenCode V2 **OAuth access token** from SQLite/auth.json (with optional `ChatGPT-Account-Id` header) — **not a cookie**. Do not hardcode API keys in plugin configuration or source.
+
+**Claude note:** Claude subscription quota uses the same Anthropic OAuth endpoint as Claude Code (`api.anthropic.com/api/oauth/usage`). It requires an OAuth token from `auth.json`; plain API keys will not work.
+
+**Google note:** refreshing the Gemini/Antigravity access token needs a Google **installed-application** OAuth client supplied via `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (e.g. the Gemini CLI's public client credentials). Without them the `google` provider reports a configuration error instead of querying quotas.
 
 ## Usage
 
@@ -127,7 +177,7 @@ In the TUI type `/usage` and pick an action. Reports are written to `~/.opencode
 ## Data and privacy
 
 - Sessions/messages are read locally through the V2 plugin client.
-- Provider quota checks call the official endpoints (`opencode.ai/zen/go/v1/usage`, `api.deepseek.com/user/balance`, `chatgpt.com/backend-api/wham/usage`) with credentials resolved at runtime.
+- Provider quota checks call the official/known endpoints for each enabled provider with credentials resolved at runtime. Claude uses the Anthropic OAuth usage endpoint; Ollama Cloud scrapes the settings page with a user-supplied session cookie; xAI uses a gRPC-web billing RPC; Google uses the Gemini CLI/Antigravity internal quota RPCs. These are undocumented endpoints and may change without notice.
 - Reports are generated locally and are not uploaded by this plugin.
 - API-equivalent cost is an estimate; it may differ from provider billing because of caching, discounts, free tiers, rounding, or missing upstream usage fields.
 

@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js"
+import { createSignal, createEffect } from "solid-js"
 import { define } from "@opencode-ai/plugin/tui/plugin"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { createPerfTracker } from "./perf-tracker.js"
@@ -216,25 +216,34 @@ const plugin = define({
     cleanups.push(unsubCreated)
 
     // ── Sidebar slot ──
+    // The render function runs once as a Solid component; `props` is a reactive
+    // proxy. Session switching therefore happens inside createEffect (reactive
+    // access) instead of relying on a host-side keyed remount.
     const disposeSlot = context.ui.slot({
       append: "sidebar.content",
-      render: ({ sessionID }) => {
-        sidebarRevision()
-        // Load persisted token messages for the session (projection cache) once
-        // they are available from context.data.
+      render: (slotProps: { readonly sessionID?: string }) => {
+        createEffect(() => {
+          const sessionID = slotProps.sessionID
+          sidebarRevision()
           if (sessionID && sessionID !== currentSessionID) {
             currentSessionID = sessionID
             currentFamily = familyFor(sessionID)
+            // Prune completion sets of sessions no longer in the current
+            // family so the map cannot grow without bound.
+            for (const knownId of [...knownCompleted.keys()]) {
+              if (!currentFamily.includes(knownId)) knownCompleted.delete(knownId)
+            }
             perfTracker.loadSessions(currentFamily)
             setAllTokenMessages([])
             void syncFamilyTree(sessionID)
-        }
+          }
+        })
 
         return (
           <UsageStatPanel
             context={context}
             perfTracker={perfTracker}
-            sessionID={sessionID}
+            sessionID={slotProps.sessionID ?? ""}
             revision={sidebarRevision}
             allTokenMessages={allTokenMessages}
           />

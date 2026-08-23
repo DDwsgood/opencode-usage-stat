@@ -1,7 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { parseEnvFile, parseCredentialValue, credentialDatabasePath } from "../src/credentials.js"
-import { defaultProviderCollapse, mergeProviderCollapse, PROVIDER_IDS } from "../src/provider-collapse.js"
 
 test("parseEnvFile handles quotes and comments", () => {
   const parsed = parseEnvFile(
@@ -69,7 +68,33 @@ test("parseCredentialValue never exposes the secret as accountId or via metadata
   assert.equal(entry?.accountId, null)
   assert.notEqual(entry?.accountId, "sk-super-secret")
   // Only the primary secret fields are read from the value; nothing is echoed.
-  assert.deepEqual(Object.keys(entry ?? {}).sort(), ["access", "accountId", "key", "token", "type"].sort())
+  assert.deepEqual(
+    Object.keys(entry ?? {}).sort(),
+    ["access", "accountId", "expires", "key", "refresh", "token", "type"].sort(),
+  )
+})
+
+// ── OAuth refresh/expiry parsing (pure) ──
+
+test("parseCredentialValue extracts refresh token and numeric expiry", () => {
+  const entry = parseCredentialValue(JSON.stringify({
+    access: "sk-ant-oat-1",
+    refresh: "ref-1",
+    expires: 1_800_000_000_000,
+  }))
+  assert.equal(entry?.access, "sk-ant-oat-1")
+  assert.equal(entry?.refresh, "ref-1")
+  assert.equal(entry?.expires, 1_800_000_000_000)
+})
+
+test("parseCredentialValue coerces string expiry and normalizes epoch seconds to ms", () => {
+  const ok = parseCredentialValue({ access: "a", expires: "1755000000" })
+  assert.equal(ok?.expires, 1_755_000_000_000)
+  const ms = parseCredentialValue({ access: "a", expires: 1_755_000_000_000 })
+  assert.equal(ms?.expires, 1_755_000_000_000)
+  const bad = parseCredentialValue({ access: "a", expires: "soon", refresh: "" })
+  assert.equal(bad?.expires, undefined)
+  assert.equal(bad?.refresh, undefined)
 })
 
 // ── DB path resolution (pure; never opens a database) ──
@@ -96,24 +121,3 @@ test("credentialDatabasePath honors XDG_DATA_HOME, absolute and relative OPENCOD
   }
 })
 
-test("provider usage blocks default to collapsed for all three providers", () => {
-  const def = defaultProviderCollapse()
-  assert.deepEqual(Object.keys(def).sort(), ["codex", "deepseek", "opencode-go"])
-  assert.deepEqual(PROVIDER_IDS, ["opencode-go", "deepseek", "codex"])
-  for (const id of PROVIDER_IDS) {
-    assert.equal(def[id], true, `${id} should be collapsed by default`)
-  }
-})
-
-test("mergeProviderCollapse keeps defaults when nothing stored", () => {
-  const merged = mergeProviderCollapse(null)
-  assert.deepEqual(merged, defaultProviderCollapse())
-})
-
-test("mergeProviderCollapse honors stored overrides but ignores unknown keys", () => {
-  const merged = mergeProviderCollapse({ "opencode-go": false, h4x: false })
-  assert.equal(merged["opencode-go"], false)
-  assert.equal(merged["deepseek"], true)
-  assert.equal(merged["codex"], true)
-  assert.equal(merged["h4x"], undefined)
-})
