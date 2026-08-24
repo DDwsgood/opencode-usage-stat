@@ -2,26 +2,17 @@
 //
 // Uses the official V2 API: `import { Plugin } from "@opencode-ai/plugin"` and
 // `Plugin.define({ id, tui: true, setup })`. `tui: true` tells the host that
-// this package also ships a TUI module (./tui). The commands registered here
-// stay discoverable in the V2 command list; the TUI entry intercepts the
-// slash locally (keymap layer) and opens the built-in dashboard menus without
-// ever sending the slash to the LLM.
+// this package also ships a TUI module (./tui). The unified /usage slash is
+// registered only in the TUI keymap layer so it is intercepted locally and
+// never sent to the LLM.
 
 import { define } from "@opencode-ai/plugin/promise/plugin"
 import type { Context, Plugin } from "@opencode-ai/plugin/promise/plugin"
 
-export async function setup(context: Context): Promise<void> {
-  await context.command.transform((commands) => {
-    commands.update("usage", (command) => {
-      command.description = "Usage Stat: open the local usage dashboard menu (current session & date ranges)"
-    })
-    commands.update("session-usage", (command) => {
-      command.description = "Usage Stat: generate the current session's HTML usage report locally"
-    })
-    commands.update("total-usage", (command) => {
-      command.description = "Usage Stat: generate a cumulative HTML usage report locally (optionally /total-usage 7 for last 7 days)"
-    })
-  })
+export async function setup(_context: Context): Promise<void> {
+  // No server-command templates are registered here: the TUI registers the
+  // keymap slash /usage locally and those stale "empty" command entries caused
+  // empty messages to be sent to the LLM and duplicated slash completion.
 }
 
 const plugin = define({

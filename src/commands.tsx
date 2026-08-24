@@ -1,33 +1,46 @@
 // commands.tsx - Usage Stat V2 keymap slash commands.
 //
 // Uses the real V2 TUI API: `context.keymap.layer(() => ({ commands: [...] }))`
-// to register /usage, /session-usage and /total-usage. Each slash `run` opens a
-// LOCAL dialog (context.ui.dialog) / writes files — never sends the slash to the
-// LLM. Adapted from opencode-usage-stat (MIT) and opencode-tokenwatch (MIT).
+// to register the unified /usage command. Each slash `run` opens a LOCAL dialog
+// (context.ui.dialog) / writes files — never sends the slash to the LLM.
+// /session-usage and /total-usage are kept as slash aliases for compatibility.
+// Adapted from opencode-usage-stat (MIT) and opencode-tokenwatch (MIT).
 
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import {
-  getUsageReport,
-  getHourlyHeatmap,
-  getMessageDetails,
-  getSessionTitle,
   getChildSessionIds,
-  getErrorStats,
   getSummary,
   getModelBreakdown,
+  getMessageDetails,
+  getErrorStats,
+  getSessionTitle,
   setV2Client,
 } from "./queries.js"
-import type { UsageFilters, ApiCostAnalysis, ApiCostModelItem, CombinedReportData, HtmlReportMeta, SessionTokenData, ModelBreakdownItem, MessageRow, ErrorStats } from "./formatter.js"
-import { getPresetRange, parseDaysFilter } from "./formatter.js"
-import { estimateApiCost } from "./pricing.js"
-import { readLogs } from "./perf-tracker.js"
-import { readPersistedStats } from "./stats-store.js"
+import type {
+  UsageFilters,
+  CombinedReportData,
+  SessionTokenData,
+  ModelBreakdownItem,
+  MessageRow,
+  ErrorStats,
+} from "./formatter.js"
+import { parseDaysFilter } from "./formatter.js"
 import { t, setLanguage } from "./i18n.js"
 import type { SupportedLanguage } from "./i18n.js"
 import { getSettingsStore, migrateLegacySettings, DEFAULT_SETTINGS } from "./settings.js"
 import type { UsageStatSettings } from "./settings.js"
 import { generateSessionUsageHtml, buildSessionReportData } from "./session-usage-html.js"
 import { generateTotalUsageHtml } from "./total-usage-html.js"
+import type { ReportFormat, ReportScope, SessionReportView } from "./report-formats.js"
+import {
+  buildCombinedData,
+  buildRecentHoursReportData,
+  getDateRangeForScope,
+  renderPeriodTextReport,
+  renderSessionTextReport,
+  toPeriodJsonReport,
+  toSessionJsonReport,
+} from "./report-formats.js"
 import { execSync, spawn } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
@@ -65,7 +78,7 @@ const MAX_REPORTS = 50
 function cleanupOldReports(dir: string): void {
   try {
     const files = readdirSync(dir)
-      .filter(f => f.startsWith(REPORT_PREFIX) && f.endsWith(".html"))
+      .filter(f => f.startsWith(REPORT_PREFIX) && /\.(html|txt|json)$/.test(f))
       .map(f => ({ name: f, path: join(dir, f), mtime: statSync(join(dir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)
     if (files.length > MAX_REPORTS) {
@@ -82,12 +95,6 @@ function dateTimeStamp(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`
 }
 
-function nowString(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
 /** Current session id from the V2 router when on a session screen. */
 function currentSessionId(context: Context): string | undefined {
   try {
@@ -97,57 +104,31 @@ function currentSessionId(context: Context): string | undefined {
   return undefined
 }
 
-async function buildCombinedData(context: Context, filters: UsageFilters = {}): Promise<CombinedReportData> {
-  const report = await getUsageReport(filters)
-  const hourlyHeatmap = await getHourlyHeatmap(filters)
-  const logs = readLogs(200)
-  const perfSummary = readPersistedStats()
+async function buildSessionData(context: Context): Promise<SessionReportView> {
+  const sessionId = currentSessionId(context)
+  if (!sessionId) throw new Error("No active session. Open a session first.")
+  const childIds = await getChildSessionIds(sessionId)
+  const allIds = [sessionId, ...childIds]
+  const filters: UsageFilters = { sessionIds: allIds }
 
-  const meta: HtmlReportMeta = {
-    generatedAt: nowString(),
-    dateRange: {
-      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : "—",
-      end: report.daily.length > 0 ? report.daily[0].day : "—",
-    },
-  }
+  const [summary, models, messages, errors, sessionTitle] = await Promise.all([
+    getSummary(filters) as Promise<SessionTokenData>,
+    getModelBreakdown(filters) as Promise<ModelBreakdownItem[]>,
+    getMessageDetails(sessionId) as Promise<MessageRow[]>,
+    getErrorStats(filters) as Promise<ErrorStats>,
+    getSessionTitle(sessionId) as Promise<string>,
+  ])
 
-  const apiCostByModel: ApiCostModelItem[] = report.models.map(m => {
-    const est = estimateApiCost(
-      m.provider, m.model, m.requests,
-      m.inputTokens, m.outputTokens, m.reasoningTokens,
-      m.cacheRead, m.cacheWrite,
-    )
-    return {
-      provider: m.provider,
-      model: m.model,
-      requests: m.requests,
-      inputTokens: m.inputTokens,
-      outputTokens: m.outputTokens,
-      reasoningTokens: m.reasoningTokens,
-      cacheRead: m.cacheRead,
-      cacheWrite: m.cacheWrite,
-      reportedCost: m.totalCost,
-      apiEquivCost: est.cost,
-      estimated: est.estimated,
-      pricingProvider: est.pricingProvider,
-    }
-  })
-  const apiTotal = apiCostByModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0)
-  const apiCost: ApiCostAnalysis = {
-    totalApiCost: apiTotal > 0 ? apiTotal : null,
-    reportedCost: report.summary.totalCost,
-    byModel: apiCostByModel,
-  }
-
-  return {
-    ...report,
-    meta,
-    apiCost,
-    errors: report.errors,
-    hourlyHeatmap,
-    perfLogs: logs,
-    perfSummary,
-  }
+  const data = await buildSessionReportData(
+    sessionId,
+    sessionTitle,
+    childIds.length,
+    summary,
+    models,
+    messages,
+    errors,
+  )
+  return data
 }
 
 async function showHtmlReport(context: Context, filters: UsageFilters = {}): Promise<void> {
@@ -166,26 +147,38 @@ async function showHtmlReport(context: Context, filters: UsageFilters = {}): Pro
   }
 }
 
-async function showHtmlSessionReport(context: Context): Promise<void> {
-  const sessionId = currentSessionId(context)
+async function showTextReport(context: Context, filters: UsageFilters = {}): Promise<void> {
   try {
-    if (!sessionId) {
-      context.ui.toast.show({ message: "No active session. Open a session first.", variant: "error" })
-      return
-    }
-    const childIds = await getChildSessionIds(sessionId)
-    const allIds = [sessionId, ...childIds]
-    const filters: UsageFilters = { sessionIds: allIds }
+    const data = await buildCombinedData(context, filters)
+    const text = renderPeriodTextReport(data)
+    const dir = ensureReportDir()
+    const filePath = join(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`)
+    writeFileSync(filePath, text, "utf-8")
+    cleanupOldReports(dir)
+    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
+  }
+}
 
-    const [summary, models, messages, errors, sessionTitle] = await Promise.all([
-      getSummary(filters) as Promise<SessionTokenData>,
-      getModelBreakdown(filters) as Promise<ModelBreakdownItem[]>,
-      getMessageDetails(sessionId) as Promise<MessageRow[]>,
-      getErrorStats(filters) as Promise<ErrorStats>,
-      getSessionTitle(sessionId) as Promise<string>,
-    ])
+async function showJsonReport(context: Context, filters: UsageFilters = {}): Promise<void> {
+  try {
+    const data = await buildCombinedData(context, filters)
+    const dir = ensureReportDir()
+    const filePath = join(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`)
+    writeFileSync(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8")
+    cleanupOldReports(dir)
+    context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
+  }
+}
 
-    const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors)
+async function showHtmlSessionReport(context: Context): Promise<void> {
+  try {
+    const data = await buildSessionData(context)
     const html = generateSessionUsageHtml(data)
     const dir = ensureReportDir()
     const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`)
@@ -199,12 +192,28 @@ async function showHtmlSessionReport(context: Context): Promise<void> {
   }
 }
 
-async function showJsonExport(context: Context): Promise<void> {
+async function showTextSessionReport(context: Context): Promise<void> {
   try {
-    const data = await buildCombinedData(context, {})
+    const data = await buildSessionData(context)
+    const text = renderSessionTextReport(data)
     const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}data-${dateTimeStamp()}.json`)
-    writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8")
+    const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.txt`)
+    writeFileSync(filePath, text, "utf-8")
+    cleanupOldReports(dir)
+    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
+  }
+}
+
+async function showJsonSessionReport(context: Context): Promise<void> {
+  try {
+    const data = await buildSessionData(context)
+    const dir = ensureReportDir()
+    const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.json`)
+    writeFileSync(filePath, JSON.stringify(toSessionJsonReport(data), null, 2), "utf-8")
+    cleanupOldReports(dir)
     context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -212,48 +221,108 @@ async function showJsonExport(context: Context): Promise<void> {
   }
 }
 
-async function showHtmlReportRangeMenu(context: Context): Promise<void> {
-  const choice = await context.ui.dialog.select<string>({
-    title: t("cmdTitleHtml"),
-    placeholder: "Select date range...",
+async function showRangeMenu(context: Context): Promise<ReportScope | undefined> {
+  const choice = await context.ui.dialog.select<ReportScope["kind"]>({
+    title: t("scopeTitle"),
+    placeholder: t("scopePlaceholder"),
     options: [
-      { title: `📄 ${t("menuToday")}`, value: "today" },
-      { title: `📄 ${t("menu7d")}`, value: "7d" },
-      { title: `📄 ${t("menu30d")}`, value: "30d" },
-      { title: `📄 ${t("menuAll")}`, value: "all" },
+      { title: `🗂 ${t("menuCurrentSession")}`, value: "session", description: "Current session + subagents" },
+      { title: `🕐 ${t("menu5h")}`, value: "5h", description: "Last 5 hours" },
+      { title: `📆 ${t("menu7d")}`, value: "7d", description: "Last 7 days" },
+      { title: `📅 ${t("menu30d")}`, value: "30d", description: "Last 30 days" },
     ],
   })
-  if (!choice) return
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, "0")
-  const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  switch (choice) {
-    case "today": await showHtmlReport(context, { startDate: today, endDate: today }); break
-    case "7d": await showHtmlReport(context, getPresetRange("7d")); break
-    case "30d": await showHtmlReport(context, getPresetRange("30d")); break
-    default: await showHtmlReport(context, getPresetRange("all")); break
+  if (!choice) return undefined
+  const labels: Record<ReportScope["kind"], string> = {
+    session: t("menuCurrentSession"),
+    "5h": t("menu5h"),
+    "7d": t("menu7d"),
+    "30d": t("menu30d"),
+    days: `${choice} days`,
   }
+  return { kind: choice, label: labels[choice] }
+}
+
+async function showFormatMenu(context: Context): Promise<ReportFormat | undefined> {
+  const choice = await context.ui.dialog.select<ReportFormat>({
+    title: t("formatTitle"),
+    placeholder: t("formatPlaceholder"),
+    options: [
+      { title: `📄 ${t("cmdTitleHtml")}`, value: "html", description: t("cmdDescHtml") },
+      { title: `📝 ${t("cmdTitleText")}`, value: "text", description: t("cmdDescText") },
+      { title: `🧾 ${t("cmdTitleJson")}`, value: "json", description: t("cmdDescJson") },
+    ],
+  })
+  return choice
+}
+
+async function writePeriodReportData(context: Context, data: CombinedReportData, format: ReportFormat): Promise<void> {
+  if (format === "html") {
+    const html = generateTotalUsageHtml(data)
+    const dir = ensureReportDir()
+    const filePath = join(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`)
+    writeFileSync(filePath, html, "utf-8")
+    cleanupOldReports(dir)
+    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" })
+    openInBrowser(filePath)
+    return
+  }
+  if (format === "text") {
+    const text = renderPeriodTextReport(data)
+    const dir = ensureReportDir()
+    const filePath = join(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`)
+    writeFileSync(filePath, text, "utf-8")
+    cleanupOldReports(dir)
+    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
+    return
+  }
+  const dir = ensureReportDir()
+  const filePath = join(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`)
+  writeFileSync(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8")
+  cleanupOldReports(dir)
+  context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
+}
+
+async function generatePeriodReport(context: Context, scope: ReportScope, format: ReportFormat): Promise<void> {
+  try {
+    if (scope.kind === "5h") {
+      const data = await buildRecentHoursReportData(context, 5)
+      await writePeriodReportData(context, data, format)
+      return
+    }
+
+    const filters = getDateRangeForScope(scope)
+    if (format === "html") {
+      await showHtmlReport(context, filters)
+    } else if (format === "text") {
+      await showTextReport(context, filters)
+    } else {
+      await showJsonReport(context, filters)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
+  }
+}
+
+async function generateSessionReport(context: Context, format: ReportFormat): Promise<void> {
+  if (format === "html") await showHtmlSessionReport(context)
+  else if (format === "text") await showTextSessionReport(context)
+  else await showJsonSessionReport(context)
 }
 
 async function showUsageMenu(context: Context): Promise<void> {
   try {
     setLanguage(loadSettings(context).language)
   } catch { /* ignore */ }
-  const choice = await context.ui.dialog.select<string>({
-    title: t("panelTitle"),
-    placeholder: "Select an action...",
-    options: [
-      { title: `🗂 ${t("menuCurrentSession")}`, value: "session", description: "Current session + subagents HTML dashboard" },
-      { title: `📄 ${t("cmdTitleHtml")} ▸`, value: "html", description: t("cmdDescHtml") },
-      { title: t("cmdTitleJson"), value: "json", description: t("cmdDescJson") },
-      { title: `${t("cmdTitleSettings")} ▸`, value: "settings", description: t("cmdDescSettings") },
-    ],
-  })
-  switch (choice) {
-    case "session": await showHtmlSessionReport(context); break
-    case "html": await showHtmlReportRangeMenu(context); break
-    case "json": await showJsonExport(context); break
-    case "settings": await showSettingsDialog(context); break
+  const scope = await showRangeMenu(context)
+  if (!scope) return
+  const format = await showFormatMenu(context)
+  if (!format) return
+  if (scope.kind === "session") {
+    await generateSessionReport(context, format)
+  } else {
+    await generatePeriodReport(context, scope, format)
   }
 }
 
@@ -338,9 +407,40 @@ async function showLanguageMenu(context: Context): Promise<void> {
   } catch { /* ignore */ }
 }
 
+function parseNumericDays(input: string | undefined): number | undefined {
+  const raw = (input ?? "").trim()
+  if (!/^\d+$/.test(raw)) return undefined
+  const days = Number(raw)
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return undefined
+  return days
+}
+
+async function runUsageCommand(context: Context, input?: string): Promise<void> {
+  try {
+    setLanguage(loadSettings(context).language)
+  } catch { /* ignore */ }
+
+  const raw = (input ?? "").trim()
+  if (raw === "settings" || raw === "config") {
+    await showSettingsDialog(context)
+    return
+  }
+
+  const days = parseNumericDays(raw)
+  if (days != null) {
+    const format = await showFormatMenu(context)
+    if (!format) return
+    const scope: ReportScope = { kind: "days", label: `${days} days`, days }
+    await generatePeriodReport(context, scope, format)
+    return
+  }
+
+  await showUsageMenu(context)
+}
+
 export { parseDaysFilter } from "./formatter.js"
 
-/** Register the V2 keymap layer with /usage slash commands (never sends to LLM). */
+/** Register the V2 keymap layer with the unified /usage slash command (never sends to LLM). */
 export function registerCommands(context: Context): void {
   try {
     setV2Client(context.client as any)
@@ -352,29 +452,15 @@ export function registerCommands(context: Context): void {
       {
         id: "usage-stat.usage",
         title: "Usage Stat",
-        description: "Token use dashboards, provider balances, exports and settings",
+        description: "Generate local usage reports (current session, 5h/7d/30d, or N days) as HTML, text, or JSON",
         group: "Stats",
         palette: true,
-        slash: { name: "usage" },
-        run: () => { void showUsageMenu(context) },
-      },
-      {
-        id: "usage-stat.session-usage",
-        title: "Session Usage",
-        description: "Generate the current session's HTML usage report locally",
-        group: "Stats",
-        palette: true,
-        slash: { name: "session-usage" },
-        run: () => { void showHtmlSessionReport(context) },
-      },
-      {
-        id: "usage-stat.total-usage",
-        title: "Total Usage",
-        description: "Generate a cumulative HTML usage report locally (optionally /total-usage 7 for last 7 days)",
-        group: "Stats",
-        palette: true,
-        slash: { name: "total-usage", arguments: true },
-        run: (input?: string) => { void showHtmlReport(context, parseDaysFilter(input)) },
+        slash: {
+          name: "usage",
+          arguments: true,
+          aliases: ["session-usage", "total-usage"],
+        },
+        run: (input?: string) => { void runUsageCommand(context, input) },
       },
     ],
   }))

@@ -55,15 +55,15 @@ function renderKpiCards(data: SessionReportData): string {
   const apiCostTotal = data.apiCost.totalApiCost
   const errorRatePct = (data.errors.errorRate * 100).toFixed(1) + '%'
   const errorColor = data.errors.errorRate >= 0.05 ? 'var(--danger)'
-    : data.errors.errorRate > 0 ? 'var(--tps)' : 'var(--cache)'
+    : data.errors.errorRate >= 0.01 ? 'var(--tps)' : 'var(--cache)'
 
   const avgTokensPerReq = s.requestCount > 0 ? s.totalTokens / s.requestCount : 0
   const tpsStr = data.tps > 0 ? (data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1)) : '-'
   const cprStr = s.requestCount > 0 ? fmtCost(s.totalCost / s.requestCount) : '-'
 
   return `
-    <div class="kpi-row cols-10" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi-card">
+    <div class="kpi-row kpi-session-row">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Tokens</div>
         <div class="kpi-value" data-countup="${fmtTokens(s.totalTokens)}">${fmtTokens(s.totalTokens)}</div>
         <div class="kpi-sub">${s.requestCount} requests</div>
@@ -87,7 +87,7 @@ function renderKpiCards(data: SessionReportData): string {
         <div class="kpi-value" data-countup="${tpsStr}">${tpsStr}</div>
         <div class="kpi-sub">${fmtDuration(data.sessionDurationMs)} span</div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Reported Cost</div>
         <div class="kpi-value" style="color:var(--tps)" data-countup="${fmtCost(s.totalCost)}">${fmtCost(s.totalCost)}</div>
       </div>
@@ -149,9 +149,9 @@ function renderModelCards(data: SessionReportData): string {
           <div class="stat-item"><span class="stat-label">Total Tokens</span><span class="stat-value">${fmtTokens(m.totalTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(m.inputTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Output</span><span class="stat-value" style="color:var(--output)">${fmtTokens(m.outputTokens)}</span></div>
-          <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#FF8C00">${fmtTokens(m.reasoningTokens)}</span></div>
+          <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#c4a982">${fmtTokens(m.reasoningTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Cache Read</span><span class="stat-value" style="color:var(--cache)">${fmtTokens(m.cacheRead)}</span></div>
-          <div class="stat-item"><span class="stat-label">Cache Write</span><span class="stat-value" style="color:#4FC3F7">${fmtTokens(m.cacheWrite)}</span></div>
+          <div class="stat-item"><span class="stat-label">Cache Write</span><span class="stat-value" style="color:#8295a8">${fmtTokens(m.cacheWrite)}</span></div>
           <div class="stat-item"><span class="stat-label">Hit Rate</span><span class="stat-value" style="color:${hitColor};font-weight:600">${hitDisplay}</span></div>
           <div class="stat-item"><span class="stat-label">Reported Cost</span><span class="stat-value">${fmtCost(m.totalCost)}</span></div>
           <div class="stat-item"><span class="stat-label">API Equiv.</span><span class="stat-value" style="color:var(--missing)">${apiCostStr}</span></div>
@@ -189,18 +189,18 @@ function renderMessageTable(data: SessionReportData): string {
     const durColor = duration != null && duration > data.p90Duration ? 'var(--danger)' : 'var(--text)'
 
     return `<tr>
-      <td>${i + 1}</td>
-      <td>${fmtTime(msg.timeCreated)}</td>
+      <td data-sort="${i + 1}">${i + 1}</td>
+      <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
-      <td>${fmtTokens(msg.totalTokens)}</td>
-      <td>${fmtTokens(msg.inputTokens)}</td>
-      <td>${fmtTokens(msg.outputTokens)}</td>
-      <td>${fmtTokens(msg.reasoningTokens)}</td>
-      <td>${fmtTokens(msg.cacheRead)}</td>
-      <td>${fmtTokens(msg.cacheWrite)}</td>
-      <td style="color:${hitColor};font-weight:600">${hitDisplay}</td>
-      <td style="color:${durColor}">${fmtDuration(duration)}</td>
-      <td>${fmtCost(msg.cost)}</td>
+      <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
+      <td data-sort="${msg.inputTokens}">${fmtTokens(msg.inputTokens)}</td>
+      <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
+      <td data-sort="${msg.reasoningTokens}">${fmtTokens(msg.reasoningTokens)}</td>
+      <td data-sort="${msg.cacheRead}">${fmtTokens(msg.cacheRead)}</td>
+      <td data-sort="${msg.cacheWrite}">${fmtTokens(msg.cacheWrite)}</td>
+      <td data-sort="${isMissing ? -1 : hitRate}" style="color:${hitColor};font-weight:600">${hitDisplay}</td>
+      <td data-sort="${duration ?? -1}" style="color:${durColor}">${fmtDuration(duration)}</td>
+      <td data-sort="${msg.cost}">${fmtCost(msg.cost)}</td>
     </tr>`
   }).join("\n")
 
@@ -263,20 +263,20 @@ function initTrendChart() {
       });
       return html;
     }},
-    legend: { data: ['Total', 'MA(5)', 'Input', 'Cache Read', 'Output', 'Cost'], textStyle: { color: '#8888A0' }, top: 5, type: 'scroll' },
+    legend: { data: ['Total', 'MA(5)', 'Input', 'Cache Read', 'Output', 'Cost'], textStyle: { color: '#a3a3ac' }, top: 5, type: 'scroll' },
     grid: { left: 60, right: 70, bottom: 40, top: 50 },
-    xAxis: { type: 'category', data: trendLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
+    xAxis: { type: 'category', data: trendLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
     yAxis: [
-      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: fmt }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      { type: 'value', name: 'Cost', nameTextStyle: { color: '#FFB800' }, axisLabel: { color: '#FFB800', formatter: function(v) { return '$' + v.toFixed(4); } }, splitLine: { show: false } }
+      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: fmt }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      { type: 'value', name: 'Cost', nameTextStyle: { color: '#d0b77d' }, axisLabel: { color: '#d0b77d', formatter: function(v) { return '$' + v.toFixed(4); } }, splitLine: { show: false } }
     ],
     series: [
-      { name: 'Total', type: 'line', data: trendTotal, smooth: true, symbol: 'none', lineStyle: { color: '#E8E8F5', width: 1.5, type: 'dashed' }, itemStyle: { color: '#E8E8F5' } },
-      { name: 'MA(5)', type: 'line', data: trendMA5, smooth: true, symbol: 'none', lineStyle: { color: '#FFB800', width: 2.5 } },
-      { name: 'Input', type: 'line', data: trendInput, smooth: true, symbol: 'none', lineStyle: { color: '#00D1FF', width: 2 }, areaStyle: { color: 'rgba(0,209,255,0.08)' } },
-      { name: 'Cache Read', type: 'line', data: trendCache, smooth: true, symbol: 'none', lineStyle: { color: '#00F593', width: 2 }, areaStyle: { color: 'rgba(0,245,147,0.08)' } },
-      { name: 'Output', type: 'line', data: trendOutput, smooth: true, symbol: 'none', lineStyle: { color: '#B545FF', width: 2 } },
-      { name: 'Cost', type: 'line', yAxisIndex: 1, data: trendCost, smooth: true, symbol: 'none', lineStyle: { color: '#FFB800', width: 1.5, opacity: 0.6 } }
+      { name: 'Total', type: 'line', data: trendTotal, smooth: true, symbol: 'none', lineStyle: { color: '#f2f2ef', width: 1.5, type: 'dashed' }, itemStyle: { color: '#f2f2ef' } },
+      { name: 'MA(5)', type: 'line', data: trendMA5, smooth: true, symbol: 'none', lineStyle: { color: '#d0b77d', width: 2.5 } },
+      { name: 'Input', type: 'line', data: trendInput, smooth: true, symbol: 'none', lineStyle: { color: '#c8d4e3', width: 2 }, areaStyle: { color: 'rgba(200,212,227,0.08)' } },
+      { name: 'Cache Read', type: 'line', data: trendCache, smooth: true, symbol: 'none', lineStyle: { color: '#8fb7a2', width: 2 }, areaStyle: { color: 'rgba(143,183,162,0.08)' } },
+      { name: 'Output', type: 'line', data: trendOutput, smooth: true, symbol: 'none', lineStyle: { color: '#b6adc8', width: 2 } },
+      { name: 'Cost', type: 'line', yAxisIndex: 1, data: trendCost, smooth: true, symbol: 'none', lineStyle: { color: '#d0b77d', width: 1.5, opacity: 0.6 } }
     ]
   };
   chart.setOption(option);
@@ -311,16 +311,16 @@ function initDurationChart() {
       return '<b>Request ' + p.axisValue + '</b><br/>Duration: ' + p.value.toFixed(2) + 's';
     }},
     grid: { left: 60, right: 30, bottom: 40, top: 30 },
-    xAxis: { type: 'category', data: durLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
-    yAxis: { type: 'value', name: 'Seconds', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: '{value}s' }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
+    xAxis: { type: 'category', data: durLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
+    yAxis: { type: 'value', name: 'Seconds', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: '{value}s' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
     series: [{
       type: 'bar', data: durData, barMaxWidth: 20,
-      itemStyle: { color: function(p) { return p.value > durP90 ? '#FF4757' : p.value > durP50 ? '#FFB800' : '#00D1FF'; }, borderRadius: [3, 3, 0, 0] },
+      itemStyle: { color: function(p) { return p.value > durP90 ? '#df7b83' : p.value > durP50 ? '#d0b77d' : '#c8d4e3'; }, borderRadius: [3, 3, 0, 0] },
       markLine: {
         symbol: 'none', silent: true,
         data: [
-          { yAxis: durP50, lineStyle: { color: '#00F593', type: 'dashed', width: 1.5 }, label: { formatter: 'p50 ' + durP50.toFixed(1) + 's', color: '#00F593', position: 'insideEndTop' } },
-          { yAxis: durP90, lineStyle: { color: '#FF4757', type: 'dashed', width: 1.5 }, label: { formatter: 'p90 ' + durP90.toFixed(1) + 's', color: '#FF4757', position: 'insideEndBottom' } }
+          { yAxis: durP50, lineStyle: { color: '#8fb7a2', type: 'dashed', width: 1.5 }, label: { formatter: 'p50 ' + durP50.toFixed(1) + 's', color: '#8fb7a2', position: 'insideEndTop' } },
+          { yAxis: durP90, lineStyle: { color: '#df7b83', type: 'dashed', width: 1.5 }, label: { formatter: 'p90 ' + durP90.toFixed(1) + 's', color: '#df7b83', position: 'insideEndBottom' } }
         ]
       }
     }]
@@ -359,15 +359,15 @@ function initCacheTrendChart() {
       { gte: 70, lt: 85, color: '#d0b77d' },
       { lt: 70, color: '#df7b83' }
     ]},
-    xAxis: { type: 'category', data: cacheLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
-    yAxis: { type: 'value', max: 100, name: 'Hit %', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
+    xAxis: { type: 'category', data: cacheLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
+    yAxis: { type: 'value', max: 100, name: 'Hit %', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
     series: [{
       type: 'line', data: cacheHitData, smooth: true, symbol: 'circle', symbolSize: 5,
       connectNulls: false,
-      lineStyle: { color: '#00F593', width: 2 },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,245,147,0.25)' }, { offset: 1, color: 'rgba(0,245,147,0.02)' }] } },
-      itemStyle: { color: '#00F593' },
-      markLine: { symbol: 'none', silent: true, data: [{ yAxis: 85, lineStyle: { color: '#232330', type: 'dotted' } }] }
+      lineStyle: { color: '#8fb7a2', width: 2 },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(143,183,162,0.25)' }, { offset: 1, color: 'rgba(143,183,162,0.02)' }] } },
+      itemStyle: { color: '#8fb7a2' },
+      markLine: { symbol: 'none', silent: true, data: [{ yAxis: 85, lineStyle: { color: '#303035', type: 'dotted' } }] }
     }]
   };
   chart.setOption(option);
@@ -393,8 +393,8 @@ function renderApiCostSection(data: SessionReportData): string {
     const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : '-'
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
-      <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`
   }).join("\n")
 
@@ -413,7 +413,7 @@ function renderApiCostSection(data: SessionReportData): string {
       <span style="color:var(--missing)">~</span> = MISSING model (upstream no cache data) estimated at 94% hit rate.
     </p>
     <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-      <div class="kpi-card"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
+      <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : '-'}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
     </div>
@@ -436,7 +436,7 @@ function renderInsights(data: SessionReportData): string {
     const mostExpensive = data.messages[maxCostIdx]
     if (mostExpensive.cost > 0) {
       insights.push({
-        icon: '$', bg: 'rgba(255,184,0,0.15)',
+        icon: '$', bg: 'rgba(208,183,125,0.15)',
         title: 'Most expensive request',
         value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${escapeHtml(mostExpensive.model)})`,
       })
@@ -446,7 +446,7 @@ function renderInsights(data: SessionReportData): string {
   // Peak tokens window
   if (data.peakTokensIndex >= 0) {
     insights.push({
-      icon: '\u26A1', bg: 'rgba(0,209,255,0.15)',
+      icon: '\u26A1', bg: 'rgba(200,212,227,0.15)',
       title: 'Peak activity',
       value: `Request <span class="accent">#${data.peakTokensIndex + 1}</span> with <span class="accent">${fmtTokens(data.peakTokens)}</span> tokens`,
     })
@@ -466,7 +466,7 @@ function renderInsights(data: SessionReportData): string {
   }
   if (bestStreak > 1) {
     insights.push({
-      icon: '\u2713', bg: 'rgba(0,245,147,0.15)',
+      icon: '\u2713', bg: 'rgba(143,183,162,0.15)',
       title: 'Best cache streak',
       value: `<span class="accent">${bestStreak} requests</span> (#${bestStart + 1}-${bestStart + bestStreak}) above 85% hit rate`,
     })
@@ -480,7 +480,7 @@ function renderInsights(data: SessionReportData): string {
     }, { dur: 0, i: 0, model: data.messages[0]?.model ?? '' })
     if (slowest.dur > 0) {
       insights.push({
-        icon: '\u23F1', bg: 'rgba(255,71,87,0.15)',
+        icon: '\u23F1', bg: 'rgba(223,123,131,0.15)',
         title: 'Slowest response',
         value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${escapeHtml(slowest.model)})`,
       })
@@ -490,7 +490,7 @@ function renderInsights(data: SessionReportData): string {
   // Error insight
   if (data.errors.failedCount > 0) {
     insights.push({
-      icon: '!', bg: 'rgba(255,71,87,0.15)',
+      icon: '!', bg: 'rgba(223,123,131,0.15)',
       title: 'Errors detected',
       value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests`,
     })

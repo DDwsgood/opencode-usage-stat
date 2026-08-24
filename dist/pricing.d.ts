@@ -26,7 +26,8 @@ export interface ApiCostEstimate {
  * Estimate API equivalent cost for a single request/aggregate.
  *
  * Non-MISSING model (has real cache data):
- *   input * input_rate + output * output_rate + cacheRead * cache_read_rate + cacheWrite * cache_write_rate
+ *   input * input_rate + output * output_rate + reasoning * reasoning_rate
+ *   + cacheRead * cache_read_rate + cacheWrite * cache_write_rate
  *
  * MISSING model (upstream doesn't return cache, cacheRead=0):
  *   Estimated at 94% hit rate: input * (1-0.94) * input_rate + input * 0.94 * cache_read_rate + output * output_rate

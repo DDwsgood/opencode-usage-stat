@@ -283,7 +283,8 @@ export interface ApiCostEstimate {
  * Estimate API equivalent cost for a single request/aggregate.
  *
  * Non-MISSING model (has real cache data):
- *   input * input_rate + output * output_rate + cacheRead * cache_read_rate + cacheWrite * cache_write_rate
+ *   input * input_rate + output * output_rate + reasoning * reasoning_rate
+ *   + cacheRead * cache_read_rate + cacheWrite * cache_write_rate
  *
  * MISSING model (upstream doesn't return cache, cacheRead=0):
  *   Estimated at 94% hit rate: input * (1-0.94) * input_rate + input * 0.94 * cache_read_rate + output * output_rate
@@ -315,8 +316,8 @@ export function estimateApiCost(
   const cacheReadRate = pricing.cache_read ?? 0
   const cacheWriteRate = pricing.cache_write ?? 0
 
-  // Local / non-cache upstreams never report cacheRead; billing them at an
-  // assumed hit rate would fabricate savings, so use real token counts only.
+  // Model is flagged MISSING when the upstream reports no cache data at all
+  // (requestCount>1, cacheRead=0); estimated at the 94% hit-rate heuristic.
   const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead)
 
   let cost: number

@@ -85,6 +85,16 @@ function parseDaysFilter(input) {
   start.setDate(end.getDate() - (days - 1));
   return { startDate: formatDateOnly(start), endDate: formatDateOnly(end) };
 }
+function formatFilters(filters) {
+  const parts = [];
+  if (filters.sessionId) parts.push(`session=${filters.sessionId}`);
+  if (filters.provider) parts.push(`provider=${filters.provider}`);
+  if (filters.model) parts.push(`model=${filters.model}`);
+  if (filters.startDate || filters.endDate) {
+    parts.push(`date=${filters.startDate ?? "..."}..${filters.endDate ?? "..."}`);
+  }
+  return parts.length ? parts.join(" | ") : "scope=all local sessions";
+}
 
 // src/perf-tracker.ts
 import { appendFileSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -713,6 +723,11 @@ var zh = {
   cmdDescText: "\u751F\u6210\u7EAF\u6587\u672C\u62A5\u544A\u6587\u4EF6",
   cmdTitleSettings: "\u8BBE\u7F6E",
   cmdDescSettings: "\u914D\u7F6E\u4FA7\u8FB9\u680F\u663E\u793A\u9009\u9879",
+  scopeTitle: "\u9009\u62E9\u62A5\u544A\u8303\u56F4",
+  scopePlaceholder: "\u9009\u62E9\u8303\u56F4...",
+  formatTitle: "\u9009\u62E9\u62A5\u544A\u683C\u5F0F",
+  formatPlaceholder: "\u9009\u62E9\u683C\u5F0F...",
+  menu5h: "\u6700\u8FD1 5 \u5C0F\u65F6",
   descShowPerformance: "\u5728\u4FA7\u8FB9\u680F\u663E\u793ATPS\u3001TTFT\u3001\u5EF6\u8FDF\u7B49\u6307\u6807",
   descShowPricing: "\u5728\u4FA7\u8FB9\u680F\u663E\u793A\u6210\u672C\u4F30\u7B97",
   descShowTrend: "\u5728\u4FA7\u8FB9\u680F\u663E\u793AToken\u7528\u91CF\u8D8B\u52BF",
@@ -799,6 +814,11 @@ var en = {
   cmdDescText: "Generate plain text report file",
   cmdTitleSettings: "Settings",
   cmdDescSettings: "Configure sidebar display options",
+  scopeTitle: "Select Report Scope",
+  scopePlaceholder: "Select a scope...",
+  formatTitle: "Select Report Format",
+  formatPlaceholder: "Select a format...",
+  menu5h: "Last 5 Hours",
   descShowPerformance: "Display TPS, TTFT, latency metrics in sidebar",
   descShowPricing: "Display cost estimates in sidebar",
   descShowTrend: "Display token usage trend in sidebar",
@@ -1974,12 +1994,12 @@ function parseXaiGrpcTrailerStatus(frame) {
   let status = null;
   for (const line of text.split(/\r?\n/)) {
     if (!line) continue;
-    const separator = line.indexOf(":");
-    if (separator <= 0) return null;
-    const key = line.slice(0, separator).trim().toLowerCase();
+    const separator2 = line.indexOf(":");
+    if (separator2 <= 0) return null;
+    const key = line.slice(0, separator2).trim().toLowerCase();
     if (!key || key !== "grpc-status") continue;
     if (status !== null) return null;
-    const rawStatus = line.slice(separator + 1).trim();
+    const rawStatus = line.slice(separator2 + 1).trim();
     if (!/^\d+$/.test(rawStatus)) return null;
     status = Number(rawStatus);
     if (!Number.isSafeInteger(status)) return null;
@@ -2714,6 +2734,9 @@ var client = null;
 function setV2Client(c) {
   client = c;
   clearQueryCache();
+}
+function getV2Client() {
+  return client;
 }
 function requireClient() {
   if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
@@ -3457,50 +3480,74 @@ function embeddedEChartsScript() {
   return `<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>`;
 }
 var HTML_HEAD_SHARED = embeddedEChartsScript();
-function embeddedBackgroundTexture() {
-  const candidates = [
-    join6(dirname2(fileURLToPath(import.meta.url)), "..", "assets", "bg-texture.jpg"),
-    join6(process.cwd(), "assets", "bg-texture.jpg"),
-    join6(process.cwd(), "dist", "..", "assets", "bg-texture.jpg")
-  ];
-  for (const path of candidates) {
-    if (existsSync6(path)) {
-      const image = readFileSync6(path);
-      const mime = image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : "image/jpeg";
-      return `data:${mime};base64,` + image.toString("base64");
-    }
-  }
-  return "";
-}
-var BACKGROUND_TEXTURE_URI = embeddedBackgroundTexture();
 var BG_ANIMATION_HTML = `
 <div class="scroll-progress" aria-hidden="true"><span id="scroll-progress-bar"></span></div>
 <div class="bg-canvas" aria-hidden="true">
-  <div class="bg-texture" style="background-image:url('${BACKGROUND_TEXTURE_URI}')"></div>
+  <canvas id="bg-particles"></canvas>
   <div class="bg-orb bg-orb-1"></div>
   <div class="bg-orb bg-orb-2"></div>
   <div class="bg-orb bg-orb-3"></div>
+  <div class="bg-spot"></div>
+  <div class="bg-halo"></div>
   <div class="bg-grid"></div>
   <div class="bg-noise"></div>
 </div>`;
 var BG_ANIMATION_CSS = `
   .bg-canvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
   .bg-canvas canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .bg-texture { position:absolute; inset:-4%; background-size:cover; background-position:center; opacity:.40; filter:contrast(1.08) brightness(.82); mix-blend-mode:luminosity; animation:textureBreathe 28s ease-in-out infinite; }
-  @keyframes textureBreathe { 0%,100%{transform:scale(1.035) translate3d(-.5%,0,0)} 50%{transform:scale(1.09) translate3d(1.2%,-1%,0)} }
   .scroll-progress { position: fixed; inset: 0 0 auto; height: 2px; z-index: 100; background: rgba(255,255,255,.035); pointer-events:none; }
   .scroll-progress span { display:block; width:100%; height:100%; transform:scaleX(0); transform-origin:left; background:linear-gradient(90deg,#77777f,#f2f2ef); box-shadow:0 0 18px rgba(242,242,239,.35); }
   .bg-orb { position: absolute; border-radius: 50%; filter: blur(120px); will-change: transform; }
-  .bg-orb-1 { width: 70vw; height: 80vh; background: radial-gradient(circle, rgba(231,231,228,.92), transparent 65%); top: -30vh; left: -10vw; opacity:.16; animation: orbDrift 26s ease-in-out infinite; }
-  .bg-orb-2 { width: 60vw; height: 70vh; background: radial-gradient(circle, rgba(157,157,166,.85), transparent 68%); top:35vh; right:-15vw; opacity:.10; animation: orbDrift 34s ease-in-out infinite reverse; }
-  .bg-orb-3 { width: 55vw; height: 60vh; background: radial-gradient(circle, rgba(194,194,200,.9), transparent 70%); bottom:-25vh; left:25vw; opacity:.09; animation: orbDrift 42s ease-in-out infinite; }
-  @keyframes orbDrift { 0%,100% { transform:translate3d(0,0,0) scale(1); } 50% { transform:translate3d(3%,-4%,0) scale(1.08); } }
+  .bg-orb-1 { width: 70vw; height: 80vh; background: radial-gradient(circle, rgba(240,240,238,.95), transparent 65%); top: -30vh; left: -10vw; opacity:.13; animation: orbDrift1 26s ease-in-out infinite; }
+  .bg-orb-2 { width: 60vw; height: 70vh; background: radial-gradient(circle, rgba(157,157,166,.85), transparent 68%); top:35vh; right:-15vw; opacity:.09; animation: orbDrift2 34s ease-in-out infinite reverse; }
+  .bg-orb-3 { width: 55vw; height: 60vh; background: radial-gradient(circle, rgba(200,200,206,.9), transparent 70%); bottom:-25vh; left:25vw; opacity:.07; animation: orbDrift3 42s ease-in-out infinite; }
+  /* Slow drift plus a subtle parallax pull towards the cursor (--px/--py in -1..1) */
+  @keyframes orbDrift1 { 0%,100%{transform:translate3d(calc(var(--px,0)*22px),calc(var(--py,0)*18px),0) scale(1)} 50%{transform:translate3d(calc(3% + var(--px,0)*22px),calc(-4% + var(--py,0)*18px),0) scale(1.08)} }
+  @keyframes orbDrift2 { 0%,100%{transform:translate3d(calc(var(--px,0)*-34px),calc(var(--py,0)*-26px),0) scale(1)} 50%{transform:translate3d(calc(3% + var(--px,0)*-34px),calc(-4% + var(--py,0)*-26px),0) scale(1.08)} }
+  @keyframes orbDrift3 { 0%,100%{transform:translate3d(calc(var(--px,0)*-16px),calc(var(--py,0)*12px),0) scale(1)} 50%{transform:translate3d(calc(3% + var(--px,0)*-16px),calc(-4% + var(--py,0)*12px),0) scale(1.08)} }
+  /* Cursor spotlight: a wide soft glow with a brighter core, position driven by --mx/--my */
+  .bg-spot { position:absolute; left:0; top:0; width:120vmin; height:120vmin; margin:-60vmin 0 0 -60vmin; border-radius:50%; background:radial-gradient(circle, rgba(255,255,255,.075), rgba(255,255,255,.02) 42%, transparent 68%); will-change:transform; }
+  .bg-halo { position:absolute; left:0; top:0; width:44vmin; height:44vmin; margin:-22vmin 0 0 -22vmin; border-radius:50%; background:radial-gradient(circle, rgba(255,255,255,.05), transparent 62%); will-change:transform; }
   .bg-grid { position:absolute; inset:0; opacity:.52; background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px); background-size:72px 72px; mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 20%,transparent 85%); -webkit-mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 20%,transparent 85%); }
-  .bg-canvas::after { content:''; position:absolute; inset:0; background:linear-gradient(rgba(7,7,9,.15),rgba(7,7,9,.35)),radial-gradient(ellipse 95% 76% at 50% 40%,transparent 48%,rgba(0,0,0,.58) 100%); }
-  .bg-noise { position:absolute; inset:-50%; width:200%; height:200%; opacity:.02; mix-blend-mode:overlay; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"); animation:grain 7s steps(6) infinite; }
+  .bg-canvas::after { content:''; position:absolute; inset:0; background:linear-gradient(rgba(7,7,9,.1),rgba(7,7,9,.28)),radial-gradient(ellipse 95% 76% at 50% 40%,transparent 48%,rgba(0,0,0,.55) 100%); }
+  .bg-noise { position:absolute; inset:-50%; width:200%; height:200%; opacity:.018; mix-blend-mode:overlay; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"); animation:grain 7s steps(6) infinite; }
   @keyframes grain { 0%,100%{transform:translate(0,0)} 20%{transform:translate(-4%,3%)} 40%{transform:translate(3%,-5%)} 60%{transform:translate(-3%,-2%)} 80%{transform:translate(5%,4%)} }
-  @media (prefers-reduced-motion:reduce) { .bg-orb,.bg-noise,.bg-texture{animation:none!important} .bg-canvas canvas{display:none} }`;
+  @media (prefers-reduced-motion:reduce) { .bg-orb,.bg-noise,.bg-spot,.bg-halo{animation:none!important} .bg-canvas canvas{display:none} }`;
 var BG_PARTICLE_JS = `
+// Cursor spotlight + orb parallax: smooth lerp follow, transform-only updates.
+;(function() {
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var bg = document.querySelector('.bg-canvas');
+  var spot = document.querySelector('.bg-spot');
+  var halo = document.querySelector('.bg-halo');
+  if (!bg || !spot || !halo) return;
+  var tx = window.innerWidth / 2, ty = window.innerHeight * 0.35;
+  var sx = tx, sy = ty, hx = tx, hy = ty;
+  var hidden = false;
+  window.addEventListener('pointermove', function(e) { tx = e.clientX; ty = e.clientY; });
+  function frame() {
+    sx += (tx - sx) * 0.055;
+    sy += (ty - sy) * 0.055;
+    hx += (tx - hx) * 0.12;
+    hy += (ty - hy) * 0.12;
+    spot.style.transform = 'translate3d(' + sx.toFixed(1) + 'px,' + sy.toFixed(1) + 'px,0)';
+    halo.style.transform = 'translate3d(' + hx.toFixed(1) + 'px,' + hy.toFixed(1) + 'px,0)';
+    bg.style.setProperty('--px', ((hx / window.innerWidth) * 2 - 1).toFixed(3));
+    bg.style.setProperty('--py', ((hy / window.innerHeight) * 2 - 1).toFixed(3));
+    if (!hidden) requestAnimationFrame(frame);
+  }
+  if (!reduced) {
+    requestAnimationFrame(frame);
+    document.addEventListener('visibilitychange', function() {
+      hidden = document.hidden;
+      if (!hidden) requestAnimationFrame(frame);
+    });
+  } else {
+    spot.style.transform = 'translate3d(' + tx + 'px,' + ty + 'px,0)';
+    halo.style.transform = 'translate3d(' + tx + 'px,' + ty + 'px,0)';
+  }
+})();
+
 ;(function() {
   var canvas = document.getElementById('bg-particles');
   if (!canvas) return;
@@ -3628,151 +3675,158 @@ var BG_PARTICLE_JS = `
   });
 })();`;
 var SHARED_CSS = `
+  /* Graphite Observatory -- the only theme. */
   :root {
-    --bg: #08080B; --bg-card: #111116; --bg-card-hover: #16161D; --border: #232330; --border-light: #2E2E3D;
-    --text: #E8E8F5; --text-dim: #8888A0; --text-faint: #555568;
-    --cache: #00F593; --input: #00D1FF; --output: #B545FF;
-    --tps: #FFB800; --missing: #B478FF; --danger: #FF4757; --success: #00F593;
-    --radius: 10px; --radius-sm: 6px;
-    --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
-    --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
-    --shadow-glow: 0 0 24px rgba(0,245,147,0.12);
-    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    color-scheme: dark;
+    --bg:#0c0c0e; --bg-card:#131316; --bg-card-hover:#19191d;
+    --border:rgba(255,255,255,.10); --border-light:rgba(255,255,255,.18);
+    --text:#f2f2ef; --text-dim:#b0b0b9; --text-faint:#7d7d86;
+    --cache:#8fb7a2; --input:#c8d4e3; --output:#b6adc8; --reasoning:#c4a982;
+    --tps:#d0b77d; --missing:#a8a0bb; --danger:#df7b83; --success:#8fb7a2;
+    --radius:20px; --radius-sm:10px;
+    --shadow-md:0 28px 70px -36px rgba(0,0,0,.98);
+    --shadow-glow:0 0 34px rgba(143,183,162,.12);
+    --ease:cubic-bezier(.16,1,.3,1);
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    --font-mono:ui-monospace,"SFMono-Regular",Consolas,"Liberation Mono",monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; -webkit-font-smoothing: antialiased; }
-  .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; gap: 16px; flex-wrap: wrap; }
-  .header-left h1 { font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px; letter-spacing: -0.5px; }
-  .header-left h1 span { background: linear-gradient(135deg, #00D1FF, #B545FF); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-  .header-left .session-info { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
-  .header-right { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; text-align: right; }
-  .header .meta { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+  html{scroll-behavior:smooth}
+  body { background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 14px; line-height: 1.5; min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  ::selection{background:#e7e7e4;color:#0c0c0e}
+  ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#2a2a30;border-radius:99px}::-webkit-scrollbar-thumb:hover{background:#3d3d46}
+  :focus-visible{outline:2px solid #f2f2ef;outline-offset:3px}
+  .container{max-width:1440px;margin:0 auto;padding:30px 24px 56px;position:relative;z-index:1}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;padding:24px 4px 30px;margin-bottom:20px;gap:24px;flex-wrap:wrap}
+  .header-left h1{font-size:clamp(30px,4vw,54px);line-height:1;font-weight:300;letter-spacing:-.055em;margin-bottom:12px;color:var(--text)}
+  .header-left h1 span{color:#8f8f98}
+  .header-left .session-info,.header-right,.header .meta{font-size:10px;color:var(--text-dim);font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+  .header-right,.header .meta{max-width:560px;text-align:right;padding-top:8px}
 
-  .kpi-row { display: grid; gap: 12px; margin-bottom: 24px; }
-  .kpi-card {
-    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 16px 14px;
-    text-align: center; position: relative; overflow: hidden;
-    transition: border-color 0.4s var(--ease), transform 0.4s var(--ease), box-shadow 0.4s var(--ease);
-  }
-  .kpi-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--border-light), transparent); opacity: 0.5; }
-  .kpi-card:hover { border-color: var(--border-light); transform: translateY(-3px); box-shadow: var(--shadow-md); }
-  .kpi-card.kpi-glow { box-shadow: var(--shadow-glow); border-color: var(--cache); }
-  .kpi-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-weight: 500; }
-  .kpi-value { font-size: 26px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
-  .kpi-sub { font-size: 10px; color: var(--text-faint); margin-top: 4px; font-family: 'JetBrains Mono', monospace; }
-
-  .section { margin-bottom: 28px; }
-  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-  .section-title::before { content: ''; display: inline-block; width: 3px; height: 16px; background: linear-gradient(180deg, var(--input), var(--output)); border-radius: 2px; }
-  .section-title .sub { font-size: 12px; color: var(--text-dim); font-weight: 400; }
-  .chart-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; height: 400px; }
-
-  .tab-bar { display: flex; gap: 4px; margin-bottom: 12px; }
-  .tab-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-dim); padding: 6px 18px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; cursor: pointer; font-size: 13px; font-family: 'Inter', sans-serif; transition: all 0.2s var(--ease); }
-  .tab-btn:hover { border-color: var(--input); color: var(--text); }
-  .tab-btn.active { background: var(--border); color: var(--text); border-bottom-color: var(--border); }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-
-  .model-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; transition: border-color 0.3s var(--ease), transform 0.3s var(--ease); }
-  .model-card:hover { border-color: var(--border-light); transform: translateY(-2px); }
-  .model-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-  .model-name { font-size: 15px; font-weight: 600; color: var(--input); font-family: 'JetBrains Mono', monospace; }
-  .model-provider { font-size: 12px; color: var(--text-dim); background: var(--border); padding: 2px 8px; border-radius: 4px; }
-  .stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px; }
-  .stat-item { display: flex; flex-direction: column; gap: 2px; }
-  .stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
-  .stat-value { font-size: 13px; font-family: 'JetBrains Mono', monospace; color: var(--text); font-variant-numeric: tabular-nums; }
-
-  .token-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--border); margin-bottom: 6px; }
-  .token-seg { height: 100%; transition: width 0.5s var(--ease); }
-  .token-seg.input { background: #00D1FF; }
-  .token-seg.cache-read { background: #00F593; }
-  .token-seg.reasoning { background: #FF8C00; }
-  .token-seg.output { background: #B545FF; }
-  .token-seg.cache-write { background: #4FC3F7; }
-  .token-bar-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--text-dim); }
-  .legend-item { display: flex; align-items: center; gap: 4px; }
-  .legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-  .legend-dot.input { background: #00D1FF; }
-  .legend-dot.cache-read { background: #00F593; }
-  .legend-dot.reasoning { background: #FF8C00; }
-  .legend-dot.output { background: #B545FF; }
-  .legend-dot.cache-write { background: #4FC3F7; }
-
-  .data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  .data-table th { background: var(--bg-card); color: var(--text-dim); padding: 11px 10px; text-align: right; border-bottom: 2px solid var(--border); font-weight: 500; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
-  .data-table th:first-child, .data-table th:nth-child(3) { text-align: left; }
-  .data-table th.sortable { cursor: pointer; user-select: none; }
-  .data-table th.sortable:hover { color: var(--input); }
-  .data-table th.sortable::after { content: ' \\2195'; font-size: 0.8em; opacity: 0.4; }
-  .data-table th.sortable.asc::after { content: ' \\2191'; opacity: 1; color: var(--input); }
-  .data-table th.sortable.desc::after { content: ' \\2193'; opacity: 1; color: var(--input); }
-  .data-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
-  .data-table td:first-child, .data-table td:nth-child(3) { text-align: left; color: var(--text); font-family: 'Inter', sans-serif; }
-  .data-table tbody tr:nth-child(even) { background: rgba(255,255,255,0.012); }
-  .data-table tbody tr:hover { background: rgba(0,209,255,0.05); }
-  .model-cell { display: flex; align-items: center; gap: 8px; }
-  .model-cell .model-icon { flex-shrink: 0; }
-  .model-cell .model-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
-
-  .pagination-ctrl { display: none; align-items: center; gap: 14px; justify-content: center; padding: 14px 0 4px; }
-  .page-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text); padding: 5px 16px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; font-family: 'Inter', sans-serif; transition: border-color 0.2s, color 0.2s; }
-  .page-btn:hover:not(:disabled) { border-color: var(--input); color: var(--input); }
-  .page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .page-info { color: var(--text-dim); font-size: 12px; font-family: 'JetBrains Mono', monospace; min-width: 110px; text-align: center; }
-
-  .provider-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-  .provider-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; border-left-width: 3px; transition: transform 0.3s var(--ease), border-color 0.3s var(--ease); }
-  .provider-card:hover { transform: translateY(-2px); }
-  .provider-name { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--input); }
-  .provider-stat { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
-  .provider-stat .stat-label { color: var(--text-dim); }
-  .provider-more { color: var(--text-dim); font-size: 11px; padding: 10px 4px 0; grid-column: 1 / -1; }
-
-  .insight-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; align-items: center; gap: 12px; transition: border-color 0.3s var(--ease); }
-  .insight-card:hover { border-color: var(--border-light); }
-  .insight-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
-  .insight-body { flex: 1; min-width: 0; }
-  .insight-title { font-size: 12px; color: var(--text-dim); margin-bottom: 2px; }
-  .insight-value { font-size: 14px; font-weight: 600; color: var(--text); }
-  .insight-value .accent { color: var(--input); }
-
-  .empty-state { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 48px; text-align: center; color: var(--text-dim); font-size: 13px; }
-  .footer { margin-top: 40px; padding: 16px 0; border-top: 1px solid var(--border); text-align: center; font-size: 11px; color: var(--text-dim); }
-  .footer a { color: var(--input); text-decoration: none; }
-
-  @media (max-width: 1200px) { .kpi-row.cols-9, .kpi-row.cols-10 { grid-template-columns: repeat(5, 1fr) !important; } }
-  @media (max-width: 768px) {
-    .kpi-row { grid-template-columns: repeat(2, 1fr) !important; }
-    .stat-grid { grid-template-columns: repeat(2, 1fr); }
-    .container { padding: 12px 10px; }
-    .header { flex-direction: column; }
-    .chart-box { height: 280px; }
-    .data-table { font-size: 11px; }
-    .data-table th, .data-table td { padding: 4px 6px; }
-    .provider-row { grid-template-columns: 1fr; }
-  }
-
-  /* Graphite Observatory visual system */
-  :root { color-scheme:dark; --bg:#0c0c0e;--bg-card:#131316;--bg-card-hover:#19191d;--border:rgba(255,255,255,.07);--border-light:rgba(255,255,255,.14);--text:#f2f2ef;--text-dim:#a8a8af;--text-faint:#717179;--cache:#8fb7a2;--input:#c8d4e3;--output:#b6adc8;--reasoning:#c4a982;--tps:#d0b77d;--missing:#a8a0bb;--danger:#df7b83;--success:#8fb7a2;--radius:20px;--radius-sm:10px;--shadow-md:0 28px 70px -36px rgba(0,0,0,.98);--shadow-glow:0 0 34px rgba(143,183,162,.12);--ease:cubic-bezier(.16,1,.3,1);--font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:ui-monospace,"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
-  html{scroll-behavior:smooth} body{font-family:var(--font-sans);overflow-x:hidden;text-rendering:optimizeLegibility} ::selection{background:#e7e7e4;color:#0c0c0e} ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#2a2a30;border-radius:99px}::-webkit-scrollbar-thumb:hover{background:#3d3d46}:focus-visible{outline:2px solid #f2f2ef;outline-offset:3px}
-  .container{max-width:1440px;padding:30px 24px 56px}.header{padding:24px 4px 30px;border:0;margin-bottom:20px;gap:24px}.header-left h1{font-size:clamp(30px,4vw,54px);line-height:1;font-weight:300;letter-spacing:-.055em;margin-bottom:12px}.header-left h1 span{background:none;-webkit-text-fill-color:initial;color:#8f8f98}.header-left .session-info,.header-right,.header .meta{font-size:10px;color:var(--text-dim);font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase}.header-right,.header .meta{max-width:560px;text-align:right;padding-top:8px}
-  .kpi-card{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.014) 48%,rgba(0,0,0,.16)),#131316;color:var(--text);border:1px solid var(--border);padding:22px 18px 18px;text-align:left;min-height:126px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),var(--shadow-md);transition:transform .55s var(--ease),box-shadow .55s var(--ease),filter .55s var(--ease)}.kpi-card:first-child,.kpi-card:nth-child(6){background:linear-gradient(165deg,#f3f3f0,#e2e2de 58%,#d2d2cd);color:#131316;border-color:rgba(255,255,255,.55);box-shadow:inset 0 1px 0 rgba(255,255,255,.85),var(--shadow-md)}.kpi-card::before{inset:0;height:auto;background:radial-gradient(300px circle at var(--mx) var(--my),rgba(255,255,255,.12),transparent 68%);opacity:.72}.kpi-card:first-child::before,.kpi-card:nth-child(6)::before{background:radial-gradient(300px circle at var(--mx) var(--my),rgba(255,255,255,.78),transparent 68%)}.kpi-card::after{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(115deg,transparent 28%,rgba(255,255,255,.18) 45%,transparent 60%);transform:translateX(-120%);animation:sheenSweep 8s cubic-bezier(.4,0,.2,1) infinite}.kpi-card:hover{transform:translateY(-6px) scale(1.012);border-color:rgba(255,255,255,.24);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 34px 74px -34px rgba(0,0,0,.98)}.kpi-card.kpi-glow{border-color:rgba(255,255,255,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 0 1px rgba(255,255,255,.12),var(--shadow-md)}.kpi-label,.kpi-value,.kpi-sub{position:relative;z-index:1}.kpi-label{font-size:9px;color:#85858d;margin-bottom:16px;letter-spacing:.22em;font-family:var(--font-mono)}.kpi-value{font-size:clamp(25px,2.2vw,36px);line-height:1;font-weight:400;font-family:var(--font-mono);color:var(--text)!important;letter-spacing:-.055em}.kpi-sub{font-size:9px;color:#777780;margin-top:10px;font-family:var(--font-mono);letter-spacing:.04em}.kpi-card:first-child .kpi-label,.kpi-card:nth-child(6) .kpi-label{color:#55555d}.kpi-card:first-child .kpi-value,.kpi-card:nth-child(6) .kpi-value{color:#111114!important}.kpi-card:first-child .kpi-sub,.kpi-card:nth-child(6) .kpi-sub{color:#65656d}@keyframes sheenSweep{0%,58%{transform:translateX(-120%)}88%,100%{transform:translateX(120%)}}
-  .section{margin-bottom:18px}.section-title{font-size:11px;font-family:var(--font-mono);font-weight:500;text-transform:uppercase;letter-spacing:.17em;color:#c9c9c7;margin-bottom:10px;padding:0 4px;border:0;gap:10px}.section-title::before{width:7px;height:7px;background:transparent;border:1px solid #d8d8d5;border-radius:50%;box-shadow:0 0 14px rgba(231,231,228,.35)}.section-title .sub{font-size:9px;color:var(--text-faint);letter-spacing:.08em;text-transform:none}
-  .chart-box,.model-card,.provider-card,.insight-card,.empty-state{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}.chart-box::before,.model-card::before,.provider-card::before,.insight-card::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}.chart-box{height:420px}.chart-box canvas{position:relative;z-index:1}
-  .tab-bar,.view-btn-bar{display:inline-flex!important;gap:3px!important;margin-bottom:10px!important;padding:4px;background:rgba(255,255,255,.035);border:1px solid var(--border);border-radius:12px}.tab-btn,.view-btn{background:transparent!important;border:0!important;color:var(--text-dim)!important;padding:7px 14px!important;border-radius:8px!important;font-size:10px!important;font-family:var(--font-mono)!important;letter-spacing:.07em;transition:all .35s var(--ease)!important}.tab-btn:hover,.view-btn:hover{color:var(--text)!important;background:rgba(255,255,255,.05)!important}.tab-btn.active,.view-btn.active{background:#e7e7e4!important;color:#111114!important;box-shadow:0 8px 22px -12px rgba(255,255,255,.35)}.tab-content.active{animation:tabIn .55s var(--ease) both}@keyframes tabIn{from{opacity:0;transform:translateY(10px);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
-  .model-card{padding:18px;margin-bottom:12px;transition:transform .5s var(--ease),border-color .5s var(--ease)}.model-card:hover,.provider-card:hover,.insight-card:hover{border-color:var(--border-light);transform:translateY(-4px)}.model-card>*,.provider-card>*,.insight-card>*{position:relative;z-index:1}.model-card-header{margin-bottom:16px;padding-bottom:12px}.model-name{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:500;color:var(--text);font-family:var(--font-mono)}.model-provider{font-size:9px;color:var(--text-dim);background:rgba(255,255,255,.055);padding:4px 9px;border:1px solid var(--border);border-radius:99px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em}.stat-label{font-size:9px;color:var(--text-faint);letter-spacing:.13em;font-family:var(--font-mono)}.stat-value{font-family:var(--font-mono);color:var(--text)!important}.stat-value[style*="--cache"]{color:var(--cache)!important}.stat-value[style*="--tps"]{color:var(--tps)!important}.stat-value[style*="--danger"]{color:var(--danger)!important}.stat-value[style*="--missing"]{color:var(--missing)!important}
-  .kpi-card:not(:first-child):not(:nth-child(6)) .kpi-value[style*="--cache"]{color:var(--cache)!important;text-shadow:0 0 24px rgba(143,183,162,.16)}.kpi-card:not(:first-child):not(:nth-child(6)) .kpi-value[style*="--tps"]{color:var(--tps)!important}.kpi-card:not(:first-child):not(:nth-child(6)) .kpi-value[style*="--missing"]{color:var(--missing)!important}.kpi-card:not(:first-child):not(:nth-child(6)) .kpi-value[style*="--danger"]{color:var(--danger)!important}
+  .kpi-row{display:grid;gap:12px;margin-bottom:14px}
+  .kpi-hero-row{grid-template-columns:repeat(5,1fr)}
+  .kpi-minor-row{grid-template-columns:repeat(4,1fr)}
+  .kpi-session-row{grid-template-columns:repeat(5,1fr)}
+  .kpi-card{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.014) 48%,rgba(0,0,0,.16)),#131316;color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:22px 18px 18px;text-align:left;min-height:126px;position:relative;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),var(--shadow-md);transition:transform .5s var(--ease),box-shadow .5s var(--ease),border-color .5s var(--ease)}
+  .kpi-card::before{content:'';position:absolute;inset:0;pointer-events:none;background:radial-gradient(300px circle at var(--mx) var(--my),rgba(255,255,255,.12),transparent 68%);opacity:.72}
+  .kpi-card:hover{transform:translateY(-5px) scale(1.01);border-color:var(--border-light);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 34px 74px -34px rgba(0,0,0,.98)}
+  .kpi-card.kpi-glow{border-color:rgba(255,255,255,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 0 1px rgba(255,255,255,.12),var(--shadow-md)}
+  .kpi-card.kpi-light{background:linear-gradient(165deg,#f3f3f0,#e2e2de 58%,#d2d2cd);color:#131316;border-color:rgba(255,255,255,.55);box-shadow:inset 0 1px 0 rgba(255,255,255,.85),var(--shadow-md)}
+  .kpi-card.kpi-light::before{background:radial-gradient(300px circle at var(--mx) var(--my),rgba(255,255,255,.78),transparent 68%)}
+  .kpi-card.kpi-light .kpi-label{color:#55555d}
+  .kpi-card.kpi-light .kpi-value{color:#111114!important}
+  .kpi-card.kpi-light .kpi-sub{color:#65656d}
+  .kpi-card.kpi-minor{min-height:96px;padding:15px 14px 11px}
+  .kpi-minor .kpi-label{margin-bottom:10px}
+  .kpi-minor .kpi-value{font-size:clamp(18px,1.6vw,26px)}
+  .kpi-label,.kpi-value,.kpi-sub{position:relative;z-index:1}
+  .kpi-label{font-size:9px;color:#9898a1;text-transform:uppercase;margin-bottom:16px;letter-spacing:.22em;font-family:var(--font-mono);font-weight:500}
+  .kpi-value{font-size:clamp(25px,2.2vw,36px);line-height:1;font-weight:400;font-family:var(--font-mono);color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:-.055em}
   .kpi-value[data-countup^="$"]{font-size:clamp(22px,2vw,32px)}
   .kpi-value.kpi-avg-daily{color:var(--avg-daily-color)!important}
-  .token-bar{height:7px;border-radius:99px;background:rgba(255,255,255,.05);margin-bottom:9px}.token-seg{transition:width 1.2s var(--ease),filter .3s;box-shadow:inset 0 1px rgba(255,255,255,.18)}.token-seg:hover{filter:brightness(1.45)}.token-seg.input{background:var(--input)}.token-seg.cache-read{background:var(--cache)}.token-seg.reasoning{background:var(--reasoning)}.token-seg.output{background:var(--output)}.token-seg.cache-write{background:#8295a8}.legend-dot{width:7px;height:7px;border-radius:50%;box-shadow:0 0 8px currentColor}.legend-dot.input{background:var(--input)}.legend-dot.cache-read{background:var(--cache)}.legend-dot.reasoning{background:var(--reasoning)}.legend-dot.output{background:var(--output)}.legend-dot.cache-write{background:#8295a8}
-  .table-scroll{width:100%;overflow:auto;border-radius:var(--radius);box-shadow:var(--shadow-md)}.data-table{min-width:760px;border-collapse:separate;border-spacing:0;font-size:11.5px;background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.1)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:inset 0 1px rgba(255,255,255,.04)}.data-table th{background:#17171a;color:var(--text-dim);padding:13px 11px;border-bottom:1px solid var(--border);font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-family:var(--font-mono)}.data-table th.sortable:hover,.data-table th.sortable.asc::after,.data-table th.sortable.desc::after{color:var(--text)}.data-table td{padding:10px 11px;border-bottom:1px solid rgba(255,255,255,.045);font-family:var(--font-mono);color:#c9c9ce;transition:background .3s,color .3s,transform .3s}.data-table td:first-child,.data-table td:nth-child(3){font-family:var(--font-sans)}.data-table tbody tr:hover{background:transparent}.data-table tbody tr:hover td{background:rgba(255,255,255,.045);color:#fff}.data-table tbody tr:hover td:first-child{transform:translateX(3px)}.data-table tbody tr:last-child td{border-bottom:0}.model-icon{background:rgba(255,255,255,.05);padding:2px;border:1px solid rgba(255,255,255,.08);border-radius:6px!important;box-sizing:content-box;filter:saturate(.78) contrast(1.08)}
-  .page-btn{border-radius:99px;font-size:10px;font-family:var(--font-mono);transition:all .3s var(--ease)}.page-btn:hover:not(:disabled){border-color:var(--border-light);background:#e7e7e4;color:#111114;transform:translateY(-2px)}.page-info{font-size:10px;font-family:var(--font-mono)}.provider-card{padding:16px;border-color:var(--border)!important;border-left-width:1px!important;border-top:2px solid #8a8a92!important;transition:transform .5s var(--ease),border-color .5s var(--ease)}.provider-name{font-size:13px;font-weight:500;color:var(--text);font-family:var(--font-mono)}.insight-card{padding:16px;transition:transform .5s var(--ease),border-color .5s var(--ease)}.insight-icon{width:38px;height:38px;border-radius:50%;font-size:15px;border:1px solid var(--border-light);font-family:var(--font-mono)}.insight-value .accent{color:var(--text);text-decoration:underline;text-decoration-color:#666;text-underline-offset:3px}.empty-state{font-family:var(--font-mono);font-size:11px}.footer{font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-mono)}.footer a{color:var(--text);border-bottom:1px solid #555}
-  .reveal-item{opacity:0;transform:translateY(26px);filter:blur(10px);transition:opacity .9s var(--ease),transform .9s var(--ease),filter .9s var(--ease);transition-delay:var(--reveal-delay,0ms)}.reveal-item.in-view{opacity:1;transform:none;filter:none}
-  @media(max-width:768px){.container{padding:16px 10px 36px}.header-right,.header .meta{text-align:left}.chart-box{height:300px}.kpi-row.cols-9,.kpi-row.cols-10{grid-template-columns:repeat(2,minmax(0,1fr))!important}.kpi-card{min-height:112px;padding:18px 14px}.kpi-value[data-countup^="$"]{font-size:20px}.kpi-sub{font-size:8px;line-height:1.35;overflow-wrap:anywhere}}
-  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.reveal-item{opacity:1!important;transform:none!important;filter:none!important}}
+  .kpi-sub{font-size:9px;color:#8a8a93;margin-top:10px;font-family:var(--font-mono);letter-spacing:.04em}
+  .kpi-spark{display:block;width:100%;height:26px;margin-top:10px}
+
+  .section{margin-bottom:18px}
+  .section-title{font-size:11px;font-family:var(--font-mono);font-weight:500;text-transform:uppercase;letter-spacing:.17em;color:#cbc9c4;margin-bottom:10px;padding:0 4px;display:flex;align-items:center;gap:10px}
+  .section-title::before{content:'';width:7px;height:7px;background:transparent;border:1px solid #d8d8d5;border-radius:50%;box-shadow:0 0 14px rgba(231,231,228,.35)}
+  .section-title .sub{font-size:9px;color:var(--text-faint);letter-spacing:.08em;text-transform:none;font-weight:400}
+  .chart-box,.model-card,.provider-card,.insight-card,.empty-state{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}
+  .chart-box::before,.model-card::before,.provider-card::before,.insight-card::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}
+  .chart-box{padding:12px;height:420px}
+  .chart-box canvas{position:relative;z-index:1}
+
+  .tab-bar,.view-btn-bar{display:inline-flex;gap:3px;margin-bottom:10px;padding:4px;background:rgba(255,255,255,.035);border:1px solid var(--border);border-radius:12px}
+  .tab-btn,.view-btn{background:transparent;border:0;color:var(--text-dim);padding:7px 14px;border-radius:8px;cursor:pointer;font-size:10px;font-family:var(--font-mono);letter-spacing:.07em;transition:all .3s var(--ease)}
+  .tab-btn:hover,.view-btn:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .tab-btn.active,.view-btn.active{background:#e7e7e4;color:#111114;box-shadow:0 8px 22px -12px rgba(255,255,255,.35)}
+  .tab-content{display:none}
+  .tab-content.active{display:block;animation:tabIn .35s var(--ease) both}
+  @keyframes tabIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .model-card{padding:18px;margin-bottom:12px;transition:transform .4s var(--ease),border-color .4s var(--ease)}
+  .model-card:hover,.provider-card:hover,.insight-card:hover{border-color:var(--border-light);transform:translateY(-3px)}
+  .model-card>*,.provider-card>*,.insight-card>*{position:relative;z-index:1}
+  .model-card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+  .model-name{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:500;color:var(--text);font-family:var(--font-mono)}
+  .model-provider{font-size:9px;color:var(--text-dim);background:rgba(255,255,255,.055);padding:4px 9px;border:1px solid var(--border);border-radius:99px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.08em}
+  .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
+  .stat-item{display:flex;flex-direction:column;gap:2px}
+  .stat-label{font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.13em;font-family:var(--font-mono)}
+  .stat-value{font-size:13px;font-family:var(--font-mono);color:var(--text);font-variant-numeric:tabular-nums}
+
+  .token-bar{display:flex;height:7px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.05);margin-bottom:9px}
+  .token-seg{height:100%;transition:width .8s var(--ease),filter .3s;box-shadow:inset 0 1px rgba(255,255,255,.18)}
+  .token-seg:hover{filter:brightness(1.45)}
+  .token-seg.input{background:var(--input)} .token-seg.cache-read{background:var(--cache)} .token-seg.reasoning{background:var(--reasoning)} .token-seg.output{background:var(--output)} .token-seg.cache-write{background:#8295a8}
+  .token-bar-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text-dim)}
+  .legend-item{display:flex;align-items:center;gap:4px}
+  .legend-dot{width:7px;height:7px;border-radius:50%;display:inline-block;box-shadow:0 0 8px currentColor}
+  .legend-dot.input{background:var(--input)} .legend-dot.cache-read{background:var(--cache)} .legend-dot.reasoning{background:var(--reasoning)} .legend-dot.output{background:var(--output)} .legend-dot.cache-write{background:#8295a8}
+
+  .table-scroll{width:100%;overflow:auto;max-height:560px;border-radius:var(--radius);box-shadow:var(--shadow-md)}
+  .data-table{width:100%;min-width:760px;border-collapse:separate;border-spacing:0;font-size:11.5px;background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,.1)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px rgba(255,255,255,.04)}
+  .data-table th{position:sticky;top:0;z-index:1;background:#191920;color:var(--text-dim);padding:13px 11px;text-align:right;border-bottom:1px solid var(--border);font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-family:var(--font-mono);font-weight:500;white-space:nowrap}
+  .data-table th:first-child,.data-table th:nth-child(3){text-align:left}
+  .data-table th.sortable{cursor:pointer;user-select:none}
+  .data-table th.sortable::after{content:' \\2195';font-size:.8em;opacity:.4}
+  .data-table th.sortable:hover{color:var(--text)}
+  .data-table th.sortable.asc::after{content:' \\2191';opacity:1;color:var(--text)}
+  .data-table th.sortable.desc::after{content:' \\2193';opacity:1;color:var(--text)}
+  .data-table td{padding:10px 11px;text-align:right;border-bottom:1px solid rgba(255,255,255,.05);font-family:var(--font-mono);color:#cdcdd3;font-variant-numeric:tabular-nums;transition:background .25s,color .25s,box-shadow .25s}
+  .data-table td:first-child,.data-table td:nth-child(3){text-align:left;font-family:var(--font-sans);color:var(--text)}
+  .data-table tbody tr:nth-child(even){background:rgba(255,255,255,.012)}
+  .data-table tbody tr:hover td{background:rgba(255,255,255,.05);color:#fff}
+  .data-table tbody tr:hover td:first-child{box-shadow:inset 2px 0 0 rgba(255,255,255,.28)}
+  .data-table tbody tr:last-child td{border-bottom:0}
+  .model-cell{display:flex;align-items:center;gap:8px}
+  .model-cell .model-icon{flex-shrink:0;background:rgba(255,255,255,.05);padding:2px;border:1px solid rgba(255,255,255,.08);border-radius:6px;box-sizing:content-box;filter:saturate(.78) contrast(1.08)}
+  .model-cell .model-name-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+
+  .pagination-ctrl{display:none;align-items:center;gap:14px;justify-content:center;padding:14px 0 4px}
+  .page-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);padding:7px 16px;border-radius:99px;cursor:pointer;font-size:10px;font-family:var(--font-mono);transition:all .3s var(--ease)}
+  .page-btn:hover:not(:disabled){border-color:var(--border-light);background:#e7e7e4;color:#111114;transform:translateY(-2px)}
+  .page-btn:disabled{opacity:.35;cursor:not-allowed}
+  .page-info{color:var(--text-dim);font-size:10px;font-family:var(--font-mono);min-width:110px;text-align:center}
+
+  .provider-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+  .provider-card{padding:16px;border-top:2px solid var(--prov-color,#8a8a92);transition:transform .4s var(--ease),border-color .4s var(--ease)}
+  .provider-name{font-size:13px;font-weight:500;margin-bottom:8px;color:var(--text);font-family:var(--font-mono)}
+  .provider-stat{display:flex;justify-content:space-between;font-size:12px;padding:2px 0}
+  .provider-stat .stat-label{color:var(--text-dim)}
+  .provider-more{color:var(--text-dim);font-size:11px;padding:10px 4px 0;grid-column:1/-1}
+
+  .insight-card{padding:16px;display:flex;align-items:center;gap:12px;transition:transform .4s var(--ease),border-color .4s var(--ease)}
+  .insight-icon{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;border:1px solid var(--border-light);font-family:var(--font-mono);flex-shrink:0}
+  .insight-body{flex:1;min-width:0}
+  .insight-title{font-size:12px;color:var(--text-dim);margin-bottom:2px}
+  .insight-value{font-size:14px;font-weight:600;color:var(--text)}
+  .insight-value .accent{color:var(--text);text-decoration:underline;text-decoration-color:#666;text-underline-offset:3px}
+
+  .empty-state{padding:48px;text-align:center;color:var(--text-dim);font-family:var(--font-mono);font-size:11px}
+  .footer{margin-top:40px;padding:16px 0;border-top:1px solid var(--border);text-align:center;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim);font-family:var(--font-mono)}
+  .footer a{color:var(--text);border-bottom:1px solid #555;text-decoration:none}
+
+  .reveal-item{opacity:0;transform:translateY(22px);transition:opacity .65s var(--ease),transform .65s var(--ease);transition-delay:var(--reveal-delay,0ms)}
+  .reveal-item.in-view{opacity:1;transform:none}
+
+  @media(max-width:1200px){.kpi-hero-row,.kpi-session-row{grid-template-columns:repeat(3,1fr)}.kpi-minor-row{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:768px){
+    .kpi-hero-row,.kpi-minor-row,.kpi-session-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .stat-grid{grid-template-columns:repeat(2,1fr)}
+    .container{padding:16px 10px 36px}
+    .header{flex-direction:column}
+    .header-right,.header .meta{text-align:left}
+    .chart-box{height:300px}
+    .kpi-card{min-height:112px;padding:18px 14px}
+    .kpi-card.kpi-minor{min-height:96px}
+    .kpi-value[data-countup^="$"]{font-size:20px}
+    .kpi-sub{font-size:8px;line-height:1.35;overflow-wrap:anywhere}
+    .data-table{font-size:11px}
+    .data-table th,.data-table td{padding:6px 8px}
+    .provider-row{grid-template-columns:1fr}
+  }
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.reveal-item{opacity:1!important;transform:none!important}}
   `;
 var SHARED_JS = `
 var fmt = function(v) {
@@ -3787,42 +3841,6 @@ var fmtCost = function(v) {
   if (v < 0.01) return '$'+v.toFixed(6);
   return '$'+v.toFixed(2);
 };
-
-function graphiteChartOption(value) {
-  if (typeof value === 'string') {
-    var exact = {'#00D1FF':'#c8d4e3','#00F593':'#8fb7a2','#B545FF':'#b6adc8','#FF8C00':'#c4a982','#FFB800':'#d0b77d','#4FC3F7':'#8295a8','#FF6B6B':'#c38b91','#B478FF':'#a8a0bb','#2ED573':'#8fb7a2','#8888A0':'#9d9da6','#E8E8F5':'#f2f2ef','#232330':'#303035','#111116':'#131316','#151518':'#17171a','#1a3a2a':'#26362e','#0D3B2E':'#202d27'};
-    if (exact[value]) return exact[value];
-    return value.split('rgba(0,209,255,').join('rgba(200,212,227,').split('rgba(0,245,147,').join('rgba(143,183,162,').split('rgba(181,69,255,').join('rgba(182,173,200,').split('rgba(255,184,0,').join('rgba(208,183,125,').split('rgba(255,140,0,').join('rgba(196,169,130,');
-  }
-  if (Array.isArray(value)) return value.map(graphiteChartOption);
-  if (value && typeof value === 'object') {
-    Object.keys(value).forEach(function(k) { value[k] = graphiteChartOption(value[k]); });
-    if (Array.isArray(value.series)) value.series.forEach(function(series) {
-      if (series.lineStyle && series.lineStyle.color) {
-        series.itemStyle = series.itemStyle || {};
-        if (!series.itemStyle.color) series.itemStyle.color = series.lineStyle.color;
-      }
-    });
-  }
-  return value;
-}
-
-function installGraphiteECharts() {
-  if (!window.echarts || window.echarts.__graphiteInstalled) return;
-  var originalInit = window.echarts.init;
-  window.echarts.init = function() {
-    var args = Array.prototype.slice.call(arguments);
-    args[2] = Object.assign({}, args[2] || {}, { devicePixelRatio: Math.min(2.5, Math.max(2, window.devicePixelRatio || 1)) });
-    var chart = originalInit.apply(window.echarts, args);
-    var originalSet = chart.setOption;
-    chart.setOption = function(option) {
-      arguments[0] = graphiteChartOption(option);
-      return originalSet.apply(chart, arguments);
-    };
-    return chart;
-  };
-  window.echarts.__graphiteInstalled = true;
-}
 
 // Number count-up animation for KPI values
 function countUp(el, target, duration) {
@@ -3849,11 +3867,12 @@ function countUp(el, target, duration) {
 function initCountUp() {
   document.querySelectorAll('.kpi-value[data-countup]').forEach(function(el) {
     var target = el.getAttribute('data-countup');
-    countUp(el, target, 900);
+    countUp(el, target, 600);
   });
 }
 
-// Table sorting
+// Table sorting. Numeric cells carry data-sort with the raw value so units
+// (K/M/B), "$" prefixes and MISSING markers never corrupt the comparison.
 function makeSortable(tableId) {
   var table = document.getElementById(tableId);
   if (!table) return;
@@ -3861,6 +3880,7 @@ function makeSortable(tableId) {
   if (!thead) return;
   var ths = thead.querySelectorAll('th.sortable');
   var tbody = table.querySelector('tbody');
+  ths.forEach(function(t) { t.setAttribute('aria-sort', 'none'); });
   if (!tbody) return;
   var rows = Array.from(tbody.querySelectorAll('tr'));
   var dir = 1;
@@ -3868,17 +3888,30 @@ function makeSortable(tableId) {
     th.addEventListener('click', function() {
       var actualCol = Array.from(th.parentNode.children).indexOf(th);
       dir = th.classList.contains('asc') ? -1 : 1;
-      ths.forEach(function(t) { t.classList.remove('asc','desc'); });
+      ths.forEach(function(t) { t.classList.remove('asc','desc'); t.setAttribute('aria-sort', 'none'); });
       th.classList.add(dir === 1 ? 'asc' : 'desc');
+      th.setAttribute('aria-sort', dir === 1 ? 'ascending' : 'descending');
+      function cellSortValue(cell) {
+        if (!cell) return { n: NaN, s: '' };
+        var raw = cell.getAttribute('data-sort');
+        if (raw != null && raw !== '') {
+          var rn = parseFloat(raw);
+          if (!isNaN(rn)) return { n: rn, s: '' };
+        }
+        var s = cell.textContent.trim();
+        var n = parseFloat(s.replace(/[^\\d.\\-]/g, ''));
+        return { n: n, s: s };
+      }
       rows.sort(function(a, b) {
-        var av = a.children[actualCol] ? a.children[actualCol].textContent.trim() : '';
-        var bv = b.children[actualCol] ? b.children[actualCol].textContent.trim() : '';
-        var an = parseFloat(av.replace(/[^\\d.\\-]/g, ''));
-        var bn = parseFloat(bv.replace(/[^\\d.\\-]/g, ''));
-        if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
-        return av.localeCompare(bv) * dir;
+        var av = cellSortValue(a.children[actualCol]);
+        var bv = cellSortValue(b.children[actualCol]);
+        if (!isNaN(av.n) && !isNaN(bv.n)) return (av.n - bv.n) * dir;
+        return av.s.localeCompare(bv.s) * dir;
       });
       rows.forEach(function(r) { tbody.appendChild(r); });
+      // Re-apply pagination so hidden rows don't stay hidden after reordering.
+      var pg = window.__paginators && window.__paginators[tableId];
+      if (pg) { pg.reset(); } else { rows.forEach(function(r) { r.style.display = ''; }); }
     });
   });
 }
@@ -3902,12 +3935,14 @@ function initPaginator(tableId, pageSize) {
   if (prevEl) prevEl.addEventListener('click', function() { if (cur > 1) { cur--; render(); } });
   if (nextEl) nextEl.addEventListener('click', function() { if (cur < totalPages) { cur++; render(); } });
   var ctrl = document.getElementById(tableId + '-ctrl'); if (ctrl) ctrl.style.display = 'flex';
+  // Register so makeSortable can reset to page 1 after re-sorting rows.
+  window.__paginators = window.__paginators || {};
+  window.__paginators[tableId] = { reset: function() { cur = 1; render(); } };
   render();
 }
 
 // Shared motion layer: scroll reveal, pointer spotlight, progress indicator.
 function initDashboardMotion() {
-  installGraphiteECharts();
   var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var revealEls = Array.from(document.querySelectorAll('.kpi-card, .section, .two-col'));
   revealEls.forEach(function(el, i) {
@@ -4090,13 +4125,13 @@ function renderKpiCards(data) {
   const kpiHitColor = kpiHitRate >= 0.85 ? "var(--cache)" : kpiHitRate >= 0.7 ? "var(--tps)" : "var(--danger)";
   const apiCostTotal = data.apiCost.totalApiCost;
   const errorRatePct = (data.errors.errorRate * 100).toFixed(1) + "%";
-  const errorColor = data.errors.errorRate >= 0.05 ? "var(--danger)" : data.errors.errorRate > 0 ? "var(--tps)" : "var(--cache)";
+  const errorColor = data.errors.errorRate >= 0.05 ? "var(--danger)" : data.errors.errorRate >= 0.01 ? "var(--tps)" : "var(--cache)";
   const avgTokensPerReq = s.requestCount > 0 ? s.totalTokens / s.requestCount : 0;
   const tpsStr = data.tps > 0 ? data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1) : "-";
   const cprStr = s.requestCount > 0 ? fmtCost(s.totalCost / s.requestCount) : "-";
   return `
-    <div class="kpi-row cols-10" style="grid-template-columns:repeat(5,1fr)">
-      <div class="kpi-card">
+    <div class="kpi-row kpi-session-row">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Tokens</div>
         <div class="kpi-value" data-countup="${fmtTokens(s.totalTokens)}">${fmtTokens(s.totalTokens)}</div>
         <div class="kpi-sub">${s.requestCount} requests</div>
@@ -4120,7 +4155,7 @@ function renderKpiCards(data) {
         <div class="kpi-value" data-countup="${tpsStr}">${tpsStr}</div>
         <div class="kpi-sub">${fmtDuration(data.sessionDurationMs)} span</div>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Reported Cost</div>
         <div class="kpi-value" style="color:var(--tps)" data-countup="${fmtCost(s.totalCost)}">${fmtCost(s.totalCost)}</div>
       </div>
@@ -4173,9 +4208,9 @@ function renderModelCards(data) {
           <div class="stat-item"><span class="stat-label">Total Tokens</span><span class="stat-value">${fmtTokens(m.totalTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(m.inputTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Output</span><span class="stat-value" style="color:var(--output)">${fmtTokens(m.outputTokens)}</span></div>
-          <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#FF8C00">${fmtTokens(m.reasoningTokens)}</span></div>
+          <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#c4a982">${fmtTokens(m.reasoningTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Cache Read</span><span class="stat-value" style="color:var(--cache)">${fmtTokens(m.cacheRead)}</span></div>
-          <div class="stat-item"><span class="stat-label">Cache Write</span><span class="stat-value" style="color:#4FC3F7">${fmtTokens(m.cacheWrite)}</span></div>
+          <div class="stat-item"><span class="stat-label">Cache Write</span><span class="stat-value" style="color:#8295a8">${fmtTokens(m.cacheWrite)}</span></div>
           <div class="stat-item"><span class="stat-label">Hit Rate</span><span class="stat-value" style="color:${hitColor};font-weight:600">${hitDisplay}</span></div>
           <div class="stat-item"><span class="stat-label">Reported Cost</span><span class="stat-value">${fmtCost(m.totalCost)}</span></div>
           <div class="stat-item"><span class="stat-label">API Equiv.</span><span class="stat-value" style="color:var(--missing)">${apiCostStr}</span></div>
@@ -4209,18 +4244,18 @@ function renderMessageTable(data) {
     const duration = msg.timeCompleted ? msg.timeCompleted - msg.timeCreated : null;
     const durColor = duration != null && duration > data.p90Duration ? "var(--danger)" : "var(--text)";
     return `<tr>
-      <td>${i + 1}</td>
-      <td>${fmtTime(msg.timeCreated)}</td>
+      <td data-sort="${i + 1}">${i + 1}</td>
+      <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
-      <td>${fmtTokens(msg.totalTokens)}</td>
-      <td>${fmtTokens(msg.inputTokens)}</td>
-      <td>${fmtTokens(msg.outputTokens)}</td>
-      <td>${fmtTokens(msg.reasoningTokens)}</td>
-      <td>${fmtTokens(msg.cacheRead)}</td>
-      <td>${fmtTokens(msg.cacheWrite)}</td>
-      <td style="color:${hitColor};font-weight:600">${hitDisplay}</td>
-      <td style="color:${durColor}">${fmtDuration(duration)}</td>
-      <td>${fmtCost(msg.cost)}</td>
+      <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
+      <td data-sort="${msg.inputTokens}">${fmtTokens(msg.inputTokens)}</td>
+      <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
+      <td data-sort="${msg.reasoningTokens}">${fmtTokens(msg.reasoningTokens)}</td>
+      <td data-sort="${msg.cacheRead}">${fmtTokens(msg.cacheRead)}</td>
+      <td data-sort="${msg.cacheWrite}">${fmtTokens(msg.cacheWrite)}</td>
+      <td data-sort="${isMissing ? -1 : hitRate}" style="color:${hitColor};font-weight:600">${hitDisplay}</td>
+      <td data-sort="${duration ?? -1}" style="color:${durColor}">${fmtDuration(duration)}</td>
+      <td data-sort="${msg.cost}">${fmtCost(msg.cost)}</td>
     </tr>`;
   }).join("\n");
   return `
@@ -4278,20 +4313,20 @@ function initTrendChart() {
       });
       return html;
     }},
-    legend: { data: ['Total', 'MA(5)', 'Input', 'Cache Read', 'Output', 'Cost'], textStyle: { color: '#8888A0' }, top: 5, type: 'scroll' },
+    legend: { data: ['Total', 'MA(5)', 'Input', 'Cache Read', 'Output', 'Cost'], textStyle: { color: '#a3a3ac' }, top: 5, type: 'scroll' },
     grid: { left: 60, right: 70, bottom: 40, top: 50 },
-    xAxis: { type: 'category', data: trendLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
+    xAxis: { type: 'category', data: trendLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
     yAxis: [
-      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: fmt }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      { type: 'value', name: 'Cost', nameTextStyle: { color: '#FFB800' }, axisLabel: { color: '#FFB800', formatter: function(v) { return '$' + v.toFixed(4); } }, splitLine: { show: false } }
+      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: fmt }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      { type: 'value', name: 'Cost', nameTextStyle: { color: '#d0b77d' }, axisLabel: { color: '#d0b77d', formatter: function(v) { return '$' + v.toFixed(4); } }, splitLine: { show: false } }
     ],
     series: [
-      { name: 'Total', type: 'line', data: trendTotal, smooth: true, symbol: 'none', lineStyle: { color: '#E8E8F5', width: 1.5, type: 'dashed' }, itemStyle: { color: '#E8E8F5' } },
-      { name: 'MA(5)', type: 'line', data: trendMA5, smooth: true, symbol: 'none', lineStyle: { color: '#FFB800', width: 2.5 } },
-      { name: 'Input', type: 'line', data: trendInput, smooth: true, symbol: 'none', lineStyle: { color: '#00D1FF', width: 2 }, areaStyle: { color: 'rgba(0,209,255,0.08)' } },
-      { name: 'Cache Read', type: 'line', data: trendCache, smooth: true, symbol: 'none', lineStyle: { color: '#00F593', width: 2 }, areaStyle: { color: 'rgba(0,245,147,0.08)' } },
-      { name: 'Output', type: 'line', data: trendOutput, smooth: true, symbol: 'none', lineStyle: { color: '#B545FF', width: 2 } },
-      { name: 'Cost', type: 'line', yAxisIndex: 1, data: trendCost, smooth: true, symbol: 'none', lineStyle: { color: '#FFB800', width: 1.5, opacity: 0.6 } }
+      { name: 'Total', type: 'line', data: trendTotal, smooth: true, symbol: 'none', lineStyle: { color: '#f2f2ef', width: 1.5, type: 'dashed' }, itemStyle: { color: '#f2f2ef' } },
+      { name: 'MA(5)', type: 'line', data: trendMA5, smooth: true, symbol: 'none', lineStyle: { color: '#d0b77d', width: 2.5 } },
+      { name: 'Input', type: 'line', data: trendInput, smooth: true, symbol: 'none', lineStyle: { color: '#c8d4e3', width: 2 }, areaStyle: { color: 'rgba(200,212,227,0.08)' } },
+      { name: 'Cache Read', type: 'line', data: trendCache, smooth: true, symbol: 'none', lineStyle: { color: '#8fb7a2', width: 2 }, areaStyle: { color: 'rgba(143,183,162,0.08)' } },
+      { name: 'Output', type: 'line', data: trendOutput, smooth: true, symbol: 'none', lineStyle: { color: '#b6adc8', width: 2 } },
+      { name: 'Cost', type: 'line', yAxisIndex: 1, data: trendCost, smooth: true, symbol: 'none', lineStyle: { color: '#d0b77d', width: 1.5, opacity: 0.6 } }
     ]
   };
   chart.setOption(option);
@@ -4324,16 +4359,16 @@ function initDurationChart() {
       return '<b>Request ' + p.axisValue + '</b><br/>Duration: ' + p.value.toFixed(2) + 's';
     }},
     grid: { left: 60, right: 30, bottom: 40, top: 30 },
-    xAxis: { type: 'category', data: durLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
-    yAxis: { type: 'value', name: 'Seconds', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: '{value}s' }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
+    xAxis: { type: 'category', data: durLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
+    yAxis: { type: 'value', name: 'Seconds', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: '{value}s' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
     series: [{
       type: 'bar', data: durData, barMaxWidth: 20,
-      itemStyle: { color: function(p) { return p.value > durP90 ? '#FF4757' : p.value > durP50 ? '#FFB800' : '#00D1FF'; }, borderRadius: [3, 3, 0, 0] },
+      itemStyle: { color: function(p) { return p.value > durP90 ? '#df7b83' : p.value > durP50 ? '#d0b77d' : '#c8d4e3'; }, borderRadius: [3, 3, 0, 0] },
       markLine: {
         symbol: 'none', silent: true,
         data: [
-          { yAxis: durP50, lineStyle: { color: '#00F593', type: 'dashed', width: 1.5 }, label: { formatter: 'p50 ' + durP50.toFixed(1) + 's', color: '#00F593', position: 'insideEndTop' } },
-          { yAxis: durP90, lineStyle: { color: '#FF4757', type: 'dashed', width: 1.5 }, label: { formatter: 'p90 ' + durP90.toFixed(1) + 's', color: '#FF4757', position: 'insideEndBottom' } }
+          { yAxis: durP50, lineStyle: { color: '#8fb7a2', type: 'dashed', width: 1.5 }, label: { formatter: 'p50 ' + durP50.toFixed(1) + 's', color: '#8fb7a2', position: 'insideEndTop' } },
+          { yAxis: durP90, lineStyle: { color: '#df7b83', type: 'dashed', width: 1.5 }, label: { formatter: 'p90 ' + durP90.toFixed(1) + 's', color: '#df7b83', position: 'insideEndBottom' } }
         ]
       }
     }]
@@ -4370,15 +4405,15 @@ function initCacheTrendChart() {
       { gte: 70, lt: 85, color: '#d0b77d' },
       { lt: 70, color: '#df7b83' }
     ]},
-    xAxis: { type: 'category', data: cacheLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
-    yAxis: { type: 'value', max: 100, name: 'Hit %', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
+    xAxis: { type: 'category', data: cacheLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
+    yAxis: { type: 'value', max: 100, name: 'Hit %', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
     series: [{
       type: 'line', data: cacheHitData, smooth: true, symbol: 'circle', symbolSize: 5,
       connectNulls: false,
-      lineStyle: { color: '#00F593', width: 2 },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,245,147,0.25)' }, { offset: 1, color: 'rgba(0,245,147,0.02)' }] } },
-      itemStyle: { color: '#00F593' },
-      markLine: { symbol: 'none', silent: true, data: [{ yAxis: 85, lineStyle: { color: '#232330', type: 'dotted' } }] }
+      lineStyle: { color: '#8fb7a2', width: 2 },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(143,183,162,0.25)' }, { offset: 1, color: 'rgba(143,183,162,0.02)' }] } },
+      itemStyle: { color: '#8fb7a2' },
+      markLine: { symbol: 'none', silent: true, data: [{ yAxis: 85, lineStyle: { color: '#303035', type: 'dotted' } }] }
     }]
   };
   chart.setOption(option);
@@ -4396,8 +4431,8 @@ function renderApiCostSection(data) {
     const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : "-";
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
-      <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`;
   }).join("\n");
   const totalApi = apiCost.totalApiCost ?? 0;
@@ -4412,7 +4447,7 @@ function renderApiCostSection(data) {
       <span style="color:var(--missing)">~</span> = MISSING model (upstream no cache data) estimated at 94% hit rate.
     </p>
     <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-      <div class="kpi-card"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
+      <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : "-"}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
     </div>
@@ -4433,7 +4468,7 @@ function renderInsights(data) {
     if (mostExpensive.cost > 0) {
       insights.push({
         icon: "$",
-        bg: "rgba(255,184,0,0.15)",
+        bg: "rgba(208,183,125,0.15)",
         title: "Most expensive request",
         value: `<span class="accent">${fmtCost(mostExpensive.cost)}</span> on request #${maxCostIdx + 1} (${escapeHtml(mostExpensive.model)})`
       });
@@ -4442,7 +4477,7 @@ function renderInsights(data) {
   if (data.peakTokensIndex >= 0) {
     insights.push({
       icon: "\u26A1",
-      bg: "rgba(0,209,255,0.15)",
+      bg: "rgba(200,212,227,0.15)",
       title: "Peak activity",
       value: `Request <span class="accent">#${data.peakTokensIndex + 1}</span> with <span class="accent">${fmtTokens(data.peakTokens)}</span> tokens`
     });
@@ -4464,7 +4499,7 @@ function renderInsights(data) {
   if (bestStreak > 1) {
     insights.push({
       icon: "\u2713",
-      bg: "rgba(0,245,147,0.15)",
+      bg: "rgba(143,183,162,0.15)",
       title: "Best cache streak",
       value: `<span class="accent">${bestStreak} requests</span> (#${bestStart + 1}-${bestStart + bestStreak}) above 85% hit rate`
     });
@@ -4477,7 +4512,7 @@ function renderInsights(data) {
     if (slowest.dur > 0) {
       insights.push({
         icon: "\u23F1",
-        bg: "rgba(255,71,87,0.15)",
+        bg: "rgba(223,123,131,0.15)",
         title: "Slowest response",
         value: `<span class="accent">${fmtDuration(slowest.dur)}</span> on request #${slowest.i + 1} (${escapeHtml(slowest.model)})`
       });
@@ -4486,7 +4521,7 @@ function renderInsights(data) {
   if (data.errors.failedCount > 0) {
     insights.push({
       icon: "!",
-      bg: "rgba(255,71,87,0.15)",
+      bg: "rgba(223,123,131,0.15)",
       title: "Errors detected",
       value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests`
     });
@@ -4684,16 +4719,24 @@ function renderMeta(data) {
   const m = data.meta;
   return `Usage Stat Report &middot; ${m.dateRange.start} \u2192 ${m.dateRange.end} &middot; generated ${m.generatedAt}`;
 }
+function renderSparkline(values, color) {
+  if (values.length < 2) return "";
+  const w = 120, h = 26;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const span = Math.max(max - min, 1e-9);
+  const pts = values.map((v, i) => `${(i / (values.length - 1) * w).toFixed(1)},${(h - 2 - (v - min) / span * (h - 4)).toFixed(1)}`).join(" ");
+  return `<svg class="kpi-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
 function avgDailyUsageColor(tokens) {
-  const light = [202, 184, 232];
-  const deep = [91, 45, 142];
+  if (tokens <= 0) return "rgba(242,242,239,0.2)";
   if (tokens <= 5e7) {
-    const alpha = Math.max(0, tokens / 5e7);
-    return `rgba(${light.join(",")},${alpha.toFixed(3)})`;
+    const alpha2 = 0.25 + 0.5 * (tokens / 5e7);
+    return `rgba(242,242,239,${alpha2.toFixed(3)})`;
   }
   const t2 = Math.min(1, (tokens - 5e7) / 15e7);
-  const rgb = light.map((value, i) => Math.round(value + (deep[i] - value) * t2));
-  return `rgb(${rgb.join(",")})`;
+  const alpha = 0.75 + 0.25 * t2;
+  return `rgba(255,255,255,${alpha.toFixed(3)})`;
 }
 function renderKpiCards2(data) {
   const s = data.summary;
@@ -4710,17 +4753,20 @@ function renderKpiCards2(data) {
   const apiCostTotal = data.apiCost?.totalApiCost ?? null;
   const errors = data.errors;
   const errorRatePct = errors ? (errors.errorRate * 100).toFixed(1) + "%" : "-";
-  const errorColor = errors && errors.errorRate >= 0.05 ? "var(--danger)" : errors && errors.errorRate > 0 ? "var(--tps)" : "var(--cache)";
+  const errorColor = errors && errors.errorRate >= 0.05 ? "var(--danger)" : errors && errors.errorRate >= 0.01 ? "var(--tps)" : "var(--cache)";
   const dailyCount = data.daily.length;
   const avgDailyTokens = dailyCount > 0 ? s.totalTokens / dailyCount : 0;
   const avgDailyColor = avgDailyUsageColor(avgDailyTokens);
   const totalSessions = data.totalSessions ?? data.sessions.length;
   const costPerSession = totalSessions > 0 ? s.totalCost / totalSessions : 0;
+  const dailyTokensAsc = [...data.daily].reverse().map((d) => d.totalTokens);
+  const dailyCostsAsc = [...data.daily].reverse().map((d) => d.totalCost);
   return `
-    <div class="kpi-row cols-9" style="grid-template-columns:repeat(9,1fr)">
-      <div class="kpi-card">
+    <div class="kpi-row kpi-hero-row">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Tokens</div>
         <div class="kpi-value" data-countup="${fmtTokens(s.totalTokens)}">${fmtTokens(s.totalTokens)}</div>
+        ${renderSparkline(dailyTokensAsc, "#3f4a5c")}
       </div>
       <div class="kpi-card${isHighCache ? " kpi-glow" : ""}">
         <div class="kpi-label">Cache Hit Rate</div>
@@ -4730,32 +4776,35 @@ function renderKpiCards2(data) {
         <div class="kpi-label">Requests</div>
         <div class="kpi-value" data-countup="${s.requestCount}">${s.requestCount}</div>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Sessions</div>
-        <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Avg Daily Tokens</div>
-        <div class="kpi-value kpi-avg-daily" style="--avg-daily-color:${avgDailyColor}" data-countup="${fmtTokens(Math.round(avgDailyTokens))}">${fmtTokens(Math.round(avgDailyTokens))}</div>
-        <div class="kpi-sub">${dailyCount} active days</div>
-      </div>
-      <div class="kpi-card">
+      <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Cost</div>
         <div class="kpi-value" style="color:var(--tps)" data-countup="${fmtCost(s.totalCost)}">${fmtCost(s.totalCost)}</div>
         <div class="kpi-sub">${fmtCost(costPerSession)}/session</div>
-      </div>
-      <div class="kpi-card${apiCostTotal != null && apiCostTotal > s.totalCost ? " kpi-glow" : ""}">
-        <div class="kpi-label">API Equiv. Cost</div>
-        <div class="kpi-value" style="color:var(--missing)" data-countup="${apiCostTotal != null ? fmtCost(apiCostTotal) : "-"}">${apiCostTotal != null ? fmtCost(apiCostTotal) : "-"}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Models Used</div>
-        <div class="kpi-value" data-countup="${data.models.length}">${data.models.length}</div>
+        ${renderSparkline(dailyCostsAsc, "#7a6840")}
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Error Rate</div>
         <div class="kpi-value" style="color:${errorColor}" data-countup="${errorRatePct}">${errorRatePct}</div>
         <div class="kpi-sub">${errors ? errors.failedCount + " failed" : ""}</div>
+      </div>
+    </div>
+    <div class="kpi-row kpi-minor-row">
+      <div class="kpi-card kpi-minor">
+        <div class="kpi-label">Sessions</div>
+        <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
+      </div>
+      <div class="kpi-card kpi-minor">
+        <div class="kpi-label">Avg Daily Tokens</div>
+        <div class="kpi-value kpi-avg-daily" style="--avg-daily-color:${avgDailyColor}" data-countup="${fmtTokens(Math.round(avgDailyTokens))}">${fmtTokens(Math.round(avgDailyTokens))}</div>
+        <div class="kpi-sub">${dailyCount} active days</div>
+      </div>
+      <div class="kpi-card kpi-minor${apiCostTotal != null && apiCostTotal > s.totalCost ? " kpi-glow" : ""}">
+        <div class="kpi-label">API Equiv. Cost</div>
+        <div class="kpi-value" style="color:var(--missing)" data-countup="${apiCostTotal != null ? fmtCost(apiCostTotal) : "-"}">${apiCostTotal != null ? fmtCost(apiCostTotal) : "-"}</div>
+      </div>
+      <div class="kpi-card kpi-minor">
+        <div class="kpi-label">Models Used</div>
+        <div class="kpi-value" data-countup="${data.models.length}">${data.models.length}</div>
       </div>
     </div>`;
 }
@@ -4777,7 +4826,7 @@ function renderModelChartInit(data) {
       outputTokens: 0,
       reasoningTokens: 0,
       cacheRead: 0,
-      cacheWrite: 0,
+      cacheWrite: rest.reduce((s, m) => s + m.cacheWrite, 0),
       totalTokens: restTotalTokens,
       totalCost: restTotalCost
     });
@@ -4787,6 +4836,7 @@ function renderModelChartInit(data) {
   const inputData = rev.map((m) => m.inputTokens);
   const outputData = rev.map((m) => m.outputTokens);
   const cacheData = rev.map((m) => m.cacheRead);
+  const cacheWriteData = rev.map((m) => m.cacheWrite);
   const reasoningData = rev.map((m) => m.reasoningTokens);
   const costData = rev.map((m) => m.totalCost);
   const apiCostData = rev.map((m) => {
@@ -4808,6 +4858,7 @@ function renderModelChartInit(data) {
 var modelInput = ${jsonForScript(inputData)};
 var modelOutput = ${jsonForScript(outputData)};
 var modelCache = ${jsonForScript(cacheData)};
+var modelCacheWrite = ${jsonForScript(cacheWriteData)};
 var modelReasoning = ${jsonForScript(reasoningData)};
 var modelCost = ${jsonForScript(costData)};
 var modelApiCost = ${jsonForScript(apiCostData)};
@@ -4839,16 +4890,17 @@ function renderModelChart() {
         params.forEach(function(p) { html += p.marker + ' ' + p.seriesName + ': ' + fmt(p.value) + '<br/>'; total += p.value; });
         html += '<b>Total: ' + fmt(total) + '</b>'; return html;
       }},
-      legend: { data: ['Input', 'Cache', 'Reasoning', 'Output'], textStyle: { color: '#8888A0' }, top: 5 },
+      legend: { data: ['Input', 'Cache', 'Reasoning', 'Output', 'Cache W'], textStyle: { color: '#a3a3ac' }, top: 5 },
       grid: { left: window.innerWidth < 700 ? 145 : 190, right: window.innerWidth < 700 ? 28 : 60, bottom: 28, top: 40 },
-      xAxis: { type: 'value', name: 'Tokens', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: fmt }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#232330' } } },
+      xAxis: { type: 'value', name: 'Tokens', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: fmt }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#303035' } } },
       series: [
-        { name: 'Input', type: 'bar', stack: 'tokens', data: modelInput, itemStyle: { color: '#00D1FF' }, barMaxWidth: 22 },
-        { name: 'Cache', type: 'bar', stack: 'tokens', data: modelCache, itemStyle: { color: '#00F593' }, barMaxWidth: 22 },
-        { name: 'Reasoning', type: 'bar', stack: 'tokens', data: modelReasoning, itemStyle: { color: '#FF8C00' }, barMaxWidth: 22 },
-        { name: 'Output', type: 'bar', stack: 'tokens', data: modelOutput, itemStyle: { color: '#B545FF' }, barMaxWidth: 22,
-          label: { show: true, position: 'right', formatter: function(p) { var t = modelInput[p.dataIndex] + modelOutput[p.dataIndex] + modelCache[p.dataIndex] + modelReasoning[p.dataIndex]; return t > 0 ? fmt(t) : ''; }, color: '#E8E8F5', fontSize: 11, fontWeight: 600 } }
+        { name: 'Input', type: 'bar', stack: 'tokens', data: modelInput, itemStyle: { color: '#c8d4e3' }, barMaxWidth: 22 },
+        { name: 'Cache', type: 'bar', stack: 'tokens', data: modelCache, itemStyle: { color: '#8fb7a2' }, barMaxWidth: 22 },
+        { name: 'Reasoning', type: 'bar', stack: 'tokens', data: modelReasoning, itemStyle: { color: '#c4a982' }, barMaxWidth: 22 },
+        { name: 'Output', type: 'bar', stack: 'tokens', data: modelOutput, itemStyle: { color: '#b6adc8' }, barMaxWidth: 22 },
+        { name: 'Cache W', type: 'bar', stack: 'tokens', data: modelCacheWrite, itemStyle: { color: '#8295a8' }, barMaxWidth: 22,
+          label: { show: true, position: 'right', formatter: function(p) { var t = modelInput[p.dataIndex] + modelOutput[p.dataIndex] + modelCache[p.dataIndex] + modelCacheWrite[p.dataIndex] + modelReasoning[p.dataIndex]; return t > 0 ? fmt(t) : ''; }, color: '#f2f2ef', fontSize: 11, fontWeight: 600 } }
       ]
     };
   } else if (modelView === 'cost') {
@@ -4861,8 +4913,8 @@ function renderModelChart() {
       }},
       legend: { data: ['Actual Cost', 'API Equivalent'], textStyle: { color: '#b8b8be', fontSize: 12 }, top: 5 },
       grid: { left: window.innerWidth < 700 ? 145 : 190, right: window.innerWidth < 700 ? 42 : 78, bottom: 28, top: 42 },
-      xAxis: { type: 'value', name: 'Cost (USD)', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#232330' } } },
+      xAxis: { type: 'value', name: 'Cost (USD)', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#303035' } } },
       series: [
         { name: 'Actual Cost', type: 'bar', data: modelCost, barMaxWidth: 14, itemStyle: { color: '#d0b77d', borderRadius: [0, 4, 4, 0] },
           label: { show: true, position: 'right', formatter: function(p) { return p.value > 0 ? '{actual|' + fmtCost(p.value) + '}' : '{missing|MISSING}'; }, fontSize: 11, fontWeight: 600,
@@ -4871,14 +4923,36 @@ function renderModelChart() {
           label: { show: true, position: 'right', formatter: function(p) { return p.value > 0 ? fmtCost(p.value) : ''; }, color: '#c5b2e4', fontSize: 11, fontWeight: 600 } }
       ]
     };
+  } else if (modelView === 'mix') {
+    var segs = [['Input', modelInput, '#c8d4e3'], ['Cache', modelCache, '#8fb7a2'], ['Reasoning', modelReasoning, '#c4a982'], ['Output', modelOutput, '#b6adc8'], ['Cache W', modelCacheWrite, '#8295a8']];
+    var mixTotals = modelNames.map(function(_, i) { var t = 0; segs.forEach(function(s) { t += s[1][i]; }); return t; });
+    option = {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: function(params) {
+        var i = params[0].dataIndex;
+        var html = '<b>' + params[0].axisValue + '</b><br/>';
+        params.forEach(function(p) {
+          var raw = 0; segs.forEach(function(s) { if (s[0] === p.seriesName) raw = s[1][i]; });
+          html += p.marker + ' ' + p.seriesName + ': ' + (mixTotals[i] ? (100 * raw / mixTotals[i]).toFixed(1) : '0.0') + '% (' + fmt(raw) + ')<br/>';
+        });
+        html += '<b>Total: ' + fmt(mixTotals[i]) + '</b>'; return html;
+      }},
+      legend: { data: ['Input', 'Cache', 'Reasoning', 'Output', 'Cache W'], textStyle: { color: '#a3a3ac' }, top: 5 },
+      grid: { left: window.innerWidth < 700 ? 145 : 190, right: window.innerWidth < 700 ? 28 : 60, bottom: 28, top: 40 },
+      xAxis: { type: 'value', max: 100, name: 'Share', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: '{value}%' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#303035' } } },
+      series: segs.map(function(s) {
+        return { name: s[0], type: 'bar', stack: 'mix', barMaxWidth: 22, itemStyle: { color: s[2] },
+          data: s[1].map(function(v, i) { return mixTotals[i] ? +(100 * v / mixTotals[i]).toFixed(2) : 0; }) };
+      })
+    };
   } else {
     option = {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: function(p) { return '<b>' + p[0].axisValue + '</b><br/>Requests: ' + p[0].value; }},
       grid: { left: window.innerWidth < 700 ? 145 : 190, right: window.innerWidth < 700 ? 28 : 60, bottom: 28, top: 20 },
-      xAxis: { type: 'value', name: 'Requests', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0' }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#232330' } } },
-      series: [{ type: 'bar', data: modelReq, barMaxWidth: 22, itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#00D1FF' }, { offset: 1, color: '#0080FF' }] }, borderRadius: [0, 4, 4, 0] },
-        label: { show: true, position: 'right', formatter: function(p) { return p.value > 0 ? String(p.value) : ''; }, color: '#E8E8F5', fontSize: 11 } }]
+      xAxis: { type: 'value', name: 'Requests', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac' }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      yAxis: { type: 'category', data: modelNames, axisLabel: { color: '#d6d6da', fontSize: 12, fontWeight: 500, formatter: labelFormatter, rich: modelIconRich }, axisLine: { lineStyle: { color: '#303035' } } },
+      series: [{ type: 'bar', data: modelReq, barMaxWidth: 22, itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#c8d4e3' }, { offset: 1, color: '#95a5bd' }] }, borderRadius: [0, 4, 4, 0] },
+        label: { show: true, position: 'right', formatter: function(p) { return p.value > 0 ? String(p.value) : ''; }, color: '#f2f2ef', fontSize: 11 } }]
     };
   }
   chart.setOption(option, true);
@@ -4899,33 +4973,65 @@ function providerBorderColor(provider) {
   return shades[Math.abs(hash) % shades.length];
 }
 function renderProviderDonutInit(data) {
-  const sorted = [...data.providers].sort((a, b) => b.totalCost - a.totalCost);
-  const top = sorted.slice(0, 8);
-  const restCost = sorted.slice(8).reduce((s, p) => s + p.totalCost, 0);
-  const items = top.map((p) => ({ name: p.provider, value: p.totalCost }));
-  if (restCost > 0) items.push({ name: "Other", value: restCost });
-  const colors = ["#FFB800", "#00D1FF", "#00F593", "#B545FF", "#FF8C00", "#4FC3F7", "#FF6B6B", "#B478FF", "#555568"];
-  return `var provDonutData = ${jsonForScript(items)};
-var provDonutColors = ${jsonForScript(colors)};
+  const byCost = [...data.providers].filter((p) => p.totalCost > 0).sort((a, b) => b.totalCost - a.totalCost);
+  const byTokens = [...data.providers].filter((p) => p.totalTokens > 0).sort((a, b) => b.totalTokens - a.totalTokens);
+  const buildItems = (rows, pick) => {
+    const top = rows.slice(0, 8).map((p) => ({ name: p.provider, value: pick(p) }));
+    const rest = rows.slice(8).reduce((s, p) => s + pick(p), 0);
+    if (rest > 0) top.push({ name: "Other", value: rest });
+    return top;
+  };
+  const costItems = buildItems(byCost, (p) => p.totalCost);
+  const tokenItems = buildItems(byTokens, (p) => p.totalTokens);
+  const costTotal = byCost.reduce((s, p) => s + p.totalCost, 0);
+  const tokenTotal = byTokens.reduce((s, p) => s + p.totalTokens, 0);
+  return `var provCostData = ${jsonForScript(costItems)};
+var provTokenData = ${jsonForScript(tokenItems)};
+var provCostTotal = ${jsonForScript(fmtCost(costTotal))};
+var provTokenTotal = ${jsonForScript(fmtTokens(tokenTotal))};
+var provView = ${jsonForScript(costItems.length > 0 ? "cost" : "tokens")};
+var provDonutColors = ['#d0b77d','#c8d4e3','#8fb7a2','#b6adc8','#c4a982','#8295a8','#c38b91','#a8a0bb','#4a4a52'];
+
 function initProviderDonut() {
   var el = document.getElementById('provider-donut');
   if (!el) return;
   var chart = echarts.init(el);
   window.__charts = window.__charts || {};
   window.__charts.providerDonut = chart;
+  renderProviderDonut();
+}
+
+function renderProviderDonut() {
+  var chart = window.__charts.providerDonut;
+  if (!chart) return;
+  var isCost = provView === 'cost';
+  var totalText = isCost ? provCostTotal : provTokenTotal;
   var option = {
-    tooltip: { trigger: 'item', formatter: function(p) { return '<b>' + p.name + '</b><br/>Cost: ' + fmtCost(p.value) + ' (' + p.percent + '%)'; }},
-    legend: { type: 'scroll', orient: 'vertical', right: 8, top: 'center', textStyle: { color: '#8888A0', fontSize: 11 } },
+    tooltip: { trigger: 'item', formatter: function(p) {
+      return '<b>' + p.name + '</b><br/>' + (isCost ? 'Cost: ' + fmtCost(p.value) : 'Tokens: ' + fmt(p.value)) + ' (' + p.percent + '%)';
+    }},
+    legend: { type: 'scroll', orient: 'vertical', right: 8, top: 'center', textStyle: { color: '#a3a3ac', fontSize: 11 } },
     color: provDonutColors,
-    series: [{ type: 'pie', radius: ['42%', '70%'], center: ['35%', '50%'], avoidLabelOverlap: false,
-      itemStyle: { borderColor: '#111116', borderWidth: 2, borderRadius: 4 },
+    graphic: [
+      { type: 'text', left: '35%', top: '43%', silent: true, style: { text: isCost ? 'Total Cost' : 'Total Tokens', textAlign: 'center', fill: '#7d7d86', fontSize: 10, fontFamily: 'ui-monospace, Consolas, monospace' } },
+      { type: 'text', left: '35%', top: '50%', silent: true, style: { text: totalText, textAlign: 'center', fill: '#f2f2ef', fontSize: 20, fontWeight: 600, fontFamily: 'ui-monospace, Consolas, monospace' } }
+    ],
+    series: [{ type: 'pie', radius: ['46%', '70%'], center: ['35%', '50%'], avoidLabelOverlap: false,
+      itemStyle: { borderColor: '#131316', borderWidth: 2, borderRadius: 5 },
       label: { show: false }, labelLine: { show: false },
-      emphasis: { label: { show: true, fontSize: 13, fontWeight: 'bold', color: '#E8E8F5' }, scaleSize: 6 },
-      data: provDonutData }]
+      emphasis: { label: { show: false }, scaleSize: 6 },
+      data: isCost ? provCostData : provTokenData }]
   };
-  chart.setOption(option);
+  chart.setOption(option, true);
   chart.resize();
-}`;
+}
+
+window.switchProviderView = function(v) {
+  provView = v;
+  document.querySelectorAll('#prov-view-bar .view-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelector('#prov-view-bar [data-pview="' + v + '"]').classList.add('active');
+  renderProviderDonut();
+};`;
 }
 function renderApiCostSection2(data) {
   const apiCost = data.apiCost;
@@ -4937,11 +5043,12 @@ function renderApiCostSection2(data) {
     const estTag = m.estimated ? ` <span style="color:var(--missing);font-size:0.8em">(est.)</span>` : "";
     const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : "-";
     const totalTok = m.inputTokens + m.outputTokens + m.reasoningTokens + m.cacheRead + m.cacheWrite;
-    const costPer1M = totalTok > 0 && m.apiEquivCost != null ? `$${(m.apiEquivCost / totalTok * 1e6).toFixed(4)}` : "-";
+    const costPer1MRaw = totalTok > 0 && m.apiEquivCost != null ? m.apiEquivCost / totalTok * 1e6 : null;
+    const costPer1M = costPer1MRaw != null ? `$${costPer1MRaw.toFixed(4)}` : "-";
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td>${m.requests}</td><td>${fmtTokens(m.inputTokens)}</td><td>${fmtTokens(m.outputTokens)}</td>
-      <td>${fmtCost(m.reportedCost)}</td><td style="font-weight:600">${apiStr}${estTag}</td><td>${costPer1M}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td><td data-sort="${costPer1MRaw ?? -1}">${costPer1M}</td>
     </tr>`;
   }).join("\n");
   const totalApi = apiCost.totalApiCost ?? 0;
@@ -4956,12 +5063,12 @@ function renderApiCostSection2(data) {
       <span style="color:var(--missing)">~</span> = MISSING model estimated at 94% hit rate.
     </p>
     <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-      <div class="kpi-card"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
+      <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : "-"}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
     </div>
     <table id="api-cost-table" class="data-table">
-      <thead><tr><th>Model</th><th>Provider</th><th>Pricing Source</th><th>Req</th><th>Input</th><th>Output</th><th>Reported</th><th>API Equiv.</th><th>Cost/1M</th></tr></thead>
+      <thead><tr><th>Model</th><th>Provider</th><th>Pricing Source</th><th>Req</th><th>Input</th><th>Output</th><th>Reported</th><th title="Official pricing \xD7 token usage (estimate)">API Equiv.</th><th title="API equivalent per 1M total tokens (incl. cache)">Cost/1M</th></tr></thead>
       <tbody>${tableRows}</tbody>
     </table>
   </div>`;
@@ -4975,7 +5082,7 @@ function renderProviderCards(data) {
     const modelCount = data.models.filter((m) => m.provider === p.provider).length;
     const sharePct = totalTokens > 0 ? (p.totalTokens / totalTokens * 100).toFixed(1) : "0";
     return `
-    <div class="provider-card" style="border-color:${providerBorderColor(p.provider)}">
+    <div class="provider-card" style="--prov-color:${providerBorderColor(p.provider)}">
       <div class="provider-name">${escapeHtml(p.provider)}</div>
       <div class="provider-stat"><span class="stat-label">Tokens</span><span>${fmtTokens(p.totalTokens)} <span style="color:var(--text-faint)">(${sharePct}%)</span></span></div>
       <div class="provider-stat"><span class="stat-label">Cost</span><span>${fmtCost(p.totalCost)}</span></div>
@@ -4983,7 +5090,7 @@ function renderProviderCards(data) {
       <div class="provider-stat"><span class="stat-label">Sessions</span><span>${p.sessions}</span></div>
       <div class="provider-stat"><span class="stat-label">Models</span><span>${modelCount}</span></div>
       <div style="height:3px;border-radius:2px;background:var(--border);margin-top:8px;overflow:hidden">
-        <div style="height:100%;width:${sharePct}%;background:${providerBorderColor(p.provider)};border-radius:2px"></div>
+        <div style="height:100%;width:${sharePct}%;background:var(--prov-color);border-radius:2px"></div>
       </div>
     </div>`;
   }).join("\n");
@@ -4998,22 +5105,23 @@ function renderModelAnalyticsSection(data) {
     const hitDisplay = isMissing ? "MISSING" : fmtPercent(hitRate);
     const apiItem = data.apiCost?.byModel.find((a) => a.provider === m.provider && a.model === m.model);
     const apiCostStr = apiItem?.apiEquivCost != null ? apiItem.estimated ? `<span style="color:var(--missing)">~${fmtCost(apiItem.apiEquivCost)}</span>` : fmtCost(apiItem.apiEquivCost) : "-";
-    const costPer1M = m.totalTokens > 0 && m.totalCost > 0 ? `$${(m.totalCost / m.totalTokens * 1e6).toFixed(4)}` : "-";
+    const costPer1MRaw = m.totalTokens > 0 && m.totalCost > 0 ? m.totalCost / m.totalTokens * 1e6 : null;
+    const costPer1M = costPer1MRaw != null ? `$${costPer1MRaw.toFixed(4)}` : "-";
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
       <td>${escapeHtml(m.provider)}</td>
-      <td>${m.requests}</td>
-      <td>${m.sessions}</td>
-      <td>${fmtTokens(m.totalTokens)}</td>
-      <td>${fmtTokens(m.inputTokens)}</td>
-      <td>${fmtTokens(m.outputTokens)}</td>
-      <td>${fmtTokens(m.reasoningTokens)}</td>
-      <td>${fmtTokens(m.cacheRead)}</td>
-      <td>${fmtTokens(m.cacheWrite)}</td>
-      <td style="color:${hitColor};font-weight:600">${hitDisplay}</td>
-      <td>${fmtCost(m.totalCost)}</td>
-      <td>${apiCostStr}</td>
-      <td>${costPer1M}</td>
+      <td data-sort="${m.requests}">${m.requests}</td>
+      <td data-sort="${m.sessions}">${m.sessions}</td>
+      <td data-sort="${m.totalTokens}">${fmtTokens(m.totalTokens)}</td>
+      <td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td>
+      <td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.reasoningTokens}">${fmtTokens(m.reasoningTokens)}</td>
+      <td data-sort="${m.cacheRead}">${fmtTokens(m.cacheRead)}</td>
+      <td data-sort="${m.cacheWrite}">${fmtTokens(m.cacheWrite)}</td>
+      <td data-sort="${isMissing ? -1 : hitRate}" style="color:${hitColor};font-weight:600">${hitDisplay}</td>
+      <td data-sort="${m.totalCost}">${fmtCost(m.totalCost)}</td>
+      <td data-sort="${apiItem?.apiEquivCost ?? -1}">${apiCostStr}</td>
+      <td data-sort="${costPer1MRaw ?? -1}">${costPer1M}</td>
     </tr>`;
   }).join("\n");
   const errors = data.errors;
@@ -5029,10 +5137,10 @@ function renderModelAnalyticsSection(data) {
       return `<tr>
           <td>${escapeHtml(m.provider)}</td>
           <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
-          <td>${m.total}</td>
-          <td style="color:var(--danger)">${m.failed}</td>
-          <td style="color:var(--tps)">${m.total - m.failed}</td>
-          <td style="color:${cellColor}">${modelRate}</td>
+          <td data-sort="${m.total}">${m.total}</td>
+          <td data-sort="${m.failed}" style="color:var(--danger)">${m.failed}</td>
+          <td data-sort="${m.total - m.failed}" style="color:var(--tps)">${m.total - m.failed}</td>
+          <td data-sort="${m.total > 0 ? m.failed / m.total : -1}" style="color:${cellColor}">${modelRate}</td>
         </tr>`;
     }).join("\n");
     errorTabBtn = `
@@ -5072,7 +5180,7 @@ function renderModelAnalyticsSection(data) {
         <thead><tr>
           <th>Model</th><th>Provider</th><th class="sortable">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
           <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th><th class="sortable">Cache R</th><th class="sortable">Cache W</th>
-          <th class="sortable">Hit Rate</th><th class="sortable">Cost</th><th>API Cost</th><th class="sortable">Cost/1M</th>
+          <th class="sortable" title="Cache Read / (Input + Cache Read)">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing \xD7 token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
         </tr></thead>
         <tbody>${usageRows}</tbody>
       </table>
@@ -5092,12 +5200,12 @@ function renderSessionTable(data) {
       <td>${escapeHtml(s.day)}</td>
       <td>${escapeHtml(s.provider)}</td>
       <td><div class="model-cell">${modelIconImg(s.model, 16)}<span class="model-name-text" title="${escapeHtml(s.model)}">${escapeHtml(s.model)}</span></div></td>
-      <td>${s.requests}</td>
-      <td>${fmtTokens(s.totalTokens)}</td>
-      <td>${fmtTokens(s.inputTokens)}</td>
-      <td>${fmtTokens(s.outputTokens)}</td>
-      <td>${fmtTokens(s.cacheRead)}</td>
-      <td>${fmtCost(s.totalCost)}</td>
+      <td data-sort="${s.requests}">${s.requests}</td>
+      <td data-sort="${s.totalTokens}">${fmtTokens(s.totalTokens)}</td>
+      <td data-sort="${s.inputTokens}">${fmtTokens(s.inputTokens)}</td>
+      <td data-sort="${s.outputTokens}">${fmtTokens(s.outputTokens)}</td>
+      <td data-sort="${s.cacheRead}">${fmtTokens(s.cacheRead)}</td>
+      <td data-sort="${s.totalCost}">${fmtCost(s.totalCost)}</td>
       <td>${escapeHtml(s.title)}</td>
     </tr>`;
   }).join("\n");
@@ -5157,20 +5265,20 @@ function initDailyChart() {
       });
       return html;
     }},
-    legend: { data: ['Tokens', 'MA(7)', 'Requests', 'Cost', 'Cum. Cost'], textStyle: { color: '#8888A0' }, top: 5, type: 'scroll' },
+    legend: { data: ['Tokens', 'MA(7)', 'Requests', 'Cost', 'Cum. Cost'], textStyle: { color: '#a3a3ac' }, top: 5, type: 'scroll' },
     grid: { left: 60, right: 70, bottom: 80, top: 50 },
-    xAxis: { type: 'category', data: dailyDays, axisLabel: { color: '#8888A0', rotate: window.innerWidth < 700 ? 0 : 45, interval: window.innerWidth < 700 ? Math.max(0, Math.ceil(dailyDays.length / 6) - 1) : 0, fontSize: 10, hideOverlap: true }, axisLine: { lineStyle: { color: '#232330' } } },
+    xAxis: { type: 'category', data: dailyDays, axisLabel: { color: '#a3a3ac', rotate: window.innerWidth < 700 ? 0 : 45, interval: window.innerWidth < 700 ? Math.max(0, Math.ceil(dailyDays.length / 6) - 1) : 0, fontSize: 10, hideOverlap: true }, axisLine: { lineStyle: { color: '#303035' } } },
     yAxis: [
-      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', formatter: fmt }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      { type: 'value', name: 'Cost', nameTextStyle: { color: '#FFB800' }, axisLabel: { color: '#FFB800', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { show: false } }
+      { type: 'value', name: 'Tokens', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', formatter: fmt }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      { type: 'value', name: 'Cost', nameTextStyle: { color: '#d0b77d' }, axisLabel: { color: '#d0b77d', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { show: false } }
     ],
-    dataZoom: [{ type: 'slider', bottom: 5, height: 20, borderColor: '#232330', fillerColor: 'rgba(0,213,255,0.08)', handleStyle: { color: '#00D1FF' }, textStyle: { color: '#8888A0' } }],
+    dataZoom: [{ type: 'slider', bottom: 5, height: 20, borderColor: '#303035', fillerColor: 'rgba(200,212,227,0.08)', handleStyle: { color: '#c8d4e3' }, textStyle: { color: '#a3a3ac' } }],
     series: [
-      { name: 'Tokens', type: 'line', data: dailyTokens, smooth: true, symbol: 'none', lineStyle: { color: '#00D1FF', width: 2 }, areaStyle: { color: 'rgba(0,209,255,0.1)' } },
-      { name: 'MA(7)', type: 'line', data: dailyMA7, smooth: true, symbol: 'none', lineStyle: { color: '#00F593', width: 2.5, opacity: 0.8 } },
-      { name: 'Requests', type: 'line', data: dailyRequests, smooth: true, symbol: 'none', lineStyle: { color: '#B545FF', width: 1.5, opacity: 0.5 } },
-      { name: 'Cost', type: 'line', yAxisIndex: 1, data: dailyCosts, smooth: true, symbol: 'none', lineStyle: { color: '#FFB800', width: 2 }, areaStyle: { color: 'rgba(255,184,0,0.08)' } },
-      { name: 'Cum. Cost', type: 'line', yAxisIndex: 1, data: dailyCumCost, smooth: true, symbol: 'none', lineStyle: { color: '#FF8C00', width: 1.5, type: 'dashed' } }
+      { name: 'Tokens', type: 'line', data: dailyTokens, smooth: true, symbol: 'none', lineStyle: { color: '#c8d4e3', width: 2 }, areaStyle: { color: 'rgba(200,212,227,0.1)' } },
+      { name: 'MA(7)', type: 'line', data: dailyMA7, smooth: true, symbol: 'none', lineStyle: { color: '#8fb7a2', width: 2.5, opacity: 0.8 } },
+      { name: 'Requests', type: 'line', data: dailyRequests, smooth: true, symbol: 'none', lineStyle: { color: '#b6adc8', width: 1.5, opacity: 0.5 } },
+      { name: 'Cost', type: 'line', yAxisIndex: 1, data: dailyCosts, smooth: true, symbol: 'none', lineStyle: { color: '#d0b77d', width: 2 }, areaStyle: { color: 'rgba(208,183,125,0.08)' } },
+      { name: 'Cum. Cost', type: 'line', yAxisIndex: 1, data: dailyCumCost, smooth: true, symbol: 'none', lineStyle: { color: '#c4a982', width: 1.5, type: 'dashed' } }
     ]
   };
   chart.setOption(option);
@@ -5182,8 +5290,10 @@ function renderHeatmapInit(data) {
   const heatData = days.map((d) => [d.day, d.totalTokens]);
   const minDate = days.length > 0 ? days[0].day : "";
   const maxDate = days.length > 0 ? days[days.length - 1].day : "";
+  const heatMax = Math.max(1, ...days.map((d) => d.totalTokens));
   return `
 var heatData = ${jsonForScript(heatData)};
+var heatMax = ${heatMax};
 function initHeatmapChart() {
   var el = document.getElementById('heatmap-chart');
   if (!el) return;
@@ -5192,10 +5302,10 @@ function initHeatmapChart() {
   window.__charts.heatmap = chart;
   var option = {
     tooltip: { formatter: function(params) { var val = params.value; return '<b>' + val[0] + '</b><br/>Tokens: ' + fmt(Math.round(val[1])); }},
-    visualMap: { min: 0, max: 200000000, calculable: true, orient: 'horizontal', left: 'center', bottom: 8, itemWidth: 10, itemHeight: 160,
-      formatter: function(v) { return fmt(v); }, textStyle: { color: '#b9a5d8', fontSize: 10 },
-      inRange: { color: ['rgba(202,184,232,0)', 'rgba(202,184,232,1)', '#ad87d6', '#8454b7', '#5b2d8e'] } },
-    calendar: { left: 30, right: 30, top: 20, bottom: 60, range: ['${minDate}', '${maxDate}'], splitLine: { lineStyle: { color: '#232330' } }, dayLabel: { color: '#8888A0' }, monthLabel: { color: '#8888A0' }, yearLabel: { color: '#8888A0' }, itemStyle: { color: '#111116', borderColor: '#08080B', borderWidth: 2 } },
+    visualMap: { min: 0, max: heatMax, calculable: true, orient: 'horizontal', left: 'center', bottom: 8, itemWidth: 10, itemHeight: 160,
+      formatter: function(v) { return fmt(v); }, textStyle: { color: '#9d9da6', fontSize: 10 },
+      inRange: { color: ['rgba(255,255,255,0)', '#2b2b33', '#565661', '#8f8f98', '#f2f2ef'] } },
+    calendar: { left: 30, right: 30, top: 20, bottom: 60, range: ${jsonForScript([minDate, maxDate])}, splitLine: { lineStyle: { color: '#303035' } }, dayLabel: { color: '#a3a3ac' }, monthLabel: { color: '#a3a3ac' }, yearLabel: { color: '#a3a3ac' }, itemStyle: { color: '#131316', borderColor: '#0c0c0e', borderWidth: 2 } },
     series: [{ type: 'heatmap', coordinateSystem: 'calendar', data: heatData }]
   };
   chart.setOption(option);
@@ -5232,12 +5342,12 @@ function initHourlyHeatmap() {
       return '<b>' + dowLabels[d[1]] + ' ' + d[0] + ':00</b><br/>Tokens: ' + fmt(Math.round(rawTokens)) + '<br/>Requests: ' + reqs;
     }},
     grid: { left: 60, right: 20, bottom: 34, top: 58 },
-    xAxis: { type: 'category', data: hourLabels, name: 'Hour', nameTextStyle: { color: '#8888A0' }, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } }, splitArea: { show: true, areaStyle: { color: ['rgba(255,255,255,0.005)', 'rgba(255,255,255,0)'] } } },
-    yAxis: { type: 'category', data: dowLabels, axisLabel: { color: '#8888A0', fontSize: 10 }, axisLine: { lineStyle: { color: '#232330' } } },
-    visualMap: { min: 0, max: 100000000, calculable: true, orient: 'horizontal', right: 20, top: 8, itemWidth: 10, itemHeight: 150,
-      formatter: function(v) { return fmt(v); }, textStyle: { color: '#b9a5d8', fontSize: 10 },
-      inRange: { color: ['rgba(202,184,232,0)', 'rgba(202,184,232,1)', '#ad87d6', '#8454b7', '#5b2d8e'] } },
-    series: [{ type: 'heatmap', data: hourlyData, label: { show: false }, itemStyle: { borderColor: '#111116', borderWidth: 1 }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,245,147,0.5)' } } }]
+    xAxis: { type: 'category', data: hourLabels, name: 'Hour', nameTextStyle: { color: '#a3a3ac' }, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } }, splitArea: { show: true, areaStyle: { color: ['rgba(255,255,255,0.005)', 'rgba(255,255,255,0)'] } } },
+    yAxis: { type: 'category', data: dowLabels, axisLabel: { color: '#a3a3ac', fontSize: 10 }, axisLine: { lineStyle: { color: '#303035' } } },
+    visualMap: { min: 0, max: Math.max(1, hourlyMax), calculable: true, orient: 'horizontal', right: 20, top: 8, itemWidth: 10, itemHeight: 150,
+      formatter: function(v) { return fmt(v); }, textStyle: { color: '#9d9da6', fontSize: 10 },
+      inRange: { color: ['rgba(255,255,255,0)', '#2b2b33', '#565661', '#8f8f98', '#f2f2ef'] } },
+    series: [{ type: 'heatmap', data: hourlyData, label: { show: false }, itemStyle: { borderColor: '#131316', borderWidth: 1 }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(242,242,239,0.4)' } } }]
   };
 
   // Build raw lookup for tooltip
@@ -5272,22 +5382,71 @@ function initCostTrend() {
       params.forEach(function(p) { html += p.marker + ' ' + p.seriesName + ': ' + fmtCost(p.value) + '<br/>'; });
       return html;
     }},
-    legend: { data: ['Daily Cost', 'Cumulative Cost'], textStyle: { color: '#8888A0' }, top: 5 },
+    legend: { data: ['Daily Cost', 'Cumulative Cost'], textStyle: { color: '#a3a3ac' }, top: 5 },
     grid: { left: 70, right: 70, bottom: 80, top: 40 },
-    xAxis: { type: 'category', data: costDays, axisLabel: { color: '#8888A0', rotate: window.innerWidth < 700 ? 0 : 45, interval: window.innerWidth < 700 ? Math.max(0, Math.ceil(costDays.length / 6) - 1) : 0, fontSize: 10, hideOverlap: true }, axisLine: { lineStyle: { color: '#232330' } } },
+    xAxis: { type: 'category', data: costDays, axisLabel: { color: '#a3a3ac', rotate: window.innerWidth < 700 ? 0 : 45, interval: window.innerWidth < 700 ? Math.max(0, Math.ceil(costDays.length / 6) - 1) : 0, fontSize: 10, hideOverlap: true }, axisLine: { lineStyle: { color: '#303035' } } },
     yAxis: [
-      { type: 'value', name: 'Daily', nameTextStyle: { color: '#FFB800' }, axisLabel: { color: '#FFB800', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { lineStyle: { color: '#232330', type: 'dashed' } } },
-      { type: 'value', name: 'Cumulative', nameTextStyle: { color: '#FF8C00' }, axisLabel: { color: '#FF8C00', formatter: function(v) { return '$' + v.toFixed(1); } }, splitLine: { show: false } }
+      { type: 'value', name: 'Daily', nameTextStyle: { color: '#d0b77d' }, axisLabel: { color: '#d0b77d', formatter: function(v) { return '$' + v.toFixed(2); } }, splitLine: { lineStyle: { color: '#303035', type: 'dashed' } } },
+      { type: 'value', name: 'Cumulative', nameTextStyle: { color: '#c4a982' }, axisLabel: { color: '#c4a982', formatter: function(v) { return '$' + v.toFixed(1); } }, splitLine: { show: false } }
     ],
-    dataZoom: [{ type: 'slider', bottom: 5, height: 20, borderColor: '#232330', fillerColor: 'rgba(255,184,0,0.08)', handleStyle: { color: '#FFB800' }, textStyle: { color: '#8888A0' } }],
+    dataZoom: [{ type: 'slider', bottom: 5, height: 20, borderColor: '#303035', fillerColor: 'rgba(208,183,125,0.08)', handleStyle: { color: '#d0b77d' }, textStyle: { color: '#a3a3ac' } }],
     series: [
-      { name: 'Daily Cost', type: 'bar', data: dailyCostArr, barMaxWidth: 30, itemStyle: { color: '#FFB800', borderRadius: [3, 3, 0, 0] } },
-      { name: 'Cumulative Cost', type: 'line', yAxisIndex: 1, data: cumCostArr, smooth: true, symbol: 'none', lineStyle: { color: '#FF8C00', width: 2.5 }, areaStyle: { color: 'rgba(255,140,0,0.06)' } }
+      { name: 'Daily Cost', type: 'bar', data: dailyCostArr, barMaxWidth: 30, itemStyle: { color: '#d0b77d', borderRadius: [3, 3, 0, 0] } },
+      { name: 'Cumulative Cost', type: 'line', yAxisIndex: 1, data: cumCostArr, smooth: true, symbol: 'none', lineStyle: { color: '#c4a982', width: 2.5 }, areaStyle: { color: 'rgba(196,169,130,0.06)' } }
     ]
   };
   chart.setOption(option);
   chart.resize();
 }`;
+}
+function renderInsightsSection(data) {
+  const insights = [];
+  const apiTotal = data.apiCost?.totalApiCost;
+  const reported = data.apiCost?.reportedCost ?? data.summary.totalCost;
+  if (apiTotal != null && apiTotal > reported) {
+    const pct2 = ((apiTotal - reported) / apiTotal * 100).toFixed(1);
+    insights.push({
+      icon: "$",
+      title: "Saved vs. official API pricing",
+      value: `<span class="accent">${fmtCost(apiTotal - reported)}</span> (${pct2}% below API equivalent)`
+    });
+  }
+  const hm = data.hourlyHeatmap ?? [];
+  if (hm.length > 0) {
+    const peak = hm.reduce((a, b) => a.totalTokens > b.totalTokens ? a : b);
+    const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    insights.push({
+      icon: "\u26A1",
+      title: "Peak activity hour",
+      value: `<span class="accent">${dowNames[peak.dow]} ${String(peak.hour).padStart(2, "0")}:00</span> \xB7 ${fmtTokens(peak.totalTokens)} tokens \xB7 ${peak.requests} reqs`
+    });
+  }
+  const top = sortModelsByUsage(data.models)[0];
+  if (top) {
+    const total = data.summary.totalTokens;
+    const sharePct = total > 0 ? (top.totalTokens / total * 100).toFixed(1) : "0";
+    insights.push({
+      icon: "\u2605",
+      title: "Top model",
+      value: `<span class="accent">${escapeHtml(top.model)}</span> \xB7 ${fmtTokens(top.totalTokens)} (${sharePct}% of tokens)`
+    });
+  }
+  if (insights.length === 0) return "";
+  const cards = insights.map((ins) => `
+    <div class="insight-card">
+      <div class="insight-icon" style="background:rgba(255,255,255,.05);color:var(--text)">${ins.icon}</div>
+      <div class="insight-body">
+        <div class="insight-title">${ins.title}</div>
+        <div class="insight-value">${ins.value}</div>
+      </div>
+    </div>`).join("\n");
+  return `
+  <div class="section">
+    <div class="section-title">Insights</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+      ${cards}
+    </div>
+  </div>`;
 }
 function generateTotalUsageHtml(data) {
   const metaStr = renderMeta(data);
@@ -5300,7 +5459,9 @@ function generateTotalUsageHtml(data) {
   const modelAnalyticsStr = renderModelAnalyticsSection(data);
   const sessionTableStr = renderSessionTable(data);
   const dailyChartJs = renderDailyTrendInit(data);
-  const heatmapJs = renderHeatmapInit(data);
+  const daySpan = data.daily.length > 0 ? Math.round((Date.parse(data.daily[0].day) - Date.parse(data.daily[data.daily.length - 1].day)) / 864e5) + 1 : 0;
+  const calendarVisible = daySpan > 45;
+  const heatmapJs = calendarVisible ? renderHeatmapInit(data) : "";
   const hourlyHeatmapJs = (data.hourlyHeatmap ?? []).length > 0 ? renderHourlyHeatmapInit(data) : "";
   const costTrendJs = data.daily.length > 0 ? renderCostTrendInit(data) : "";
   const jsonData = jsonForScript(data);
@@ -5314,10 +5475,6 @@ ${HTML_HEAD_SHARED}
 <style>
 ${BG_ANIMATION_CSS}
 ${SHARED_CSS}
-  .view-btn-bar { display: flex; gap: 6px; margin-bottom: 8px; }
-  .view-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; font-family: 'Inter', sans-serif; transition: all 0.2s var(--ease); }
-  .view-btn:hover { border-color: var(--input); color: var(--text); }
-  .view-btn.active { background: var(--border); color: var(--input); border-color: var(--input); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
 </style>
@@ -5334,6 +5491,8 @@ ${BG_ANIMATION_HTML}
 
   ${kpiStr}
 
+  ${renderInsightsSection(data)}
+
   <div class="section">
     <div class="section-title">Model Comparison Matrix</div>
     ${modelChartVisible ? `
@@ -5341,6 +5500,7 @@ ${BG_ANIMATION_HTML}
       <button class="view-btn active" data-view="tokens" onclick="switchModelView('tokens')">Tokens</button>
       <button class="view-btn" data-view="cost" onclick="switchModelView('cost')">Cost</button>
       <button class="view-btn" data-view="requests" onclick="switchModelView('requests')">Requests</button>
+      <button class="view-btn" data-view="mix" onclick="switchModelView('mix')">Mix</button>
     </div>
     <div class="chart-box" id="model-chart" style="height:520px"></div>` : '<div class="empty-state">No model usage data in this period.</div>'}
   </div>
@@ -5349,16 +5509,14 @@ ${BG_ANIMATION_HTML}
     <div class="section-title">Usage Timeline</div>
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="daily" onclick="switchTab('daily')">Daily Trend</button>
-      <button class="tab-btn" data-tab="heatmap" onclick="switchTab('heatmap')">Calendar Heatmap</button>
+      ${calendarVisible ? `<button class="tab-btn" data-tab="heatmap" onclick="switchTab('heatmap')">Calendar Heatmap</button>` : ""}
       ${hourlyHeatmapJs ? `<button class="tab-btn" data-tab="hourly" onclick="switchTab('hourly')">Activity Hours</button>` : ""}
       ${costTrendJs ? `<button class="tab-btn" data-tab="cost" onclick="switchTab('cost')">Cost Trend</button>` : ""}
     </div>
     <div id="tab-daily" class="tab-content active">
       <div class="chart-box" id="daily-chart"></div>
     </div>
-    <div id="tab-heatmap" class="tab-content">
-      <div class="chart-box" id="heatmap-chart"></div>
-    </div>
+    ${calendarVisible ? '<div id="tab-heatmap" class="tab-content"><div class="chart-box" id="heatmap-chart"></div></div>' : ""}
     ${hourlyHeatmapJs ? `<div id="tab-hourly" class="tab-content"><div class="chart-box" id="hourly-heatmap" style="height:300px"></div></div>` : ""}
     ${costTrendJs ? `<div id="tab-cost" class="tab-content"><div class="chart-box" id="cost-trend-chart"></div></div>` : ""}
   </div>
@@ -5369,8 +5527,13 @@ ${BG_ANIMATION_HTML}
       <div class="provider-row">${providerStr}</div>
     </div>
     <div class="section" style="margin-bottom:0">
-      <div class="section-title">Cost Share by Provider</div>
-      ${data.providers.length > 0 ? '<div class="chart-box" id="provider-donut" style="height:280px"></div>' : '<div class="empty-state">No provider data.</div>'}
+      <div class="section-title">Share by Provider</div>
+      ${data.providers.length > 0 ? `
+      <div class="view-btn-bar" id="prov-view-bar" style="margin-bottom:4px">
+        <button class="view-btn${data.providers.some((p) => p.totalCost > 0) ? " active" : ""}" data-pview="cost" onclick="switchProviderView('cost')">Cost</button>
+        <button class="view-btn${data.providers.some((p) => p.totalCost > 0) ? "" : " active"}" data-pview="tokens" onclick="switchProviderView('tokens')">Tokens</button>
+      </div>
+      <div class="chart-box" id="provider-donut" style="height:280px"></div>` : '<div class="empty-state">No provider data.</div>'}
     </div>
   </div>
 
@@ -5393,11 +5556,23 @@ ${SHARED_JS}
 
 ${BG_PARTICLE_JS}
 
+// Hidden-tab charts are initialized lazily on first activation so the report
+// opens fast with only the visible Daily chart rendered.
+var tabChartInited = {};
+window.ensureTabChart = function(name) {
+  if (tabChartInited[name]) return;
+  tabChartInited[name] = true;
+  ${calendarVisible ? "if (name === 'heatmap') initHeatmapChart();" : ""}
+  ${hourlyHeatmapJs ? "if (name === 'hourly') initHourlyHeatmap();" : ""}
+  ${costTrendJs ? "if (name === 'cost') initCostTrend();" : ""}
+};
+
 window.switchTab = function(name) {
   document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
   document.querySelectorAll('.tab-btn[data-tab]').forEach(function(el) { el.classList.remove('active'); });
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelector('[data-tab="' + name + '"]').classList.add('active');
+  window.ensureTabChart(name);
   setTimeout(function() {
     if (name === 'daily' && window.__charts && window.__charts.daily) window.__charts.daily.resize();
     if (name === 'heatmap' && window.__charts && window.__charts.heatmap) window.__charts.heatmap.resize();
@@ -5436,9 +5611,6 @@ document.addEventListener('DOMContentLoaded', function() {
   ${modelChartVisible ? "initModelChart();" : ""}
   ${data.providers.length > 0 ? "initProviderDonut();" : ""}
   initDailyChart();
-  initHeatmapChart();
-  ${hourlyHeatmapJs ? "initHourlyHeatmap();" : ""}
-  ${costTrendJs ? "initCostTrend();" : ""}
   makeSortable('usage-table');
   makeSortable('errors-table');
   makeSortable('sessions-table');
@@ -5451,6 +5623,562 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 </body>
 </html>`;
+}
+
+// src/report-formats.ts
+function nowString2() {
+  const d = /* @__PURE__ */ new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function toLocalDay2(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function getDateRangeForScope(scope) {
+  if (scope.kind === "7d") return getPresetRange("7d");
+  if (scope.kind === "30d") return getPresetRange("30d");
+  if (scope.kind === "days" && scope.days) return parseDaysFilter(String(scope.days));
+  return {};
+}
+async function buildCombinedData(context, filters = {}) {
+  const report = await getUsageReport(filters);
+  const hourlyHeatmap = await getHourlyHeatmap(filters);
+  const logs = readLogs(200);
+  const perfSummary = readPersistedStats();
+  const meta = {
+    generatedAt: nowString2(),
+    dateRange: {
+      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : "\u2014",
+      end: report.daily.length > 0 ? report.daily[0].day : "\u2014"
+    }
+  };
+  const apiCostByModel = report.models.map((m) => {
+    const est = estimateApiCost(
+      m.provider,
+      m.model,
+      m.requests,
+      m.inputTokens,
+      m.outputTokens,
+      m.reasoningTokens,
+      m.cacheRead,
+      m.cacheWrite
+    );
+    return {
+      provider: m.provider,
+      model: m.model,
+      requests: m.requests,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+      reasoningTokens: m.reasoningTokens,
+      cacheRead: m.cacheRead,
+      cacheWrite: m.cacheWrite,
+      reportedCost: m.totalCost,
+      apiEquivCost: est.cost,
+      estimated: est.estimated,
+      pricingProvider: est.pricingProvider
+    };
+  });
+  const apiTotal = apiCostByModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0);
+  const apiCost = {
+    totalApiCost: apiTotal > 0 ? apiTotal : null,
+    reportedCost: report.summary.totalCost,
+    byModel: apiCostByModel
+  };
+  return {
+    ...report,
+    meta,
+    apiCost,
+    errors: report.errors,
+    hourlyHeatmap,
+    perfLogs: logs,
+    perfSummary
+  };
+}
+async function fetchAllSessions2(client2) {
+  const all = [];
+  let cursor;
+  for (; ; ) {
+    const res = await client2.session.list({ limit: 500, cursor });
+    const page = res?.data;
+    if (!Array.isArray(page) || page.length === 0) break;
+    all.push(...page);
+    const next = res?.cursor?.next;
+    if (!next) break;
+    cursor = next;
+  }
+  return all;
+}
+async function fetchAllMessages2(client2, sessionID) {
+  const all = [];
+  let cursor;
+  for (; ; ) {
+    const res = await client2.message.list({ sessionID, limit: 1e3, order: "asc", cursor });
+    const page = res?.data;
+    if (!Array.isArray(page) || page.length === 0) break;
+    all.push(...page);
+    const next = res?.cursor?.next;
+    if (!next) break;
+    cursor = next;
+  }
+  return all;
+}
+function asAssistant2(m, sessionID) {
+  if (!m || typeof m !== "object" || m.type !== "assistant") return null;
+  const a = m;
+  const tokens = a.tokens;
+  if (!tokens || typeof tokens !== "object") return null;
+  const input = tokens.input ?? 0;
+  const output = tokens.output ?? 0;
+  const reasoning = tokens.reasoning ?? 0;
+  const cacheRead = tokens.cache?.read ?? 0;
+  const cacheWrite = tokens.cache?.write ?? 0;
+  const total = input + output + reasoning + cacheRead + cacheWrite;
+  return {
+    sessionID,
+    providerID: a.model?.providerID ?? "unknown",
+    modelID: a.model?.id ?? "unknown",
+    messageID: a.id,
+    created: a.time?.created ?? 0,
+    cost: a.cost ?? 0,
+    tokens: { input, output, reasoning, cacheRead, cacheWrite, total }
+  };
+}
+async function loadAssistantsSince(sinceMs) {
+  const client2 = getV2Client();
+  if (!client2) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
+  const sessions = await fetchAllSessions2(client2);
+  const sessionsById = new Map(sessions.map((s) => [s.id, s]));
+  const assistants = [];
+  const batchSize = 8;
+  for (let i = 0; i < sessions.length; i += batchSize) {
+    const batch = sessions.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(async (s) => {
+      try {
+        return await fetchAllMessages2(client2, s.id);
+      } catch {
+        return null;
+      }
+    }));
+    for (let j = 0; j < batch.length; j++) {
+      const msgs = results[j];
+      if (!msgs) continue;
+      for (const m of msgs) {
+        const a = asAssistant2(m, batch[j].id);
+        if (!a || a.created < sinceMs) continue;
+        assistants.push(a);
+      }
+    }
+  }
+  return { assistants, sessionsById };
+}
+function summarize2(assistants) {
+  const models = /* @__PURE__ */ new Set();
+  const providers = /* @__PURE__ */ new Set();
+  let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningTokens = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let totalCost = 0;
+  for (const a of assistants) {
+    const t2 = a.tokens;
+    totalTokens += t2.total;
+    inputTokens += t2.input;
+    outputTokens += t2.output;
+    reasoningTokens += t2.reasoning;
+    cacheRead += t2.cacheRead;
+    cacheWrite += t2.cacheWrite;
+    totalCost += a.cost;
+    models.add(a.modelID);
+    providers.add(a.providerID);
+  }
+  const modelsArray = Array.from(models);
+  return {
+    model: modelsArray.length === 1 ? modelsArray[0] : "",
+    provider: providers.size === 1 ? Array.from(providers)[0] : "",
+    modelsUsed: modelsArray,
+    totalTokens,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheRead,
+    cacheWrite,
+    totalCost,
+    requestCount: assistants.length
+  };
+}
+function buildModelBreakdown(assistants) {
+  const map = /* @__PURE__ */ new Map();
+  const sessionSet = /* @__PURE__ */ new Set();
+  for (const a of assistants) {
+    const key = `${a.providerID}|${a.modelID}`;
+    const t2 = a.tokens;
+    let item = map.get(key);
+    if (!item) {
+      item = {
+        provider: a.providerID,
+        model: a.modelID,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalCost: 0
+      };
+      map.set(key, item);
+    }
+    item.requests++;
+    item.totalTokens += t2.total;
+    item.inputTokens += t2.input;
+    item.outputTokens += t2.output;
+    item.reasoningTokens += t2.reasoning;
+    item.cacheRead += t2.cacheRead;
+    item.cacheWrite += t2.cacheWrite;
+    item.totalCost += a.cost;
+    sessionSet.add(`${key}|${a.sessionID}`);
+  }
+  for (const s of sessionSet) {
+    const [provider, model] = s.split("|");
+    const item = map.get(`${provider}|${model}`);
+    if (item) item.sessions++;
+  }
+  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
+}
+function buildProviderBreakdown(assistants) {
+  const map = /* @__PURE__ */ new Map();
+  const sessionSet = /* @__PURE__ */ new Set();
+  for (const a of assistants) {
+    const key = a.providerID;
+    const t2 = a.tokens;
+    let item = map.get(key);
+    if (!item) {
+      item = {
+        provider: key,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0
+      };
+      map.set(key, item);
+    }
+    item.requests++;
+    item.totalTokens += t2.total;
+    item.inputTokens += t2.input;
+    item.outputTokens += t2.output;
+    item.reasoningTokens += t2.reasoning;
+    item.cacheRead += t2.cacheRead;
+    item.totalCost += a.cost;
+    sessionSet.add(`${key}|${a.sessionID}`);
+  }
+  for (const s of sessionSet) {
+    const [provider] = s.split("|");
+    const item = map.get(provider);
+    if (item) item.sessions++;
+  }
+  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
+}
+function buildDailyBreakdown(assistants) {
+  const map = /* @__PURE__ */ new Map();
+  const sessionSet = /* @__PURE__ */ new Set();
+  for (const a of assistants) {
+    const day = toLocalDay2(a.created);
+    const t2 = a.tokens;
+    let item = map.get(day);
+    if (!item) {
+      item = {
+        day,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0
+      };
+      map.set(day, item);
+    }
+    item.requests++;
+    item.totalTokens += t2.total;
+    item.inputTokens += t2.input;
+    item.outputTokens += t2.output;
+    item.reasoningTokens += t2.reasoning;
+    item.cacheRead += t2.cacheRead;
+    item.totalCost += a.cost;
+    sessionSet.add(`${day}|${a.sessionID}`);
+  }
+  for (const s of sessionSet) {
+    const [day] = s.split("|");
+    const item = map.get(day);
+    if (item) item.sessions++;
+  }
+  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, 90);
+}
+function buildSessionBreakdown(assistants, sessionsById) {
+  const map = /* @__PURE__ */ new Map();
+  for (const a of assistants) {
+    let item = map.get(a.sessionID);
+    if (!item) {
+      const s = sessionsById.get(a.sessionID);
+      item = {
+        sessionId: a.sessionID,
+        title: s?.title ?? "(untitled)",
+        provider: a.providerID,
+        model: a.modelID,
+        requests: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+        day: toLocalDay2(a.created)
+      };
+      map.set(a.sessionID, item);
+    }
+    const t2 = a.tokens;
+    item.requests++;
+    item.totalTokens += t2.total;
+    item.inputTokens += t2.input;
+    item.outputTokens += t2.output;
+    item.reasoningTokens += t2.reasoning;
+    item.cacheRead += t2.cacheRead;
+    item.totalCost += a.cost;
+    const day = toLocalDay2(a.created);
+    if (day > item.day) item.day = day;
+  }
+  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, 15);
+}
+function buildErrorStats(assistants) {
+  let successCount = 0;
+  let failedCount = 0;
+  const byModelMap = /* @__PURE__ */ new Map();
+  for (const a of assistants) {
+    const key = `${a.providerID}|${a.modelID}`;
+    let row = byModelMap.get(key);
+    if (!row) {
+      row = { provider: a.providerID, model: a.modelID, failed: 0, total: 0 };
+      byModelMap.set(key, row);
+    }
+    row.total++;
+    if (a.tokens.total === 0) {
+      row.failed++;
+      failedCount++;
+    } else {
+      successCount++;
+    }
+  }
+  const byModel = Array.from(byModelMap.values()).sort((a, b) => b.failed - a.failed);
+  const errorRate = successCount + failedCount > 0 ? failedCount / (successCount + failedCount) : 0;
+  return { successCount, failedCount, errorRate, byModel };
+}
+function buildHourlyHeatmap(assistants) {
+  const map = /* @__PURE__ */ new Map();
+  for (const a of assistants) {
+    const d = new Date(a.created);
+    const key = `${d.getDay()}|${d.getHours()}`;
+    let item = map.get(key);
+    if (!item) {
+      item = { dow: d.getDay(), hour: d.getHours(), requests: 0, totalTokens: 0, totalCost: 0 };
+      map.set(key, item);
+    }
+    item.requests++;
+    item.totalTokens += a.tokens.total;
+    item.totalCost += a.cost;
+  }
+  return Array.from(map.values());
+}
+function buildApiCost(models, reportedCost) {
+  const byModel = models.map((m) => {
+    const est = estimateApiCost(
+      m.provider,
+      m.model,
+      m.requests,
+      m.inputTokens,
+      m.outputTokens,
+      m.reasoningTokens,
+      m.cacheRead,
+      m.cacheWrite
+    );
+    return {
+      provider: m.provider,
+      model: m.model,
+      requests: m.requests,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+      reasoningTokens: m.reasoningTokens,
+      cacheRead: m.cacheRead,
+      cacheWrite: m.cacheWrite,
+      reportedCost: m.totalCost,
+      apiEquivCost: est.cost,
+      estimated: est.estimated,
+      pricingProvider: est.pricingProvider
+    };
+  });
+  const totalApiCost = byModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0);
+  return {
+    totalApiCost: totalApiCost > 0 ? totalApiCost : null,
+    reportedCost,
+    byModel
+  };
+}
+async function buildRecentHoursReportData(context, hours) {
+  const sinceMs = Date.now() - Math.max(1, hours) * 36e5;
+  const { assistants, sessionsById } = await loadAssistantsSince(sinceMs);
+  const successful = assistants.filter((a) => a.tokens.total > 0);
+  const summary = summarize2(successful);
+  const models = buildModelBreakdown(successful);
+  const providers = buildProviderBreakdown(successful);
+  const daily = buildDailyBreakdown(successful);
+  const sessions = buildSessionBreakdown(successful, sessionsById);
+  const totalSessions = new Set(successful.map((a) => a.sessionID)).size;
+  const errors = buildErrorStats(assistants);
+  const hourlyHeatmap = buildHourlyHeatmap(successful);
+  const apiCost = buildApiCost(models, summary.totalCost);
+  const meta = {
+    generatedAt: nowString2(),
+    dateRange: {
+      start: daily.length > 0 ? daily[daily.length - 1].day : toLocalDay2(sinceMs),
+      end: daily.length > 0 ? daily[0].day : toLocalDay2(Date.now())
+    }
+  };
+  return {
+    summary,
+    models,
+    providers,
+    daily,
+    sessions,
+    totalSessions,
+    errors,
+    meta,
+    apiCost,
+    hourlyHeatmap,
+    perfLogs: readLogs(200),
+    perfSummary: readPersistedStats(),
+    filters: { startDate: toLocalDay2(sinceMs), endDate: toLocalDay2(Date.now()) }
+  };
+}
+function kpiLine(label, value) {
+  return `  ${label}: ${value}`;
+}
+function separator() {
+  return "-".repeat(72);
+}
+function renderPeriodTextReport(data) {
+  const s = data.summary;
+  const apiCostTotal = data.apiCost?.totalApiCost ?? null;
+  const filters = data.filters ?? {};
+  const lines = [];
+  lines.push("Usage Stat - Cumulative Report");
+  lines.push(`Generated: ${data.meta.generatedAt}`);
+  lines.push(`Scope: ${formatFilters(filters)}`);
+  if (data.meta.dateRange.start !== "\u2014" && data.meta.dateRange.end !== "\u2014") {
+    lines.push(`Date range: ${data.meta.dateRange.start} .. ${data.meta.dateRange.end}`);
+  }
+  lines.push(separator());
+  lines.push("KPI");
+  lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)));
+  lines.push(kpiLine("Requests", String(s.requestCount)));
+  lines.push(kpiLine("Sessions", String(data.totalSessions ?? s.modelsUsed.length)));
+  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)));
+  lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)));
+  lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)));
+  lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)));
+  lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)));
+  lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)));
+  if (apiCostTotal != null) lines.push(kpiLine("API Equiv Cost", formatCost(apiCostTotal)));
+  if (data.errors) {
+    const e = data.errors;
+    lines.push(kpiLine("Error Rate", `${(e.errorRate * 100).toFixed(2)}% (${e.failedCount} failed / ${e.successCount + e.failedCount} total)`));
+  }
+  lines.push("");
+  lines.push("Models");
+  if (data.models.length === 0) {
+    lines.push("  (no usage in this period)");
+  } else {
+    lines.push("  Provider                Model                            Req  Sessions  Tokens      Cost");
+    for (const m of data.models) {
+      const provider = m.provider.padEnd(24).slice(0, 24);
+      const model = m.model.padEnd(29).slice(0, 29);
+      lines.push(`  ${provider}  ${model}  ${String(m.requests).padStart(4)}  ${String(m.sessions).padStart(8)}  ${formatTokens(m.totalTokens).padStart(10)}  ${formatCost(m.totalCost).padStart(10)}`);
+    }
+  }
+  lines.push("");
+  lines.push("Providers");
+  if (data.providers.length === 0) {
+    lines.push("  (no usage in this period)");
+  } else {
+    lines.push("  Provider                Req  Sessions  Tokens      Cost");
+    for (const p of data.providers) {
+      const provider = p.provider.padEnd(24).slice(0, 24);
+      lines.push(`  ${provider}  ${String(p.requests).padStart(4)}  ${String(p.sessions).padStart(8)}  ${formatTokens(p.totalTokens).padStart(10)}  ${formatCost(p.totalCost).padStart(10)}`);
+    }
+  }
+  if (data.daily.length > 0) {
+    lines.push("");
+    lines.push("Daily");
+    lines.push("  Date         Req  Sessions  Tokens      Cost");
+    for (const d of data.daily) {
+      lines.push(`  ${d.day.padEnd(10)}  ${String(d.requests).padStart(4)}  ${String(d.sessions).padStart(8)}  ${formatTokens(d.totalTokens).padStart(10)}  ${formatCost(d.totalCost).padStart(10)}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Report file generated locally by opencode-usage-stat`);
+  return lines.join("\n");
+}
+function renderSessionTextReport(data) {
+  const s = data.summary;
+  const lines = [];
+  lines.push(`Usage Stat - Session Report`);
+  lines.push(`Session: ${data.sessionTitle}`);
+  lines.push(`Session ID: ${data.sessionId}`);
+  lines.push(`Subagents: ${data.subagentCount}`);
+  lines.push(`Generated: ${data.generatedAt}`);
+  lines.push(separator());
+  lines.push("KPI");
+  lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)));
+  lines.push(kpiLine("Requests", String(s.requestCount)));
+  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)));
+  lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)));
+  lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)));
+  lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)));
+  lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)));
+  lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)));
+  if (data.apiCost.totalApiCost != null) lines.push(kpiLine("API Equiv Cost", formatCost(data.apiCost.totalApiCost)));
+  lines.push(kpiLine("Tokens/s", data.tps > 0 ? data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1) : "-"));
+  lines.push(kpiLine("Cost/Request", formatCost(data.costPerRequest)));
+  lines.push(kpiLine("Error Rate", `${(data.errors.errorRate * 100).toFixed(2)}% (${data.errors.failedCount} failed / ${data.errors.successCount + data.errors.failedCount} total)`));
+  lines.push("");
+  lines.push("Models");
+  if (data.models.length === 0) {
+    lines.push("  (no usage in this session)");
+  } else {
+    lines.push("  Provider                Model                            Req  Sessions  Tokens      Cost");
+    for (const m of data.models) {
+      const provider = m.provider.padEnd(24).slice(0, 24);
+      const model = m.model.padEnd(29).slice(0, 29);
+      lines.push(`  ${provider}  ${model}  ${String(m.requests).padStart(4)}  ${String(m.sessions).padStart(8)}  ${formatTokens(m.totalTokens).padStart(10)}  ${formatCost(m.totalCost).padStart(10)}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Report file generated locally by opencode-usage-stat`);
+  return lines.join("\n");
+}
+function toPeriodJsonReport(data) {
+  return data;
+}
+function toSessionJsonReport(data) {
+  return data;
 }
 
 // src/commands.tsx
@@ -5499,7 +6227,7 @@ function openInBrowser(filePath) {
 var MAX_REPORTS = 50;
 function cleanupOldReports(dir) {
   try {
-    const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && f.endsWith(".html")).map((f) => ({
+    const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && /\.(html|txt|json)$/.test(f)).map((f) => ({
       name: f,
       path: join8(dir, f),
       mtime: statSync2(join8(dir, f)).mtimeMs
@@ -5520,11 +6248,6 @@ function dateTimeStamp() {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`;
 }
-function nowString2() {
-  const d = /* @__PURE__ */ new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
 function currentSessionId(context) {
   try {
     const route = context.ui.router.current();
@@ -5533,50 +6256,17 @@ function currentSessionId(context) {
   }
   return void 0;
 }
-async function buildCombinedData(context, filters = {}) {
-  const report = await getUsageReport(filters);
-  const hourlyHeatmap = await getHourlyHeatmap(filters);
-  const logs = readLogs(200);
-  const perfSummary = readPersistedStats();
-  const meta = {
-    generatedAt: nowString2(),
-    dateRange: {
-      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : "\u2014",
-      end: report.daily.length > 0 ? report.daily[0].day : "\u2014"
-    }
+async function buildSessionData(context) {
+  const sessionId = currentSessionId(context);
+  if (!sessionId) throw new Error("No active session. Open a session first.");
+  const childIds = await getChildSessionIds(sessionId);
+  const allIds = [sessionId, ...childIds];
+  const filters = {
+    sessionIds: allIds
   };
-  const apiCostByModel = report.models.map((m) => {
-    const est = estimateApiCost(m.provider, m.model, m.requests, m.inputTokens, m.outputTokens, m.reasoningTokens, m.cacheRead, m.cacheWrite);
-    return {
-      provider: m.provider,
-      model: m.model,
-      requests: m.requests,
-      inputTokens: m.inputTokens,
-      outputTokens: m.outputTokens,
-      reasoningTokens: m.reasoningTokens,
-      cacheRead: m.cacheRead,
-      cacheWrite: m.cacheWrite,
-      reportedCost: m.totalCost,
-      apiEquivCost: est.cost,
-      estimated: est.estimated,
-      pricingProvider: est.pricingProvider
-    };
-  });
-  const apiTotal = apiCostByModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0);
-  const apiCost = {
-    totalApiCost: apiTotal > 0 ? apiTotal : null,
-    reportedCost: report.summary.totalCost,
-    byModel: apiCostByModel
-  };
-  return {
-    ...report,
-    meta,
-    apiCost,
-    errors: report.errors,
-    hourlyHeatmap,
-    perfLogs: logs,
-    perfSummary
-  };
+  const [summary, models, messages, errors, sessionTitle] = await Promise.all([getSummary(filters), getModelBreakdown(filters), getMessageDetails(sessionId), getErrorStats(filters), getSessionTitle(sessionId)]);
+  const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors);
+  return data;
 }
 async function showHtmlReport(context, filters = {}) {
   try {
@@ -5599,23 +6289,48 @@ async function showHtmlReport(context, filters = {}) {
     });
   }
 }
-async function showHtmlSessionReport(context) {
-  const sessionId = currentSessionId(context);
+async function showTextReport(context, filters = {}) {
   try {
-    if (!sessionId) {
-      context.ui.toast.show({
-        message: "No active session. Open a session first.",
-        variant: "error"
-      });
-      return;
-    }
-    const childIds = await getChildSessionIds(sessionId);
-    const allIds = [sessionId, ...childIds];
-    const filters = {
-      sessionIds: allIds
-    };
-    const [summary, models, messages, errors, sessionTitle] = await Promise.all([getSummary(filters), getModelBreakdown(filters), getMessageDetails(sessionId), getErrorStats(filters), getSessionTitle(sessionId)]);
-    const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors);
+    const data = await buildCombinedData(context, filters);
+    const text = renderPeriodTextReport(data);
+    const dir = ensureReportDir();
+    const filePath = join8(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`);
+    writeFileSync4(filePath, text, "utf-8");
+    cleanupOldReports(dir);
+    context.ui.toast.show({
+      message: `Text report: ${filePath}`,
+      variant: "info"
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
+  }
+}
+async function showJsonReport(context, filters = {}) {
+  try {
+    const data = await buildCombinedData(context, filters);
+    const dir = ensureReportDir();
+    const filePath = join8(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`);
+    writeFileSync4(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8");
+    cleanupOldReports(dir);
+    context.ui.toast.show({
+      message: `JSON: ${filePath}`,
+      variant: "info"
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
+  }
+}
+async function showHtmlSessionReport(context) {
+  try {
+    const data = await buildSessionData(context);
     const html = generateSessionUsageHtml(data);
     const dir = ensureReportDir();
     const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`);
@@ -5634,12 +6349,33 @@ async function showHtmlSessionReport(context) {
     });
   }
 }
-async function showJsonExport(context) {
+async function showTextSessionReport(context) {
   try {
-    const data = await buildCombinedData(context, {});
+    const data = await buildSessionData(context);
+    const text = renderSessionTextReport(data);
     const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}data-${dateTimeStamp()}.json`);
-    writeFileSync4(filePath, JSON.stringify(data, null, 2), "utf-8");
+    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.txt`);
+    writeFileSync4(filePath, text, "utf-8");
+    cleanupOldReports(dir);
+    context.ui.toast.show({
+      message: `Text report: ${filePath}`,
+      variant: "info"
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
+  }
+}
+async function showJsonSessionReport(context) {
+  try {
+    const data = await buildSessionData(context);
+    const dir = ensureReportDir();
+    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.json`);
+    writeFileSync4(filePath, JSON.stringify(toSessionJsonReport(data), null, 2), "utf-8");
+    cleanupOldReports(dir);
     context.ui.toast.show({
       message: `JSON: ${filePath}`,
       variant: "info"
@@ -5652,85 +6388,137 @@ async function showJsonExport(context) {
     });
   }
 }
-async function showHtmlReportRangeMenu(context) {
+async function showRangeMenu(context) {
   const choice = await context.ui.dialog.select({
-    title: t("cmdTitleHtml"),
-    placeholder: "Select date range...",
+    title: t("scopeTitle"),
+    placeholder: t("scopePlaceholder"),
     options: [{
-      title: `\u{1F4C4} ${t("menuToday")}`,
-      value: "today"
+      title: `\u{1F5C2} ${t("menuCurrentSession")}`,
+      value: "session",
+      description: "Current session + subagents"
     }, {
-      title: `\u{1F4C4} ${t("menu7d")}`,
-      value: "7d"
+      title: `\u{1F550} ${t("menu5h")}`,
+      value: "5h",
+      description: "Last 5 hours"
     }, {
-      title: `\u{1F4C4} ${t("menu30d")}`,
-      value: "30d"
+      title: `\u{1F4C6} ${t("menu7d")}`,
+      value: "7d",
+      description: "Last 7 days"
     }, {
-      title: `\u{1F4C4} ${t("menuAll")}`,
-      value: "all"
+      title: `\u{1F4C5} ${t("menu30d")}`,
+      value: "30d",
+      description: "Last 30 days"
     }]
   });
-  if (!choice) return;
-  const d = /* @__PURE__ */ new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  switch (choice) {
-    case "today":
-      await showHtmlReport(context, {
-        startDate: today,
-        endDate: today
-      });
-      break;
-    case "7d":
-      await showHtmlReport(context, getPresetRange("7d"));
-      break;
-    case "30d":
-      await showHtmlReport(context, getPresetRange("30d"));
-      break;
-    default:
-      await showHtmlReport(context, getPresetRange("all"));
-      break;
+  if (!choice) return void 0;
+  const labels = {
+    session: t("menuCurrentSession"),
+    "5h": t("menu5h"),
+    "7d": t("menu7d"),
+    "30d": t("menu30d"),
+    days: `${choice} days`
+  };
+  return {
+    kind: choice,
+    label: labels[choice]
+  };
+}
+async function showFormatMenu(context) {
+  const choice = await context.ui.dialog.select({
+    title: t("formatTitle"),
+    placeholder: t("formatPlaceholder"),
+    options: [{
+      title: `\u{1F4C4} ${t("cmdTitleHtml")}`,
+      value: "html",
+      description: t("cmdDescHtml")
+    }, {
+      title: `\u{1F4DD} ${t("cmdTitleText")}`,
+      value: "text",
+      description: t("cmdDescText")
+    }, {
+      title: `\u{1F9FE} ${t("cmdTitleJson")}`,
+      value: "json",
+      description: t("cmdDescJson")
+    }]
+  });
+  return choice;
+}
+async function writePeriodReportData(context, data, format) {
+  if (format === "html") {
+    const html = generateTotalUsageHtml(data);
+    const dir2 = ensureReportDir();
+    const filePath2 = join8(dir2, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
+    writeFileSync4(filePath2, html, "utf-8");
+    cleanupOldReports(dir2);
+    context.ui.toast.show({
+      message: `Report: ${filePath2}`,
+      variant: "info"
+    });
+    openInBrowser(filePath2);
+    return;
   }
+  if (format === "text") {
+    const text = renderPeriodTextReport(data);
+    const dir2 = ensureReportDir();
+    const filePath2 = join8(dir2, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`);
+    writeFileSync4(filePath2, text, "utf-8");
+    cleanupOldReports(dir2);
+    context.ui.toast.show({
+      message: `Text report: ${filePath2}`,
+      variant: "info"
+    });
+    return;
+  }
+  const dir = ensureReportDir();
+  const filePath = join8(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`);
+  writeFileSync4(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8");
+  cleanupOldReports(dir);
+  context.ui.toast.show({
+    message: `JSON: ${filePath}`,
+    variant: "info"
+  });
+}
+async function generatePeriodReport(context, scope, format) {
+  try {
+    if (scope.kind === "5h") {
+      const data = await buildRecentHoursReportData(context, 5);
+      await writePeriodReportData(context, data, format);
+      return;
+    }
+    const filters = getDateRangeForScope(scope);
+    if (format === "html") {
+      await showHtmlReport(context, filters);
+    } else if (format === "text") {
+      await showTextReport(context, filters);
+    } else {
+      await showJsonReport(context, filters);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    context.ui.toast.show({
+      message: `Error: ${msg}`,
+      variant: "error"
+    });
+  }
+}
+async function generateSessionReport(context, format) {
+  if (format === "html") await showHtmlSessionReport(context);
+  else if (format === "text") await showTextSessionReport(context);
+  else await showJsonSessionReport(context);
 }
 async function showUsageMenu(context) {
   try {
     setLanguage(loadSettings(context).language);
   } catch {
   }
-  const choice = await context.ui.dialog.select({
-    title: t("panelTitle"),
-    placeholder: "Select an action...",
-    options: [{
-      title: `\u{1F5C2} ${t("menuCurrentSession")}`,
-      value: "session",
-      description: "Current session + subagents HTML dashboard"
-    }, {
-      title: `\u{1F4C4} ${t("cmdTitleHtml")} \u25B8`,
-      value: "html",
-      description: t("cmdDescHtml")
-    }, {
-      title: t("cmdTitleJson"),
-      value: "json",
-      description: t("cmdDescJson")
-    }, {
-      title: `${t("cmdTitleSettings")} \u25B8`,
-      value: "settings",
-      description: t("cmdDescSettings")
-    }]
-  });
-  switch (choice) {
-    case "session":
-      await showHtmlSessionReport(context);
-      break;
-    case "html":
-      await showHtmlReportRangeMenu(context);
-      break;
-    case "json":
-      await showJsonExport(context);
-      break;
-    case "settings":
-      await showSettingsDialog(context);
-      break;
+  const scope = await showRangeMenu(context);
+  if (!scope) return;
+  const format = await showFormatMenu(context);
+  if (!format) return;
+  if (scope.kind === "session") {
+    await generateSessionReport(context, format);
+  } else {
+    await generatePeriodReport(context, scope, format);
   }
 }
 function loadSettings(context) {
@@ -5846,6 +6634,37 @@ async function showLanguageMenu(context) {
   } catch {
   }
 }
+function parseNumericDays(input) {
+  const raw = (input ?? "").trim();
+  if (!/^\d+$/.test(raw)) return void 0;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return void 0;
+  return days;
+}
+async function runUsageCommand(context, input) {
+  try {
+    setLanguage(loadSettings(context).language);
+  } catch {
+  }
+  const raw = (input ?? "").trim();
+  if (raw === "settings" || raw === "config") {
+    await showSettingsDialog(context);
+    return;
+  }
+  const days = parseNumericDays(raw);
+  if (days != null) {
+    const format = await showFormatMenu(context);
+    if (!format) return;
+    const scope = {
+      kind: "days",
+      label: `${days} days`,
+      days
+    };
+    await generatePeriodReport(context, scope, format);
+    return;
+  }
+  await showUsageMenu(context);
+}
 function registerCommands(context) {
   try {
     setV2Client(context.client);
@@ -5856,39 +6675,16 @@ function registerCommands(context) {
     commands: [{
       id: "usage-stat.usage",
       title: "Usage Stat",
-      description: "Token use dashboards, provider balances, exports and settings",
+      description: "Generate local usage reports (current session, 5h/7d/30d, or N days) as HTML, text, or JSON",
       group: "Stats",
       palette: true,
       slash: {
-        name: "usage"
-      },
-      run: () => {
-        void showUsageMenu(context);
-      }
-    }, {
-      id: "usage-stat.session-usage",
-      title: "Session Usage",
-      description: "Generate the current session's HTML usage report locally",
-      group: "Stats",
-      palette: true,
-      slash: {
-        name: "session-usage"
-      },
-      run: () => {
-        void showHtmlSessionReport(context);
-      }
-    }, {
-      id: "usage-stat.total-usage",
-      title: "Total Usage",
-      description: "Generate a cumulative HTML usage report locally (optionally /total-usage 7 for last 7 days)",
-      group: "Stats",
-      palette: true,
-      slash: {
-        name: "total-usage",
-        arguments: true
+        name: "usage",
+        arguments: true,
+        aliases: ["session-usage", "total-usage"]
       },
       run: (input) => {
-        void showHtmlReport(context, parseDaysFilter(input));
+        void runUsageCommand(context, input);
       }
     }]
   }));
