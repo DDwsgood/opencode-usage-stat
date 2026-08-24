@@ -10,7 +10,6 @@ import { t as baseT, setLanguage } from "./i18n.js"
 import type { PerfTracker } from "./perf-tracker.js"
 import type { TokenMessage } from "./tui.js"
 import { ProviderUsageBlocks } from "./provider-usage-blocks.jsx"
-import { registerCommands } from "./commands.jsx"
 import type { ThemeColorMap } from "./theme-map.js"
 import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore, migrateLegacySettings } from "./settings.js"
@@ -118,8 +117,6 @@ export interface UsageStatPanelProps {
 
 export function UsageStatPanel(props: UsageStatPanelProps) {
   const { context, perfTracker } = props
-  // V2 keymap layers must be created inside a rendered Solid component owner.
-  registerCommands(context)
 
   const optionConfig = loadConfig(context)
 

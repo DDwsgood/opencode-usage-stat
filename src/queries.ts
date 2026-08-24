@@ -78,8 +78,10 @@ async function loadSnapshot(): Promise<Snapshot> {
     const results = await Promise.all(batch.map(async s => {
       try {
         return await fetchAllMessages(s.id)
-      } catch {
-        return null // skip sessions we cannot read
+      } catch (err) {
+        // A silent drop here turns pagination failures into all-zero reports.
+        console.warn(`[opencode-usage-stat] failed to read messages for ${s.id}:`, err)
+        return null
       }
     }))
     for (let j = 0; j < batch.length; j++) {
@@ -132,13 +134,15 @@ async function loadAssistants(filters: UsageFilters = {}): Promise<RawAssistant[
   return out
 }
 
-/** Fetch all message projections for a session, with cursor pagination. */
-async function fetchAllMessages(sessionID: string, limit = 1000): Promise<SessionMessageInfo[]> {
+/** Load all messages for a session, with cursor pagination.
+ * The server caps `limit` at 200 per page; larger values are rejected. */
+async function fetchAllMessages(sessionID: string, limit = 200): Promise<SessionMessageInfo[]> {
   const c = requireClient()
   const all: SessionMessageInfo[] = []
   let cursor: string | undefined
   for (;;) {
-    const res = await c.message.list({ sessionID, limit, order: "asc", cursor })
+    // The message cursor encodes its own order; combining cursor with order is rejected by the server.
+    const res = await c.message.list({ sessionID, limit, order: cursor ? undefined : "asc", cursor })
     const page = res?.data
     if (!Array.isArray(page) || page.length === 0) break
     all.push(...page)

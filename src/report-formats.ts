@@ -36,7 +36,7 @@ import { readLogs } from "./perf-tracker.js"
 import { readPersistedStats } from "./stats-store.js"
 
 export type ReportFormat = "html" | "text" | "json"
-export type ReportScopeKind = "session" | "5h" | "7d" | "30d" | "days"
+export type ReportScopeKind = "session" | "5h" | "7d" | "30d" | "all" | "days"
 
 export interface ReportScope {
   kind: ReportScopeKind
@@ -84,6 +84,7 @@ export function getDateRangeForScope(scope: ReportScope): UsageFilters {
   if (scope.kind === "7d") return getPresetRange("7d")
   if (scope.kind === "30d") return getPresetRange("30d")
   if (scope.kind === "days" && scope.days) return parseDaysFilter(String(scope.days))
+  // "all" and any unknown scope: no date filter, full history.
   return {}
 }
 
@@ -181,7 +182,8 @@ async function fetchAllMessages(client: OpenCodeClient, sessionID: string): Prom
   const all: SessionMessageInfo[] = []
   let cursor: string | undefined
   for (;;) {
-    const res = await client.message.list({ sessionID, limit: 1000, order: "asc", cursor })
+    // The message cursor encodes its own order; combining cursor with order is rejected by the server.
+    const res = await client.message.list({ sessionID, limit: 200, order: cursor ? undefined : "asc", cursor })
     const page = res?.data
     if (!Array.isArray(page) || page.length === 0) break
     all.push(...page)

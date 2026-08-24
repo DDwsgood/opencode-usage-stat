@@ -1,7 +1,7 @@
 import type { Context } from "@opencode-ai/plugin/tui/context";
 import type { UsageFilters, CombinedReportData, ApiCostAnalysis, SessionTokenData, ModelBreakdownItem, MessageRow, ErrorStats } from "./formatter.js";
 export type ReportFormat = "html" | "text" | "json";
-export type ReportScopeKind = "session" | "5h" | "7d" | "30d" | "days";
+export type ReportScopeKind = "session" | "5h" | "7d" | "30d" | "all" | "days";
 export interface ReportScope {
     kind: ReportScopeKind;
     label: string;

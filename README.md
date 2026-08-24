@@ -18,11 +18,16 @@ Everything runs locally. V2 has no `opencode db` CLI, so all aggregation uses th
 Opens a local menu:
 
 - **Current Session** — session + child/subagent HTML dashboard
-- **HTML Report ▸** — cumulative dashboard for Today / Last 7 days / Last 30 days / All time
-- **JSON Export** — raw usage data
-- **Settings** — sidebar toggles, language
+- **Last 5 Hours / Last 7 Days / Last 30 Days / All Time** — cumulative dashboard in the chosen format
+- **HTML / Text / JSON** report formats
 
-`/session-usage` and `/total-usage` remain as compatible entrypoints that open the same local dashboards.
+Shortcut arguments:
+
+- `/usage 0` (or `/usage all`) — total usage report for the entire history
+- `/usage <N>` — cumulative report for the last N days (1–3650)
+- `/usage settings` — open settings
+
+`/session-usage` and `/total-usage` remain as compatible aliases that open the same local menus.
 
 ### TUI sidebar (current session, real-time)
 

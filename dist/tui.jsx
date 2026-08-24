@@ -1,8 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 
 // src/tui.tsx
-import { createComponent as _$createComponent3 } from "@opentui/solid";
 import { memo as _$memo3 } from "@opentui/solid";
+import { createComponent as _$createComponent3 } from "@opentui/solid";
 import { createSignal as createSignal3, createEffect as createEffect2 } from "solid-js";
 
 // node_modules/@opencode-ai/plugin/dist/tui/plugin.js
@@ -2729,6 +2729,656 @@ function ProviderUsageBlocks(props) {
   });
 }
 
+// src/sidebar.tsx
+var DEFAULT_CONFIG = {
+  sidebar: {
+    showPerformance: true,
+    showPricing: true,
+    showTrend: true
+  },
+  language: "auto"
+};
+function progressBarWidth(percent, width) {
+  if (percent >= 100) return width;
+  return Math.floor(percent / 100 * width);
+}
+function progressFilled(percent, width) {
+  return "\u2588".repeat(Math.max(0, progressBarWidth(percent, width)));
+}
+function progressRemaining(percent, width) {
+  return "\u2591".repeat(Math.max(0, width - progressBarWidth(percent, width)));
+}
+function getVisualWidth(str) {
+  let w = 0;
+  for (const c of str) {
+    const code = c.codePointAt(0) ?? 0;
+    if (code >= 19968 && code <= 40959 || code >= 12352 && code <= 12543 || code >= 44032 && code <= 55203 || code >= 4352 && code <= 4607 || code >= 11904 && code <= 12031) {
+      w += 2;
+    } else {
+      w += 1;
+    }
+  }
+  return w;
+}
+function centerAlign(text, width) {
+  const visualW = getVisualWidth(text);
+  if (visualW >= width) return text;
+  const left = Math.floor((width - visualW) / 2);
+  const right = width - visualW - left;
+  return " ".repeat(left) + text + " ".repeat(right);
+}
+function hitRateColor(rate) {
+  if (rate >= 85) return RGBA3.fromInts(76, 175, 80, 255);
+  if (rate >= 70) return RGBA3.fromInts(255, 193, 7, 255);
+  return RGBA3.fromInts(244, 67, 54, 255);
+}
+var COLLAPSE_INITIAL = {
+  global: false,
+  models: {}
+};
+function loadConfig(context) {
+  const base = {
+    sidebar: {
+      ...DEFAULT_CONFIG.sidebar
+    },
+    language: DEFAULT_CONFIG.language
+  };
+  try {
+    const pluginCfg = context.options;
+    if (pluginCfg?.sidebar) Object.assign(base.sidebar, pluginCfg.sidebar);
+    if (pluginCfg?.language) base.language = pluginCfg.language;
+  } catch {
+  }
+  return base;
+}
+function UsageStatPanel(props) {
+  const {
+    context,
+    perfTracker
+  } = props;
+  const optionConfig = loadConfig(context);
+  let settings = null;
+  try {
+    const [store] = getSettingsStore(context);
+    settings = store;
+    migrateLegacySettings(context);
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err);
+  }
+  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance;
+  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
+  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
+  setLanguage(settings ? settings.language : optionConfig.language);
+  createEffect(() => setLanguage(settings ? settings.language : optionConfig.language));
+  const t2 = (key) => {
+    void settings?.language;
+    return t(key);
+  };
+  const isEnglish = (str) => /^[a-zA-Z\s\.\/]+$/.test(str);
+  let storedCollapse = null;
+  let collapseMutate = null;
+  try {
+    const [store, mutate] = context.storage.store("usage-stat-collapse", {
+      initial: COLLAPSE_INITIAL
+    });
+    storedCollapse = store;
+    collapseMutate = mutate;
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err);
+  }
+  const [localCollapse, setLocalCollapse] = createSignal2({});
+  function toggleGlobal() {
+    const next = !(localCollapse().global ?? storedCollapse?.global ?? false);
+    setLocalCollapse((prev) => ({
+      ...prev,
+      global: next
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.global = next;
+    }).catch(() => {
+    });
+  }
+  function toggleModel(key) {
+    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false;
+    const next = !current;
+    setLocalCollapse((prev) => ({
+      ...prev,
+      models: {
+        ...prev.models,
+        [key]: next
+      }
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.models[key] = next;
+    }).catch(() => {
+    });
+  }
+  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false;
+  const isModelCollapsed = (key) => (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true;
+  const [panelWidth, setPanelWidth] = createSignal2(38);
+  let outerBoxRef = null;
+  const colors = resolveThemeColors(context.theme);
+  const primaryColor = () => colors.primary;
+  const mutedColor = () => colors.muted;
+  const dimColor = () => colors.dim;
+  const greenColor = () => colors.green;
+  const borderColor = () => colors.border;
+  const missingColor = () => colors.purple;
+  const modelStats = createMemo(() => {
+    const map = /* @__PURE__ */ new Map();
+    const msgs = props.allTokenMessages();
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const key = `${msg.providerID}/${msg.modelID}`;
+      let e = map.get(key);
+      if (!e) {
+        e = {
+          providerID: msg.providerID,
+          modelID: msg.modelID,
+          totalInput: 0,
+          totalOutput: 0,
+          totalReasoning: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalCost: 0,
+          requestCount: 0,
+          lastMessageIndex: -1
+        };
+        map.set(key, e);
+      }
+      e.totalInput += msg.inputTokens;
+      e.totalOutput += msg.outputTokens;
+      e.totalReasoning += msg.reasoningTokens;
+      e.cacheRead += msg.cacheRead;
+      e.cacheWrite += msg.cacheWrite;
+      e.totalCost += msg.cost;
+      e.requestCount++;
+      e.lastMessageIndex = i;
+    }
+    return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
+  });
+  const sessionTotals = createMemo(() => {
+    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
+    for (const [, s] of modelStats()) {
+      i += s.totalInput;
+      o += s.totalOutput;
+      ir += s.totalReasoning;
+      cr += s.cacheRead;
+      cw += s.cacheWrite;
+      r += s.requestCount;
+      c += s.totalCost;
+    }
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: r,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw
+    };
+  });
+  const globalHitRate = createMemo(() => {
+    let i = 0, cr = 0;
+    for (const [, s] of modelStats()) {
+      if (isMissingCache(s.requestCount, s.cacheRead)) continue;
+      i += s.totalInput;
+      cr += s.cacheRead;
+    }
+    const denom = i + cr;
+    return denom > 0 ? cr / denom * 100 : -1;
+  });
+  const modelHitRate = createMemo(() => {
+    return modelStats().map(([key, stat]) => {
+      const denom = stat.totalInput + stat.cacheRead;
+      if (denom === 0) return {
+        key,
+        rate: 0,
+        msgs: []
+      };
+      const msgs = [];
+      for (const msg of props.allTokenMessages()) {
+        if (`${msg.providerID}/${msg.modelID}` !== key) continue;
+        msgs.push(msg);
+      }
+      return {
+        key,
+        rate: stat.cacheRead / denom * 100,
+        msgs
+      };
+    });
+  });
+  const modelTrend = createMemo(() => {
+    return modelHitRate().map(({
+      key,
+      msgs
+    }) => {
+      if (msgs.length < 6) return {
+        key,
+        trend: null
+      };
+      const sumSlice = (start, end) => {
+        let sumCache = 0, sumTotal = 0;
+        for (let i = start; i < end && i < msgs.length; i++) {
+          sumCache += msgs[i].cacheRead;
+          sumTotal += msgs[i].inputTokens + msgs[i].cacheRead;
+        }
+        return {
+          sumCache,
+          sumTotal
+        };
+      };
+      const n = msgs.length;
+      const recent = sumSlice(n - 3, n);
+      const prev = sumSlice(n - 6, n - 3);
+      const rateRecent = recent.sumTotal > 0 ? recent.sumCache / recent.sumTotal * 100 : 0;
+      const ratePrev = prev.sumTotal > 0 ? prev.sumCache / prev.sumTotal * 100 : 0;
+      return {
+        key,
+        trend: rateRecent - ratePrev
+      };
+    });
+  });
+  const [partVersion, setPartVersion] = createSignal2(0);
+  const perfStats = createMemo(() => {
+    void props.allTokenMessages();
+    void partVersion();
+    void props.revision();
+    return perfTracker.getSessionStats();
+  });
+  onCleanup2(() => {
+  });
+  const innerWidth = () => panelWidth() - 2;
+  const barWidth = () => Math.max(8, innerWidth() - 19);
+  const divider = () => {
+    const w = innerWidth();
+    if (w <= 2) return "\u2500".repeat(w);
+    return " " + "\u2500".repeat(w - 2) + " ";
+  };
+  const toggle = {
+    global: toggleGlobal,
+    model: toggleModel
+  };
+  return (() => {
+    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("text");
+    _$insertNode2(_el$, _el$2);
+    _$use((el) => {
+      outerBoxRef = el;
+    }, _el$);
+    _$setProp2(_el$, "onSizeChange", () => {
+      if (outerBoxRef) setPanelWidth(outerBoxRef.width);
+    });
+    _$setProp2(_el$, "flexDirection", "column");
+    _$setProp2(_el$, "border", true);
+    _$setProp2(_el$, "borderStyle", "rounded");
+    _$insertNode2(_el$2, _el$3);
+    _$insertNode2(_el$2, _el$5);
+    _$setProp2(_el$2, "flexDirection", "row");
+    _$setProp2(_el$2, "justifyContent", "space-between");
+    _$setProp2(_el$2, "paddingX", 1);
+    _$insertNode2(_el$3, _el$4);
+    _$insert2(_el$3, () => isPanelCollapsed() ? "\u25B6" : "\u25BE", _el$4);
+    _$insert2(_el$3, () => t2("panelTitle"), null);
+    _$insert2(_el$5, (() => {
+      var _c$ = _$memo2(() => !!isPanelCollapsed());
+      return () => _c$() ? [_$memo2(() => formatTokens(sessionTotals().totalTokens)), _$memo2(() => _$memo2(() => globalHitRate() >= 0)() ? (() => {
+        var _el$10 = _$createElement2("span");
+        _$insert2(_el$10, () => ` (${globalHitRate().toFixed(1)}% hit)`);
+        _$effect2((_$p) => _$setProp2(_el$10, "style", {
+          fg: hitRateColor(globalHitRate())
+        }, _$p));
+        return _el$10;
+      })() : "")] : _$memo2(() => globalHitRate() >= 0)() ? (() => {
+        var _el$11 = _$createElement2("span");
+        _$insert2(_el$11, () => `${globalHitRate().toFixed(1)}% hit`);
+        _$effect2((_$p) => _$setProp2(_el$11, "style", {
+          fg: hitRateColor(globalHitRate())
+        }, _$p));
+        return _el$11;
+      })() : "";
+    })());
+    _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
+      context
+    }), null);
+    _$insert2(_el$, _$createComponent2(Show2, {
+      get when() {
+        return !isPanelCollapsed();
+      },
+      get children() {
+        return [(() => {
+          var _el$6 = _$createElement2("text");
+          _$insert2(_el$6, divider);
+          _$effect2((_$p) => _$setProp2(_el$6, "fg", borderColor(), _$p));
+          return _el$6;
+        })(), (() => {
+          var _el$7 = _$createElement2("box");
+          _$setProp2(_el$7, "flexDirection", "row");
+          _$setProp2(_el$7, "paddingX", 1);
+          _$insert2(_el$7, _$createComponent2(For2, {
+            get each() {
+              return [{
+                val: formatTokens(sessionTotals().totalTokens),
+                lbl: t2("total")
+              }, {
+                val: sessionTotals().totalRequests.toString(),
+                lbl: t2("requests")
+              }, {
+                val: formatTokens(sessionTotals().totalInput),
+                lbl: t2("input")
+              }, {
+                val: formatTokens(sessionTotals().totalOutput),
+                lbl: t2("output")
+              }];
+            },
+            children: (item, idx) => {
+              const colW = () => {
+                const totalW = panelWidth() - 4;
+                const base = Math.floor(totalW / 4);
+                return idx() === 3 ? totalW - base * 3 : base;
+              };
+              return (() => {
+                var _el$12 = _$createElement2("box"), _el$13 = _$createElement2("text"), _el$14 = _$createElement2("text");
+                _$insertNode2(_el$12, _el$13);
+                _$insertNode2(_el$12, _el$14);
+                _$setProp2(_el$12, "flexDirection", "column");
+                _$insert2(_el$13, () => centerAlign(item.val, colW()));
+                _$insert2(_el$14, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                _$effect2((_p$) => {
+                  var _v$7 = colW(), _v$8 = primaryColor(), _v$9 = dimColor();
+                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$12, "width", _v$7, _p$.e));
+                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$13, "fg", _v$8, _p$.t));
+                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$14, "fg", _v$9, _p$.a));
+                  return _p$;
+                }, {
+                  e: void 0,
+                  t: void 0,
+                  a: void 0
+                });
+                return _el$12;
+              })();
+            }
+          }));
+          return _el$7;
+        })(), _$createComponent2(Show2, {
+          get when() {
+            return _$memo2(() => !!showPricing())() && sessionTotals().totalCost > 0;
+          },
+          get children() {
+            var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("text"), _el$0 = _$createTextNode2(`: `), _el$1 = _$createElement2("span");
+            _$insertNode2(_el$8, _el$9);
+            _$setProp2(_el$8, "flexDirection", "row");
+            _$setProp2(_el$8, "justifyContent", "center");
+            _$setProp2(_el$8, "marginTop", 1);
+            _$insertNode2(_el$9, _el$0);
+            _$insertNode2(_el$9, _el$1);
+            _$insert2(_el$9, () => t2("cost"), _el$0);
+            _$insert2(_el$1, () => formatCost(sessionTotals().totalCost));
+            _$effect2((_p$) => {
+              var _v$ = mutedColor(), _v$2 = {
+                fg: greenColor()
+              };
+              _v$ !== _p$.e && (_p$.e = _$setProp2(_el$9, "fg", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$1, "style", _v$2, _p$.t));
+              return _p$;
+            }, {
+              e: void 0,
+              t: void 0
+            });
+            return _el$8;
+          }
+        }), _$createComponent2(For2, {
+          get each() {
+            return modelStats();
+          },
+          children: ([key, stat]) => {
+            const isExpanded = () => !isModelCollapsed(key);
+            const hitDenom = stat.totalInput + stat.cacheRead;
+            const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
+            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
+            const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
+            const trendStr = () => {
+              if (!showTrend()) return "";
+              const td = modelTrend().find((h) => h.key === key);
+              if (!td?.trend || td.trend === 0) return "";
+              return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
+            };
+            const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? RGBA3.fromInts(63, 185, 80, 255) : RGBA3.fromInts(244, 67, 54, 255);
+            const MAX_PROVIDER_LEN = 12;
+            let providerDisplay = stat.providerID;
+            if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "\u2026";
+            let fullTitle = `${providerDisplay}/${stat.modelID}`;
+            if (fullTitle.length > 22) {
+              const parts = fullTitle.split("/");
+              if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
+            }
+            const maxNameLen = Math.max(8, innerWidth() - 12);
+            const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "\u2026" : fullTitle;
+            const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
+            const targetW = () => Math.max(getVisualWidth(`${t2("cache")}:`), getVisualWidth(`${t2("cost")}:`));
+            const paddedCachePrefix = () => {
+              const label = `${t2("cache")}:`;
+              return label + " ".repeat(targetW() - getVisualWidth(label));
+            };
+            const paddedCostPrefix = () => {
+              const label = `${t2("cost")}:`;
+              return label + " ".repeat(targetW() - getVisualWidth(label));
+            };
+            const trendBudget = () => showTrend() ? 7 : 0;
+            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11 - trendBudget());
+            return (() => {
+              var _el$15 = _$createElement2("box"), _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("span"), _el$20 = _$createTextNode2(` `), _el$21 = _$createElement2("span"), _el$22 = _$createElement2("text");
+              _$insertNode2(_el$15, _el$16);
+              _$setProp2(_el$15, "flexDirection", "column");
+              _$setProp2(_el$15, "marginTop", 1);
+              _$insertNode2(_el$16, _el$17);
+              _$insertNode2(_el$16, _el$22);
+              _$setProp2(_el$16, "flexDirection", "row");
+              _$setProp2(_el$16, "justifyContent", "space-between");
+              _$setProp2(_el$16, "onMouseDown", () => toggle.model(key));
+              _$setProp2(_el$16, "paddingX", 1);
+              _$insertNode2(_el$17, _el$18);
+              _$insertNode2(_el$17, _el$20);
+              _$insertNode2(_el$17, _el$21);
+              _$insertNode2(_el$18, _$createTextNode2(`\u25CF`));
+              _$insert2(_el$21, shortTitle);
+              _$insert2(_el$22, modelHeaderRight);
+              _$insert2(_el$15, _$createComponent2(Show2, {
+                get when() {
+                  return isExpanded();
+                },
+                get children() {
+                  var _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("box"), _el$26 = _$createElement2("text");
+                  _$insertNode2(_el$23, _el$24);
+                  _$insertNode2(_el$23, _el$26);
+                  _$setProp2(_el$23, "flexDirection", "column");
+                  _$setProp2(_el$23, "paddingX", 1);
+                  _$insertNode2(_el$24, _el$25);
+                  _$setProp2(_el$24, "flexDirection", "column");
+                  _$setProp2(_el$24, "border", true);
+                  _$setProp2(_el$24, "borderStyle", "rounded");
+                  _$setProp2(_el$25, "flexDirection", "row");
+                  _$insert2(_el$25, _$createComponent2(For2, {
+                    get each() {
+                      return [{
+                        val: formatTokens(modelTotalTokens),
+                        lbl: t2("total")
+                      }, {
+                        val: formatTokens(stat.totalInput),
+                        lbl: t2("input")
+                      }, {
+                        val: formatTokens(stat.totalOutput),
+                        lbl: t2("output")
+                      }];
+                    },
+                    children: (item, idx) => {
+                      const colW = () => {
+                        const totalW = panelWidth() - 6;
+                        const base = Math.floor(totalW / 3);
+                        return idx() === 2 ? totalW - base * 2 : base;
+                      };
+                      return (() => {
+                        var _el$37 = _$createElement2("box"), _el$38 = _$createElement2("text"), _el$39 = _$createElement2("text");
+                        _$insertNode2(_el$37, _el$38);
+                        _$insertNode2(_el$37, _el$39);
+                        _$setProp2(_el$37, "flexDirection", "column");
+                        _$insert2(_el$38, () => centerAlign(item.val, colW()));
+                        _$insert2(_el$39, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                        _$effect2((_p$) => {
+                          var _v$18 = colW(), _v$19 = primaryColor(), _v$20 = dimColor();
+                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$37, "width", _v$18, _p$.e));
+                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$38, "fg", _v$19, _p$.t));
+                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$39, "fg", _v$20, _p$.a));
+                          return _p$;
+                        }, {
+                          e: void 0,
+                          t: void 0,
+                          a: void 0
+                        });
+                        return _el$37;
+                      })();
+                    }
+                  }));
+                  _$insert2(_el$26, paddedCachePrefix, null);
+                  _$insert2(_el$26, isMissing ? (() => {
+                    var _el$40 = _$createElement2("span"), _el$41 = _$createTextNode2(` `);
+                    _$insertNode2(_el$40, _el$41);
+                    _$insert2(_el$40, () => progressRemaining(0, modelBarWidth()), _el$41);
+                    _$insert2(_el$40, () => t2("missing"), null);
+                    _$effect2((_$p) => _$setProp2(_el$40, "style", {
+                      fg: missingColor()
+                    }, _$p));
+                    return _el$40;
+                  })() : (() => {
+                    var _el$42 = _$createElement2("span"), _el$43 = _$createTextNode2(` `), _el$44 = _$createTextNode2(`%`);
+                    _$insertNode2(_el$42, _el$43);
+                    _$insertNode2(_el$42, _el$44);
+                    _$insert2(_el$42, () => progressFilled(hitRate, modelBarWidth()), _el$43);
+                    _$insert2(_el$42, () => progressRemaining(hitRate, modelBarWidth()), _el$43);
+                    _$insert2(_el$42, () => hitRate.toFixed(0), _el$44);
+                    _$effect2((_$p) => _$setProp2(_el$42, "style", {
+                      fg: hitRateColor(hitRate)
+                    }, _$p));
+                    return _el$42;
+                  })(), null);
+                  _$insert2(_el$26, (() => {
+                    var _c$2 = _$memo2(() => !!trendStr());
+                    return () => _c$2() ? (() => {
+                      var _el$45 = _$createElement2("span");
+                      _$insert2(_el$45, trendStr);
+                      _$effect2((_$p) => _$setProp2(_el$45, "style", {
+                        fg: trendColor()
+                      }, _$p));
+                      return _el$45;
+                    })() : null;
+                  })(), null);
+                  _$insert2(_el$23, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
+                    },
+                    get children() {
+                      var _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(` `), _el$29 = _$createElement2("span"), _el$30 = _$createTextNode2(`  `), _el$31 = _$createTextNode2(` `), _el$32 = _$createElement2("span"), _el$33 = _$createTextNode2(`  `), _el$34 = _$createTextNode2(` `), _el$35 = _$createElement2("span");
+                      _$insertNode2(_el$27, _el$28);
+                      _$insertNode2(_el$27, _el$29);
+                      _$insertNode2(_el$27, _el$30);
+                      _$insertNode2(_el$27, _el$31);
+                      _$insertNode2(_el$27, _el$32);
+                      _$insertNode2(_el$27, _el$33);
+                      _$insertNode2(_el$27, _el$34);
+                      _$insertNode2(_el$27, _el$35);
+                      _$setProp2(_el$27, "marginTop", 1);
+                      _$insert2(_el$27, () => t2("ttft"), _el$28);
+                      _$insert2(_el$29, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
+                      _$insert2(_el$27, () => t2("tps"), _el$31);
+                      _$insert2(_el$32, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
+                      _$insert2(_el$27, () => t2("lat"), _el$34);
+                      _$insert2(_el$35, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
+                      _$effect2((_p$) => {
+                        var _v$0 = mutedColor(), _v$1 = {
+                          fg: primaryColor()
+                        }, _v$10 = {
+                          fg: primaryColor()
+                        }, _v$11 = {
+                          fg: primaryColor()
+                        };
+                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$27, "fg", _v$0, _p$.e));
+                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$29, "style", _v$1, _p$.t));
+                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$32, "style", _v$10, _p$.a));
+                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$35, "style", _v$11, _p$.o));
+                        return _p$;
+                      }, {
+                        e: void 0,
+                        t: void 0,
+                        a: void 0,
+                        o: void 0
+                      });
+                      return _el$27;
+                    }
+                  }), null);
+                  _$insert2(_el$23, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
+                    },
+                    get children() {
+                      var _el$36 = _$createElement2("text");
+                      _$insert2(_el$36, paddedCostPrefix, null);
+                      _$insert2(_el$36, () => formatCost(stat.totalCost), null);
+                      _$effect2((_$p) => _$setProp2(_el$36, "fg", mutedColor(), _$p));
+                      return _el$36;
+                    }
+                  }), null);
+                  _$effect2((_p$) => {
+                    var _v$12 = borderColor(), _v$13 = mutedColor();
+                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$24, "borderColor", _v$12, _p$.e));
+                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$26, "fg", _v$13, _p$.t));
+                    return _p$;
+                  }, {
+                    e: void 0,
+                    t: void 0
+                  });
+                  return _el$23;
+                }
+              }), null);
+              _$effect2((_p$) => {
+                var _v$14 = mutedColor(), _v$15 = {
+                  fg: isMissing ? missingColor() : hitRateColor(hitRate)
+                }, _v$16 = {
+                  fg: primaryColor()
+                }, _v$17 = mutedColor();
+                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$17, "fg", _v$14, _p$.e));
+                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$18, "style", _v$15, _p$.t));
+                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$21, "style", _v$16, _p$.a));
+                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$22, "fg", _v$17, _p$.o));
+                return _p$;
+              }, {
+                e: void 0,
+                t: void 0,
+                a: void 0,
+                o: void 0
+              });
+              return _el$15;
+            })();
+          }
+        })];
+      }
+    }), null);
+    _$effect2((_p$) => {
+      var _v$3 = borderColor(), _v$4 = toggle.global, _v$5 = primaryColor(), _v$6 = mutedColor();
+      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$, "borderColor", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$2, "onMouseDown", _v$4, _p$.t));
+      _v$5 !== _p$.a && (_p$.a = _$setProp2(_el$3, "fg", _v$5, _p$.a));
+      _v$6 !== _p$.o && (_p$.o = _$setProp2(_el$5, "fg", _v$6, _p$.o));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0,
+      a: void 0,
+      o: void 0
+    });
+    return _el$;
+  })();
+}
+
 // src/queries.ts
 var client = null;
 function setV2Client(c) {
@@ -2769,7 +3419,8 @@ async function loadSnapshot() {
     const results = await Promise.all(batch.map(async (s) => {
       try {
         return await fetchAllMessages(s.id);
-      } catch {
+      } catch (err) {
+        console.warn(`[opencode-usage-stat] failed to read messages for ${s.id}:`, err);
         return null;
       }
     }));
@@ -2820,12 +3471,12 @@ async function loadAssistants(filters = {}) {
   }
   return out;
 }
-async function fetchAllMessages(sessionID, limit = 1e3) {
+async function fetchAllMessages(sessionID, limit = 200) {
   const c = requireClient();
   const all = [];
   let cursor;
   for (; ; ) {
-    const res = await c.message.list({ sessionID, limit, order: "asc", cursor });
+    const res = await c.message.list({ sessionID, limit, order: cursor ? void 0 : "asc", cursor });
     const page = res?.data;
     if (!Array.isArray(page) || page.length === 0) break;
     all.push(...page);
@@ -5714,7 +6365,7 @@ async function fetchAllMessages2(client2, sessionID) {
   const all = [];
   let cursor;
   for (; ; ) {
-    const res = await client2.message.list({ sessionID, limit: 1e3, order: "asc", cursor });
+    const res = await client2.message.list({ sessionID, limit: 200, order: cursor ? void 0 : "asc", cursor });
     const page = res?.data;
     if (!Array.isArray(page) || page.length === 0) break;
     all.push(...page);
@@ -6408,6 +7059,10 @@ async function showRangeMenu(context) {
       title: `\u{1F4C5} ${t("menu30d")}`,
       value: "30d",
       description: "Last 30 days"
+    }, {
+      title: `\u267E ${t("menuAll")}`,
+      value: "all",
+      description: "Entire history (/usage 0)"
     }]
   });
   if (!choice) return void 0;
@@ -6416,6 +7071,7 @@ async function showRangeMenu(context) {
     "5h": t("menu5h"),
     "7d": t("menu7d"),
     "30d": t("menu30d"),
+    all: t("menuAll"),
     days: `${choice} days`
   };
   return {
@@ -6651,6 +7307,15 @@ async function runUsageCommand(context, input) {
     await showSettingsDialog(context);
     return;
   }
+  if (raw === "0" || raw === "all") {
+    const format = await showFormatMenu(context);
+    if (!format) return;
+    await generatePeriodReport(context, {
+      kind: "all",
+      label: t("menuAll")
+    }, format);
+    return;
+  }
   const days = parseNumericDays(raw);
   if (days != null) {
     const format = await showFormatMenu(context);
@@ -6671,11 +7336,11 @@ function registerCommands(context) {
   } catch {
   }
   context.keymap.layer(() => ({
-    mode: "base",
+    mode: "global",
     commands: [{
       id: "usage-stat.usage",
       title: "Usage Stat",
-      description: "Generate local usage reports (current session, 5h/7d/30d, or N days) as HTML, text, or JSON",
+      description: "Generate local usage reports (current session, 5h/7d/30d, all via /usage 0, or N days) as HTML, text, or JSON",
       group: "Stats",
       palette: true,
       slash: {
@@ -6688,657 +7353,6 @@ function registerCommands(context) {
       }
     }]
   }));
-}
-
-// src/sidebar.tsx
-var DEFAULT_CONFIG = {
-  sidebar: {
-    showPerformance: true,
-    showPricing: true,
-    showTrend: true
-  },
-  language: "auto"
-};
-function progressBarWidth(percent, width) {
-  if (percent >= 100) return width;
-  return Math.floor(percent / 100 * width);
-}
-function progressFilled(percent, width) {
-  return "\u2588".repeat(Math.max(0, progressBarWidth(percent, width)));
-}
-function progressRemaining(percent, width) {
-  return "\u2591".repeat(Math.max(0, width - progressBarWidth(percent, width)));
-}
-function getVisualWidth(str) {
-  let w = 0;
-  for (const c of str) {
-    const code = c.codePointAt(0) ?? 0;
-    if (code >= 19968 && code <= 40959 || code >= 12352 && code <= 12543 || code >= 44032 && code <= 55203 || code >= 4352 && code <= 4607 || code >= 11904 && code <= 12031) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
-}
-function centerAlign(text, width) {
-  const visualW = getVisualWidth(text);
-  if (visualW >= width) return text;
-  const left = Math.floor((width - visualW) / 2);
-  const right = width - visualW - left;
-  return " ".repeat(left) + text + " ".repeat(right);
-}
-function hitRateColor(rate) {
-  if (rate >= 85) return RGBA3.fromInts(76, 175, 80, 255);
-  if (rate >= 70) return RGBA3.fromInts(255, 193, 7, 255);
-  return RGBA3.fromInts(244, 67, 54, 255);
-}
-var COLLAPSE_INITIAL = {
-  global: false,
-  models: {}
-};
-function loadConfig(context) {
-  const base = {
-    sidebar: {
-      ...DEFAULT_CONFIG.sidebar
-    },
-    language: DEFAULT_CONFIG.language
-  };
-  try {
-    const pluginCfg = context.options;
-    if (pluginCfg?.sidebar) Object.assign(base.sidebar, pluginCfg.sidebar);
-    if (pluginCfg?.language) base.language = pluginCfg.language;
-  } catch {
-  }
-  return base;
-}
-function UsageStatPanel(props) {
-  const {
-    context,
-    perfTracker
-  } = props;
-  registerCommands(context);
-  const optionConfig = loadConfig(context);
-  let settings = null;
-  try {
-    const [store] = getSettingsStore(context);
-    settings = store;
-    migrateLegacySettings(context);
-  } catch (err) {
-    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err);
-  }
-  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance;
-  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
-  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
-  setLanguage(settings ? settings.language : optionConfig.language);
-  createEffect(() => setLanguage(settings ? settings.language : optionConfig.language));
-  const t2 = (key) => {
-    void settings?.language;
-    return t(key);
-  };
-  const isEnglish = (str) => /^[a-zA-Z\s\.\/]+$/.test(str);
-  let storedCollapse = null;
-  let collapseMutate = null;
-  try {
-    const [store, mutate] = context.storage.store("usage-stat-collapse", {
-      initial: COLLAPSE_INITIAL
-    });
-    storedCollapse = store;
-    collapseMutate = mutate;
-  } catch (err) {
-    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err);
-  }
-  const [localCollapse, setLocalCollapse] = createSignal2({});
-  function toggleGlobal() {
-    const next = !(localCollapse().global ?? storedCollapse?.global ?? false);
-    setLocalCollapse((prev) => ({
-      ...prev,
-      global: next
-    }));
-    if (collapseMutate) void collapseMutate((draft) => {
-      draft.global = next;
-    }).catch(() => {
-    });
-  }
-  function toggleModel(key) {
-    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false;
-    const next = !current;
-    setLocalCollapse((prev) => ({
-      ...prev,
-      models: {
-        ...prev.models,
-        [key]: next
-      }
-    }));
-    if (collapseMutate) void collapseMutate((draft) => {
-      draft.models[key] = next;
-    }).catch(() => {
-    });
-  }
-  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false;
-  const isModelCollapsed = (key) => (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true;
-  const [panelWidth, setPanelWidth] = createSignal2(38);
-  let outerBoxRef = null;
-  const colors = resolveThemeColors(context.theme);
-  const primaryColor = () => colors.primary;
-  const mutedColor = () => colors.muted;
-  const dimColor = () => colors.dim;
-  const greenColor = () => colors.green;
-  const borderColor = () => colors.border;
-  const missingColor = () => colors.purple;
-  const modelStats = createMemo(() => {
-    const map = /* @__PURE__ */ new Map();
-    const msgs = props.allTokenMessages();
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
-      const key = `${msg.providerID}/${msg.modelID}`;
-      let e = map.get(key);
-      if (!e) {
-        e = {
-          providerID: msg.providerID,
-          modelID: msg.modelID,
-          totalInput: 0,
-          totalOutput: 0,
-          totalReasoning: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalCost: 0,
-          requestCount: 0,
-          lastMessageIndex: -1
-        };
-        map.set(key, e);
-      }
-      e.totalInput += msg.inputTokens;
-      e.totalOutput += msg.outputTokens;
-      e.totalReasoning += msg.reasoningTokens;
-      e.cacheRead += msg.cacheRead;
-      e.cacheWrite += msg.cacheWrite;
-      e.totalCost += msg.cost;
-      e.requestCount++;
-      e.lastMessageIndex = i;
-    }
-    return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
-  });
-  const sessionTotals = createMemo(() => {
-    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
-    for (const [, s] of modelStats()) {
-      i += s.totalInput;
-      o += s.totalOutput;
-      ir += s.totalReasoning;
-      cr += s.cacheRead;
-      cw += s.cacheWrite;
-      r += s.requestCount;
-      c += s.totalCost;
-    }
-    return {
-      totalInput: i,
-      totalOutput: o,
-      totalReasoning: ir,
-      totalCacheRead: cr,
-      totalCacheWrite: cw,
-      totalRequests: r,
-      totalCost: c,
-      totalTokens: i + o + ir + cr + cw
-    };
-  });
-  const globalHitRate = createMemo(() => {
-    let i = 0, cr = 0;
-    for (const [, s] of modelStats()) {
-      if (isMissingCache(s.requestCount, s.cacheRead)) continue;
-      i += s.totalInput;
-      cr += s.cacheRead;
-    }
-    const denom = i + cr;
-    return denom > 0 ? cr / denom * 100 : -1;
-  });
-  const modelHitRate = createMemo(() => {
-    return modelStats().map(([key, stat]) => {
-      const denom = stat.totalInput + stat.cacheRead;
-      if (denom === 0) return {
-        key,
-        rate: 0,
-        msgs: []
-      };
-      const msgs = [];
-      for (const msg of props.allTokenMessages()) {
-        if (`${msg.providerID}/${msg.modelID}` !== key) continue;
-        msgs.push(msg);
-      }
-      return {
-        key,
-        rate: stat.cacheRead / denom * 100,
-        msgs
-      };
-    });
-  });
-  const modelTrend = createMemo(() => {
-    return modelHitRate().map(({
-      key,
-      msgs
-    }) => {
-      if (msgs.length < 6) return {
-        key,
-        trend: null
-      };
-      const sumSlice = (start, end) => {
-        let sumCache = 0, sumTotal = 0;
-        for (let i = start; i < end && i < msgs.length; i++) {
-          sumCache += msgs[i].cacheRead;
-          sumTotal += msgs[i].inputTokens + msgs[i].cacheRead;
-        }
-        return {
-          sumCache,
-          sumTotal
-        };
-      };
-      const n = msgs.length;
-      const recent = sumSlice(n - 3, n);
-      const prev = sumSlice(n - 6, n - 3);
-      const rateRecent = recent.sumTotal > 0 ? recent.sumCache / recent.sumTotal * 100 : 0;
-      const ratePrev = prev.sumTotal > 0 ? prev.sumCache / prev.sumTotal * 100 : 0;
-      return {
-        key,
-        trend: rateRecent - ratePrev
-      };
-    });
-  });
-  const [partVersion, setPartVersion] = createSignal2(0);
-  const perfStats = createMemo(() => {
-    void props.allTokenMessages();
-    void partVersion();
-    void props.revision();
-    return perfTracker.getSessionStats();
-  });
-  onCleanup2(() => {
-  });
-  const innerWidth = () => panelWidth() - 2;
-  const barWidth = () => Math.max(8, innerWidth() - 19);
-  const divider = () => {
-    const w = innerWidth();
-    if (w <= 2) return "\u2500".repeat(w);
-    return " " + "\u2500".repeat(w - 2) + " ";
-  };
-  const toggle = {
-    global: toggleGlobal,
-    model: toggleModel
-  };
-  return (() => {
-    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("text");
-    _$insertNode2(_el$, _el$2);
-    _$use((el) => {
-      outerBoxRef = el;
-    }, _el$);
-    _$setProp2(_el$, "onSizeChange", () => {
-      if (outerBoxRef) setPanelWidth(outerBoxRef.width);
-    });
-    _$setProp2(_el$, "flexDirection", "column");
-    _$setProp2(_el$, "border", true);
-    _$setProp2(_el$, "borderStyle", "rounded");
-    _$insertNode2(_el$2, _el$3);
-    _$insertNode2(_el$2, _el$5);
-    _$setProp2(_el$2, "flexDirection", "row");
-    _$setProp2(_el$2, "justifyContent", "space-between");
-    _$setProp2(_el$2, "paddingX", 1);
-    _$insertNode2(_el$3, _el$4);
-    _$insert2(_el$3, () => isPanelCollapsed() ? "\u25B6" : "\u25BE", _el$4);
-    _$insert2(_el$3, () => t2("panelTitle"), null);
-    _$insert2(_el$5, (() => {
-      var _c$ = _$memo2(() => !!isPanelCollapsed());
-      return () => _c$() ? [_$memo2(() => formatTokens(sessionTotals().totalTokens)), _$memo2(() => _$memo2(() => globalHitRate() >= 0)() ? (() => {
-        var _el$10 = _$createElement2("span");
-        _$insert2(_el$10, () => ` (${globalHitRate().toFixed(1)}% hit)`);
-        _$effect2((_$p) => _$setProp2(_el$10, "style", {
-          fg: hitRateColor(globalHitRate())
-        }, _$p));
-        return _el$10;
-      })() : "")] : _$memo2(() => globalHitRate() >= 0)() ? (() => {
-        var _el$11 = _$createElement2("span");
-        _$insert2(_el$11, () => `${globalHitRate().toFixed(1)}% hit`);
-        _$effect2((_$p) => _$setProp2(_el$11, "style", {
-          fg: hitRateColor(globalHitRate())
-        }, _$p));
-        return _el$11;
-      })() : "";
-    })());
-    _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
-      context
-    }), null);
-    _$insert2(_el$, _$createComponent2(Show2, {
-      get when() {
-        return !isPanelCollapsed();
-      },
-      get children() {
-        return [(() => {
-          var _el$6 = _$createElement2("text");
-          _$insert2(_el$6, divider);
-          _$effect2((_$p) => _$setProp2(_el$6, "fg", borderColor(), _$p));
-          return _el$6;
-        })(), (() => {
-          var _el$7 = _$createElement2("box");
-          _$setProp2(_el$7, "flexDirection", "row");
-          _$setProp2(_el$7, "paddingX", 1);
-          _$insert2(_el$7, _$createComponent2(For2, {
-            get each() {
-              return [{
-                val: formatTokens(sessionTotals().totalTokens),
-                lbl: t2("total")
-              }, {
-                val: sessionTotals().totalRequests.toString(),
-                lbl: t2("requests")
-              }, {
-                val: formatTokens(sessionTotals().totalInput),
-                lbl: t2("input")
-              }, {
-                val: formatTokens(sessionTotals().totalOutput),
-                lbl: t2("output")
-              }];
-            },
-            children: (item, idx) => {
-              const colW = () => {
-                const totalW = panelWidth() - 4;
-                const base = Math.floor(totalW / 4);
-                return idx() === 3 ? totalW - base * 3 : base;
-              };
-              return (() => {
-                var _el$12 = _$createElement2("box"), _el$13 = _$createElement2("text"), _el$14 = _$createElement2("text");
-                _$insertNode2(_el$12, _el$13);
-                _$insertNode2(_el$12, _el$14);
-                _$setProp2(_el$12, "flexDirection", "column");
-                _$insert2(_el$13, () => centerAlign(item.val, colW()));
-                _$insert2(_el$14, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
-                _$effect2((_p$) => {
-                  var _v$7 = colW(), _v$8 = primaryColor(), _v$9 = dimColor();
-                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$12, "width", _v$7, _p$.e));
-                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$13, "fg", _v$8, _p$.t));
-                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$14, "fg", _v$9, _p$.a));
-                  return _p$;
-                }, {
-                  e: void 0,
-                  t: void 0,
-                  a: void 0
-                });
-                return _el$12;
-              })();
-            }
-          }));
-          return _el$7;
-        })(), _$createComponent2(Show2, {
-          get when() {
-            return _$memo2(() => !!showPricing())() && sessionTotals().totalCost > 0;
-          },
-          get children() {
-            var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("text"), _el$0 = _$createTextNode2(`: `), _el$1 = _$createElement2("span");
-            _$insertNode2(_el$8, _el$9);
-            _$setProp2(_el$8, "flexDirection", "row");
-            _$setProp2(_el$8, "justifyContent", "center");
-            _$setProp2(_el$8, "marginTop", 1);
-            _$insertNode2(_el$9, _el$0);
-            _$insertNode2(_el$9, _el$1);
-            _$insert2(_el$9, () => t2("cost"), _el$0);
-            _$insert2(_el$1, () => formatCost(sessionTotals().totalCost));
-            _$effect2((_p$) => {
-              var _v$ = mutedColor(), _v$2 = {
-                fg: greenColor()
-              };
-              _v$ !== _p$.e && (_p$.e = _$setProp2(_el$9, "fg", _v$, _p$.e));
-              _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$1, "style", _v$2, _p$.t));
-              return _p$;
-            }, {
-              e: void 0,
-              t: void 0
-            });
-            return _el$8;
-          }
-        }), _$createComponent2(For2, {
-          get each() {
-            return modelStats();
-          },
-          children: ([key, stat]) => {
-            const isExpanded = () => !isModelCollapsed(key);
-            const hitDenom = stat.totalInput + stat.cacheRead;
-            const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
-            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
-            const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
-            const trendStr = () => {
-              if (!showTrend()) return "";
-              const td = modelTrend().find((h) => h.key === key);
-              if (!td?.trend || td.trend === 0) return "";
-              return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
-            };
-            const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? RGBA3.fromInts(63, 185, 80, 255) : RGBA3.fromInts(244, 67, 54, 255);
-            const MAX_PROVIDER_LEN = 12;
-            let providerDisplay = stat.providerID;
-            if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "\u2026";
-            let fullTitle = `${providerDisplay}/${stat.modelID}`;
-            if (fullTitle.length > 22) {
-              const parts = fullTitle.split("/");
-              if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
-            }
-            const maxNameLen = Math.max(8, innerWidth() - 12);
-            const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "\u2026" : fullTitle;
-            const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
-            const targetW = () => Math.max(getVisualWidth(`${t2("cache")}:`), getVisualWidth(`${t2("cost")}:`));
-            const paddedCachePrefix = () => {
-              const label = `${t2("cache")}:`;
-              return label + " ".repeat(targetW() - getVisualWidth(label));
-            };
-            const paddedCostPrefix = () => {
-              const label = `${t2("cost")}:`;
-              return label + " ".repeat(targetW() - getVisualWidth(label));
-            };
-            const trendBudget = () => showTrend() ? 7 : 0;
-            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11 - trendBudget());
-            return (() => {
-              var _el$15 = _$createElement2("box"), _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("span"), _el$20 = _$createTextNode2(` `), _el$21 = _$createElement2("span"), _el$22 = _$createElement2("text");
-              _$insertNode2(_el$15, _el$16);
-              _$setProp2(_el$15, "flexDirection", "column");
-              _$setProp2(_el$15, "marginTop", 1);
-              _$insertNode2(_el$16, _el$17);
-              _$insertNode2(_el$16, _el$22);
-              _$setProp2(_el$16, "flexDirection", "row");
-              _$setProp2(_el$16, "justifyContent", "space-between");
-              _$setProp2(_el$16, "onMouseDown", () => toggle.model(key));
-              _$setProp2(_el$16, "paddingX", 1);
-              _$insertNode2(_el$17, _el$18);
-              _$insertNode2(_el$17, _el$20);
-              _$insertNode2(_el$17, _el$21);
-              _$insertNode2(_el$18, _$createTextNode2(`\u25CF`));
-              _$insert2(_el$21, shortTitle);
-              _$insert2(_el$22, modelHeaderRight);
-              _$insert2(_el$15, _$createComponent2(Show2, {
-                get when() {
-                  return isExpanded();
-                },
-                get children() {
-                  var _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("box"), _el$26 = _$createElement2("text");
-                  _$insertNode2(_el$23, _el$24);
-                  _$insertNode2(_el$23, _el$26);
-                  _$setProp2(_el$23, "flexDirection", "column");
-                  _$setProp2(_el$23, "paddingX", 1);
-                  _$insertNode2(_el$24, _el$25);
-                  _$setProp2(_el$24, "flexDirection", "column");
-                  _$setProp2(_el$24, "border", true);
-                  _$setProp2(_el$24, "borderStyle", "rounded");
-                  _$setProp2(_el$25, "flexDirection", "row");
-                  _$insert2(_el$25, _$createComponent2(For2, {
-                    get each() {
-                      return [{
-                        val: formatTokens(modelTotalTokens),
-                        lbl: t2("total")
-                      }, {
-                        val: formatTokens(stat.totalInput),
-                        lbl: t2("input")
-                      }, {
-                        val: formatTokens(stat.totalOutput),
-                        lbl: t2("output")
-                      }];
-                    },
-                    children: (item, idx) => {
-                      const colW = () => {
-                        const totalW = panelWidth() - 6;
-                        const base = Math.floor(totalW / 3);
-                        return idx() === 2 ? totalW - base * 2 : base;
-                      };
-                      return (() => {
-                        var _el$37 = _$createElement2("box"), _el$38 = _$createElement2("text"), _el$39 = _$createElement2("text");
-                        _$insertNode2(_el$37, _el$38);
-                        _$insertNode2(_el$37, _el$39);
-                        _$setProp2(_el$37, "flexDirection", "column");
-                        _$insert2(_el$38, () => centerAlign(item.val, colW()));
-                        _$insert2(_el$39, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
-                        _$effect2((_p$) => {
-                          var _v$18 = colW(), _v$19 = primaryColor(), _v$20 = dimColor();
-                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$37, "width", _v$18, _p$.e));
-                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$38, "fg", _v$19, _p$.t));
-                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$39, "fg", _v$20, _p$.a));
-                          return _p$;
-                        }, {
-                          e: void 0,
-                          t: void 0,
-                          a: void 0
-                        });
-                        return _el$37;
-                      })();
-                    }
-                  }));
-                  _$insert2(_el$26, paddedCachePrefix, null);
-                  _$insert2(_el$26, isMissing ? (() => {
-                    var _el$40 = _$createElement2("span"), _el$41 = _$createTextNode2(` `);
-                    _$insertNode2(_el$40, _el$41);
-                    _$insert2(_el$40, () => progressRemaining(0, modelBarWidth()), _el$41);
-                    _$insert2(_el$40, () => t2("missing"), null);
-                    _$effect2((_$p) => _$setProp2(_el$40, "style", {
-                      fg: missingColor()
-                    }, _$p));
-                    return _el$40;
-                  })() : (() => {
-                    var _el$42 = _$createElement2("span"), _el$43 = _$createTextNode2(` `), _el$44 = _$createTextNode2(`%`);
-                    _$insertNode2(_el$42, _el$43);
-                    _$insertNode2(_el$42, _el$44);
-                    _$insert2(_el$42, () => progressFilled(hitRate, modelBarWidth()), _el$43);
-                    _$insert2(_el$42, () => progressRemaining(hitRate, modelBarWidth()), _el$43);
-                    _$insert2(_el$42, () => hitRate.toFixed(0), _el$44);
-                    _$effect2((_$p) => _$setProp2(_el$42, "style", {
-                      fg: hitRateColor(hitRate)
-                    }, _$p));
-                    return _el$42;
-                  })(), null);
-                  _$insert2(_el$26, (() => {
-                    var _c$2 = _$memo2(() => !!trendStr());
-                    return () => _c$2() ? (() => {
-                      var _el$45 = _$createElement2("span");
-                      _$insert2(_el$45, trendStr);
-                      _$effect2((_$p) => _$setProp2(_el$45, "style", {
-                        fg: trendColor()
-                      }, _$p));
-                      return _el$45;
-                    })() : null;
-                  })(), null);
-                  _$insert2(_el$23, _$createComponent2(Show2, {
-                    get when() {
-                      return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
-                    },
-                    get children() {
-                      var _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(` `), _el$29 = _$createElement2("span"), _el$30 = _$createTextNode2(`  `), _el$31 = _$createTextNode2(` `), _el$32 = _$createElement2("span"), _el$33 = _$createTextNode2(`  `), _el$34 = _$createTextNode2(` `), _el$35 = _$createElement2("span");
-                      _$insertNode2(_el$27, _el$28);
-                      _$insertNode2(_el$27, _el$29);
-                      _$insertNode2(_el$27, _el$30);
-                      _$insertNode2(_el$27, _el$31);
-                      _$insertNode2(_el$27, _el$32);
-                      _$insertNode2(_el$27, _el$33);
-                      _$insertNode2(_el$27, _el$34);
-                      _$insertNode2(_el$27, _el$35);
-                      _$setProp2(_el$27, "marginTop", 1);
-                      _$insert2(_el$27, () => t2("ttft"), _el$28);
-                      _$insert2(_el$29, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
-                      _$insert2(_el$27, () => t2("tps"), _el$31);
-                      _$insert2(_el$32, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
-                      _$insert2(_el$27, () => t2("lat"), _el$34);
-                      _$insert2(_el$35, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
-                      _$effect2((_p$) => {
-                        var _v$0 = mutedColor(), _v$1 = {
-                          fg: primaryColor()
-                        }, _v$10 = {
-                          fg: primaryColor()
-                        }, _v$11 = {
-                          fg: primaryColor()
-                        };
-                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$27, "fg", _v$0, _p$.e));
-                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$29, "style", _v$1, _p$.t));
-                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$32, "style", _v$10, _p$.a));
-                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$35, "style", _v$11, _p$.o));
-                        return _p$;
-                      }, {
-                        e: void 0,
-                        t: void 0,
-                        a: void 0,
-                        o: void 0
-                      });
-                      return _el$27;
-                    }
-                  }), null);
-                  _$insert2(_el$23, _$createComponent2(Show2, {
-                    get when() {
-                      return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
-                    },
-                    get children() {
-                      var _el$36 = _$createElement2("text");
-                      _$insert2(_el$36, paddedCostPrefix, null);
-                      _$insert2(_el$36, () => formatCost(stat.totalCost), null);
-                      _$effect2((_$p) => _$setProp2(_el$36, "fg", mutedColor(), _$p));
-                      return _el$36;
-                    }
-                  }), null);
-                  _$effect2((_p$) => {
-                    var _v$12 = borderColor(), _v$13 = mutedColor();
-                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$24, "borderColor", _v$12, _p$.e));
-                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$26, "fg", _v$13, _p$.t));
-                    return _p$;
-                  }, {
-                    e: void 0,
-                    t: void 0
-                  });
-                  return _el$23;
-                }
-              }), null);
-              _$effect2((_p$) => {
-                var _v$14 = mutedColor(), _v$15 = {
-                  fg: isMissing ? missingColor() : hitRateColor(hitRate)
-                }, _v$16 = {
-                  fg: primaryColor()
-                }, _v$17 = mutedColor();
-                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$17, "fg", _v$14, _p$.e));
-                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$18, "style", _v$15, _p$.t));
-                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$21, "style", _v$16, _p$.a));
-                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$22, "fg", _v$17, _p$.o));
-                return _p$;
-              }, {
-                e: void 0,
-                t: void 0,
-                a: void 0,
-                o: void 0
-              });
-              return _el$15;
-            })();
-          }
-        })];
-      }
-    }), null);
-    _$effect2((_p$) => {
-      var _v$3 = borderColor(), _v$4 = toggle.global, _v$5 = primaryColor(), _v$6 = mutedColor();
-      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$, "borderColor", _v$3, _p$.e));
-      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$2, "onMouseDown", _v$4, _p$.t));
-      _v$5 !== _p$.a && (_p$.a = _$setProp2(_el$3, "fg", _v$5, _p$.a));
-      _v$6 !== _p$.o && (_p$.o = _$setProp2(_el$5, "fg", _v$6, _p$.o));
-      return _p$;
-    }, {
-      e: void 0,
-      t: void 0,
-      a: void 0,
-      o: void 0
-    });
-    return _el$;
-  })();
 }
 
 // src/tui.tsx
@@ -7536,6 +7550,17 @@ var plugin = define({
       void refreshSession(sessionID, false);
     });
     cleanups.push(unsubCreated);
+    function CommandsMount(props) {
+      registerCommands(props.context);
+      return null;
+    }
+    const disposeCommandsSlot = context.ui.slot({
+      append: "app",
+      render: () => _$createComponent3(CommandsMount, {
+        context
+      })
+    });
+    cleanups.push(disposeCommandsSlot);
     const disposeSlot = context.ui.slot({
       append: "sidebar.content",
       render: (slotProps) => {

@@ -5,6 +5,10 @@
 // (context.ui.dialog) / writes files — never sends the slash to the LLM.
 // /session-usage and /total-usage are kept as slash aliases for compatibility.
 // Adapted from opencode-usage-stat (MIT) and opencode-tokenwatch (MIT).
+//
+// The layer must be mode "global": mode-scoped layers are unreachable while
+// the composer pushes its own keymap mode, so a "base" layer's slash command
+// never shows up in prompt completion.
 
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import {
@@ -230,6 +234,7 @@ async function showRangeMenu(context: Context): Promise<ReportScope | undefined>
       { title: `🕐 ${t("menu5h")}`, value: "5h", description: "Last 5 hours" },
       { title: `📆 ${t("menu7d")}`, value: "7d", description: "Last 7 days" },
       { title: `📅 ${t("menu30d")}`, value: "30d", description: "Last 30 days" },
+      { title: `♾ ${t("menuAll")}`, value: "all", description: "Entire history (/usage 0)" },
     ],
   })
   if (!choice) return undefined
@@ -238,6 +243,7 @@ async function showRangeMenu(context: Context): Promise<ReportScope | undefined>
     "5h": t("menu5h"),
     "7d": t("menu7d"),
     "30d": t("menu30d"),
+    all: t("menuAll"),
     days: `${choice} days`,
   }
   return { kind: choice, label: labels[choice] }
@@ -426,6 +432,14 @@ async function runUsageCommand(context: Context, input?: string): Promise<void> 
     return
   }
 
+  // "/usage 0" (or "all") is the full-history total report.
+  if (raw === "0" || raw === "all") {
+    const format = await showFormatMenu(context)
+    if (!format) return
+    await generatePeriodReport(context, { kind: "all", label: t("menuAll") }, format)
+    return
+  }
+
   const days = parseNumericDays(raw)
   if (days != null) {
     const format = await showFormatMenu(context)
@@ -447,12 +461,12 @@ export function registerCommands(context: Context): void {
   } catch { /* non-fatal */ }
 
   context.keymap.layer(() => ({
-    mode: "base",
+    mode: "global",
     commands: [
       {
         id: "usage-stat.usage",
         title: "Usage Stat",
-        description: "Generate local usage reports (current session, 5h/7d/30d, or N days) as HTML, text, or JSON",
+        description: "Generate local usage reports (current session, 5h/7d/30d, all via /usage 0, or N days) as HTML, text, or JSON",
         group: "Stats",
         palette: true,
         slash: {

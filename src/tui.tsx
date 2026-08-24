@@ -4,6 +4,7 @@ import type { Context } from "@opencode-ai/plugin/tui/context"
 import { createPerfTracker } from "./perf-tracker.js"
 import type { PerfTracker } from "./perf-tracker.js"
 import { UsageStatPanel } from "./sidebar.jsx"
+import { registerCommands } from "./commands.js"
 
 export interface TokenMessage {
   id: string
@@ -214,6 +215,20 @@ const plugin = define({
       void refreshSession(sessionID, false)
     })
     cleanups.push(unsubCreated)
+
+    // ── Slash command registration ──
+    // Keymap layers need a mounted Solid owner and must live for the whole
+    // app (not just a session screen), so they are created from an "app"
+    // slot component instead of inside the sidebar panel.
+    function CommandsMount(props: { readonly context: Context }) {
+      registerCommands(props.context)
+      return null
+    }
+    const disposeCommandsSlot = context.ui.slot({
+      append: "app",
+      render: () => <CommandsMount context={context} />,
+    })
+    cleanups.push(disposeCommandsSlot)
 
     // ── Sidebar slot ──
     // The render function runs once as a Solid component; `props` is a reactive
