@@ -2676,9 +2676,7 @@ function ProviderUsageBlocks(props) {
           const headerText = () => {
             if (state.loading && !state.result) return `${t("providerRefreshing")}\u2026`;
             const summary = collapsedSummary(state.result?.windows, displayMode());
-            if (state.result?.ok && summary != null) {
-              return displayMode() === "remaining" ? `${summary} ${t("left")}` : summary;
-            }
+            if (state.result?.ok && summary != null) return summary;
             const status = state.result?.status ?? t("providerNotConfigured");
             const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
             return status.startsWith(prefix) ? status.slice(prefix.length) : status;

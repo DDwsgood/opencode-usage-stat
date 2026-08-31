@@ -151,8 +151,8 @@ Only providers set to `true` are queried. The plugin reads credentials **at runt
 | `command-code` | Command Code | API key (`COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json`) |
 
 While collapsed, each provider row shows the labeled short-form usage
-`n%/5h m%/7d`; remaining mode also appends `left`/`剩余`. Monthly or
-billing-cycle totals are only shown when expanded. Expanding a row lists every
+`n%/5h m%/7d`. Monthly or billing-cycle totals are only shown when expanded.
+Expanding a row lists every
 quota window with reset times. The display mode — used vs remaining percentage —
 can be switched via `/usage ▸ Settings ▸ Provider Usage Display Mode`, or set
 with the `providerUsageDisplay: "used" | "remaining"` plugin option.

@@ -177,9 +177,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
           const headerText = () => {
             if (state.loading && !state.result) return `${t("providerRefreshing")}…`
             const summary = collapsedSummary(state.result?.windows, displayMode())
-            if (state.result?.ok && summary != null) {
-              return displayMode() === "remaining" ? `${summary} ${t("left")}` : summary
-            }
+            if (state.result?.ok && summary != null) return summary
             const status = state.result?.status ?? t("providerNotConfigured")
             const prefix = `${PROVIDER_NAMES[state.id]} — `
             return status.startsWith(prefix) ? status.slice(prefix.length) : status
