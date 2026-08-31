@@ -3163,22 +3163,22 @@ function UsageStatPanel(props) {
     _$insert2(_el$3, () => t2("panelTitle"), null);
     _$insert2(_el$5, (() => {
       var _c$ = _$memo2(() => !!isPanelCollapsed());
-      return () => _c$() ? [_$memo2(() => formatTokens(sessionTotals().totalTokens)), _$memo2(() => _$memo2(() => globalHitRate() >= 0)() ? (() => {
+      return () => _c$() ? formatTokens(sessionTotals().totalTokens) : "";
+    })(), null);
+    _$insert2(_el$5, (() => {
+      var _c$2 = _$memo2(() => globalHitRate() >= 0);
+      return () => _c$2() ? (() => {
         var _el$10 = _$createElement2("span");
-        _$insert2(_el$10, () => ` (${globalHitRate().toFixed(1)}% hit)`);
+        _$insert2(_el$10, (() => {
+          var _c$3 = _$memo2(() => !!isPanelCollapsed());
+          return () => _c$3() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`;
+        })());
         _$effect2((_$p) => _$setProp2(_el$10, "style", {
           fg: hitRateColor(globalHitRate())
         }, _$p));
         return _el$10;
-      })() : "")] : _$memo2(() => globalHitRate() >= 0)() ? (() => {
-        var _el$11 = _$createElement2("span");
-        _$insert2(_el$11, () => `${globalHitRate().toFixed(1)}% hit`);
-        _$effect2((_$p) => _$setProp2(_el$11, "style", {
-          fg: hitRateColor(globalHitRate())
-        }, _$p));
-        return _el$11;
       })() : "";
-    })());
+    })(), null);
     _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
       context
     }), null);
@@ -3219,24 +3219,24 @@ function UsageStatPanel(props) {
                 return idx() === 3 ? totalW - base * 3 : base;
               };
               return (() => {
-                var _el$12 = _$createElement2("box"), _el$13 = _$createElement2("text"), _el$14 = _$createElement2("text");
-                _$insertNode2(_el$12, _el$13);
-                _$insertNode2(_el$12, _el$14);
-                _$setProp2(_el$12, "flexDirection", "column");
-                _$insert2(_el$13, () => centerAlign(item.val, colW()));
-                _$insert2(_el$14, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                var _el$11 = _$createElement2("box"), _el$12 = _$createElement2("text"), _el$13 = _$createElement2("text");
+                _$insertNode2(_el$11, _el$12);
+                _$insertNode2(_el$11, _el$13);
+                _$setProp2(_el$11, "flexDirection", "column");
+                _$insert2(_el$12, () => centerAlign(item.val, colW()));
+                _$insert2(_el$13, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
                 _$effect2((_p$) => {
                   var _v$7 = colW(), _v$8 = primaryColor(), _v$9 = dimColor();
-                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$12, "width", _v$7, _p$.e));
-                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$13, "fg", _v$8, _p$.t));
-                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$14, "fg", _v$9, _p$.a));
+                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$11, "width", _v$7, _p$.e));
+                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$12, "fg", _v$8, _p$.t));
+                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$13, "fg", _v$9, _p$.a));
                   return _p$;
                 }, {
                   e: void 0,
                   t: void 0,
                   a: void 0
                 });
-                return _el$12;
+                return _el$11;
               })();
             }
           }));
@@ -3308,38 +3308,38 @@ function UsageStatPanel(props) {
             const trendBudget = () => showTrend() ? 7 : 0;
             const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11 - trendBudget());
             return (() => {
-              var _el$15 = _$createElement2("box"), _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("span"), _el$20 = _$createTextNode2(` `), _el$21 = _$createElement2("span"), _el$22 = _$createElement2("text");
+              var _el$14 = _$createElement2("box"), _el$15 = _$createElement2("box"), _el$16 = _$createElement2("text"), _el$17 = _$createElement2("span"), _el$19 = _$createTextNode2(` `), _el$20 = _$createElement2("span"), _el$21 = _$createElement2("text");
+              _$insertNode2(_el$14, _el$15);
+              _$setProp2(_el$14, "flexDirection", "column");
+              _$setProp2(_el$14, "marginTop", 1);
               _$insertNode2(_el$15, _el$16);
-              _$setProp2(_el$15, "flexDirection", "column");
-              _$setProp2(_el$15, "marginTop", 1);
+              _$insertNode2(_el$15, _el$21);
+              _$setProp2(_el$15, "flexDirection", "row");
+              _$setProp2(_el$15, "justifyContent", "space-between");
+              _$setProp2(_el$15, "onMouseDown", () => toggle.model(key));
+              _$setProp2(_el$15, "paddingX", 1);
               _$insertNode2(_el$16, _el$17);
-              _$insertNode2(_el$16, _el$22);
-              _$setProp2(_el$16, "flexDirection", "row");
-              _$setProp2(_el$16, "justifyContent", "space-between");
-              _$setProp2(_el$16, "onMouseDown", () => toggle.model(key));
-              _$setProp2(_el$16, "paddingX", 1);
-              _$insertNode2(_el$17, _el$18);
-              _$insertNode2(_el$17, _el$20);
-              _$insertNode2(_el$17, _el$21);
-              _$insertNode2(_el$18, _$createTextNode2(`\u25CF`));
-              _$insert2(_el$21, shortTitle);
-              _$insert2(_el$22, modelHeaderRight);
-              _$insert2(_el$15, _$createComponent2(Show2, {
+              _$insertNode2(_el$16, _el$19);
+              _$insertNode2(_el$16, _el$20);
+              _$insertNode2(_el$17, _$createTextNode2(`\u25CF`));
+              _$insert2(_el$20, shortTitle);
+              _$insert2(_el$21, modelHeaderRight);
+              _$insert2(_el$14, _$createComponent2(Show2, {
                 get when() {
                   return isExpanded();
                 },
                 get children() {
-                  var _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("box"), _el$26 = _$createElement2("text");
+                  var _el$22 = _$createElement2("box"), _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("text");
+                  _$insertNode2(_el$22, _el$23);
+                  _$insertNode2(_el$22, _el$25);
+                  _$setProp2(_el$22, "flexDirection", "column");
+                  _$setProp2(_el$22, "paddingX", 1);
                   _$insertNode2(_el$23, _el$24);
-                  _$insertNode2(_el$23, _el$26);
                   _$setProp2(_el$23, "flexDirection", "column");
-                  _$setProp2(_el$23, "paddingX", 1);
-                  _$insertNode2(_el$24, _el$25);
-                  _$setProp2(_el$24, "flexDirection", "column");
-                  _$setProp2(_el$24, "border", true);
-                  _$setProp2(_el$24, "borderStyle", "rounded");
-                  _$setProp2(_el$25, "flexDirection", "row");
-                  _$insert2(_el$25, _$createComponent2(For2, {
+                  _$setProp2(_el$23, "border", true);
+                  _$setProp2(_el$23, "borderStyle", "rounded");
+                  _$setProp2(_el$24, "flexDirection", "row");
+                  _$insert2(_el$24, _$createComponent2(For2, {
                     get each() {
                       return [{
                         val: formatTokens(modelTotalTokens),
@@ -3359,81 +3359,81 @@ function UsageStatPanel(props) {
                         return idx() === 2 ? totalW - base * 2 : base;
                       };
                       return (() => {
-                        var _el$37 = _$createElement2("box"), _el$38 = _$createElement2("text"), _el$39 = _$createElement2("text");
-                        _$insertNode2(_el$37, _el$38);
-                        _$insertNode2(_el$37, _el$39);
-                        _$setProp2(_el$37, "flexDirection", "column");
-                        _$insert2(_el$38, () => centerAlign(item.val, colW()));
-                        _$insert2(_el$39, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                        var _el$36 = _$createElement2("box"), _el$37 = _$createElement2("text"), _el$38 = _$createElement2("text");
+                        _$insertNode2(_el$36, _el$37);
+                        _$insertNode2(_el$36, _el$38);
+                        _$setProp2(_el$36, "flexDirection", "column");
+                        _$insert2(_el$37, () => centerAlign(item.val, colW()));
+                        _$insert2(_el$38, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
                         _$effect2((_p$) => {
                           var _v$18 = colW(), _v$19 = primaryColor(), _v$20 = dimColor();
-                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$37, "width", _v$18, _p$.e));
-                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$38, "fg", _v$19, _p$.t));
-                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$39, "fg", _v$20, _p$.a));
+                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$36, "width", _v$18, _p$.e));
+                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$37, "fg", _v$19, _p$.t));
+                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$38, "fg", _v$20, _p$.a));
                           return _p$;
                         }, {
                           e: void 0,
                           t: void 0,
                           a: void 0
                         });
-                        return _el$37;
+                        return _el$36;
                       })();
                     }
                   }));
-                  _$insert2(_el$26, paddedCachePrefix, null);
-                  _$insert2(_el$26, isMissing ? (() => {
-                    var _el$40 = _$createElement2("span"), _el$41 = _$createTextNode2(` `);
-                    _$insertNode2(_el$40, _el$41);
-                    _$insert2(_el$40, () => progressRemaining(0, modelBarWidth()), _el$41);
-                    _$insert2(_el$40, () => t2("missing"), null);
-                    _$effect2((_$p) => _$setProp2(_el$40, "style", {
+                  _$insert2(_el$25, paddedCachePrefix, null);
+                  _$insert2(_el$25, isMissing ? (() => {
+                    var _el$39 = _$createElement2("span"), _el$40 = _$createTextNode2(` `);
+                    _$insertNode2(_el$39, _el$40);
+                    _$insert2(_el$39, () => progressRemaining(0, modelBarWidth()), _el$40);
+                    _$insert2(_el$39, () => t2("missing"), null);
+                    _$effect2((_$p) => _$setProp2(_el$39, "style", {
                       fg: missingColor()
                     }, _$p));
-                    return _el$40;
+                    return _el$39;
                   })() : (() => {
-                    var _el$42 = _$createElement2("span"), _el$43 = _$createTextNode2(` `), _el$44 = _$createTextNode2(`%`);
-                    _$insertNode2(_el$42, _el$43);
-                    _$insertNode2(_el$42, _el$44);
-                    _$insert2(_el$42, () => progressFilled(hitRate, modelBarWidth()), _el$43);
-                    _$insert2(_el$42, () => progressRemaining(hitRate, modelBarWidth()), _el$43);
-                    _$insert2(_el$42, () => hitRate.toFixed(1), _el$44);
-                    _$effect2((_$p) => _$setProp2(_el$42, "style", {
+                    var _el$41 = _$createElement2("span"), _el$42 = _$createTextNode2(` `), _el$43 = _$createTextNode2(`%`);
+                    _$insertNode2(_el$41, _el$42);
+                    _$insertNode2(_el$41, _el$43);
+                    _$insert2(_el$41, () => progressFilled(hitRate, modelBarWidth()), _el$42);
+                    _$insert2(_el$41, () => progressRemaining(hitRate, modelBarWidth()), _el$42);
+                    _$insert2(_el$41, () => hitRate.toFixed(1), _el$43);
+                    _$effect2((_$p) => _$setProp2(_el$41, "style", {
                       fg: hitRateColor(hitRate)
                     }, _$p));
-                    return _el$42;
+                    return _el$41;
                   })(), null);
-                  _$insert2(_el$26, (() => {
-                    var _c$2 = _$memo2(() => !!trendStr());
-                    return () => _c$2() ? (() => {
-                      var _el$45 = _$createElement2("span");
-                      _$insert2(_el$45, trendStr);
-                      _$effect2((_$p) => _$setProp2(_el$45, "style", {
+                  _$insert2(_el$25, (() => {
+                    var _c$4 = _$memo2(() => !!trendStr());
+                    return () => _c$4() ? (() => {
+                      var _el$44 = _$createElement2("span");
+                      _$insert2(_el$44, trendStr);
+                      _$effect2((_$p) => _$setProp2(_el$44, "style", {
                         fg: trendColor()
                       }, _$p));
-                      return _el$45;
+                      return _el$44;
                     })() : null;
                   })(), null);
-                  _$insert2(_el$23, _$createComponent2(Show2, {
+                  _$insert2(_el$22, _$createComponent2(Show2, {
                     get when() {
                       return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
                     },
                     get children() {
-                      var _el$27 = _$createElement2("text"), _el$28 = _$createTextNode2(` `), _el$29 = _$createElement2("span"), _el$30 = _$createTextNode2(`  `), _el$31 = _$createTextNode2(` `), _el$32 = _$createElement2("span"), _el$33 = _$createTextNode2(`  `), _el$34 = _$createTextNode2(` `), _el$35 = _$createElement2("span");
-                      _$insertNode2(_el$27, _el$28);
-                      _$insertNode2(_el$27, _el$29);
-                      _$insertNode2(_el$27, _el$30);
-                      _$insertNode2(_el$27, _el$31);
-                      _$insertNode2(_el$27, _el$32);
-                      _$insertNode2(_el$27, _el$33);
-                      _$insertNode2(_el$27, _el$34);
-                      _$insertNode2(_el$27, _el$35);
-                      _$setProp2(_el$27, "marginTop", 1);
-                      _$insert2(_el$27, () => t2("ttft"), _el$28);
-                      _$insert2(_el$29, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
-                      _$insert2(_el$27, () => t2("tps"), _el$31);
-                      _$insert2(_el$32, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
-                      _$insert2(_el$27, () => t2("lat"), _el$34);
-                      _$insert2(_el$35, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
+                      var _el$26 = _$createElement2("text"), _el$27 = _$createTextNode2(` `), _el$28 = _$createElement2("span"), _el$29 = _$createTextNode2(`  `), _el$30 = _$createTextNode2(` `), _el$31 = _$createElement2("span"), _el$32 = _$createTextNode2(`  `), _el$33 = _$createTextNode2(` `), _el$34 = _$createElement2("span");
+                      _$insertNode2(_el$26, _el$27);
+                      _$insertNode2(_el$26, _el$28);
+                      _$insertNode2(_el$26, _el$29);
+                      _$insertNode2(_el$26, _el$30);
+                      _$insertNode2(_el$26, _el$31);
+                      _$insertNode2(_el$26, _el$32);
+                      _$insertNode2(_el$26, _el$33);
+                      _$insertNode2(_el$26, _el$34);
+                      _$setProp2(_el$26, "marginTop", 1);
+                      _$insert2(_el$26, () => t2("ttft"), _el$27);
+                      _$insert2(_el$28, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
+                      _$insert2(_el$26, () => t2("tps"), _el$30);
+                      _$insert2(_el$31, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
+                      _$insert2(_el$26, () => t2("lat"), _el$33);
+                      _$insert2(_el$34, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
                       _$effect2((_p$) => {
                         var _v$0 = mutedColor(), _v$1 = {
                           fg: primaryColor()
@@ -3442,10 +3442,10 @@ function UsageStatPanel(props) {
                         }, _v$11 = {
                           fg: primaryColor()
                         };
-                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$27, "fg", _v$0, _p$.e));
-                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$29, "style", _v$1, _p$.t));
-                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$32, "style", _v$10, _p$.a));
-                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$35, "style", _v$11, _p$.o));
+                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$26, "fg", _v$0, _p$.e));
+                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$28, "style", _v$1, _p$.t));
+                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$31, "style", _v$10, _p$.a));
+                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$34, "style", _v$11, _p$.o));
                         return _p$;
                       }, {
                         e: void 0,
@@ -3453,31 +3453,31 @@ function UsageStatPanel(props) {
                         a: void 0,
                         o: void 0
                       });
-                      return _el$27;
+                      return _el$26;
                     }
                   }), null);
-                  _$insert2(_el$23, _$createComponent2(Show2, {
+                  _$insert2(_el$22, _$createComponent2(Show2, {
                     get when() {
                       return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
                     },
                     get children() {
-                      var _el$36 = _$createElement2("text");
-                      _$insert2(_el$36, paddedCostPrefix, null);
-                      _$insert2(_el$36, () => formatCost(stat.totalCost), null);
-                      _$effect2((_$p) => _$setProp2(_el$36, "fg", mutedColor(), _$p));
-                      return _el$36;
+                      var _el$35 = _$createElement2("text");
+                      _$insert2(_el$35, paddedCostPrefix, null);
+                      _$insert2(_el$35, () => formatCost(stat.totalCost), null);
+                      _$effect2((_$p) => _$setProp2(_el$35, "fg", mutedColor(), _$p));
+                      return _el$35;
                     }
                   }), null);
                   _$effect2((_p$) => {
                     var _v$12 = borderColor(), _v$13 = mutedColor();
-                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$24, "borderColor", _v$12, _p$.e));
-                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$26, "fg", _v$13, _p$.t));
+                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$23, "borderColor", _v$12, _p$.e));
+                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$25, "fg", _v$13, _p$.t));
                     return _p$;
                   }, {
                     e: void 0,
                     t: void 0
                   });
-                  return _el$23;
+                  return _el$22;
                 }
               }), null);
               _$effect2((_p$) => {
@@ -3486,10 +3486,10 @@ function UsageStatPanel(props) {
                 }, _v$16 = {
                   fg: primaryColor()
                 }, _v$17 = mutedColor();
-                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$17, "fg", _v$14, _p$.e));
-                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$18, "style", _v$15, _p$.t));
-                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$21, "style", _v$16, _p$.a));
-                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$22, "fg", _v$17, _p$.o));
+                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$16, "fg", _v$14, _p$.e));
+                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$17, "style", _v$15, _p$.t));
+                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$20, "style", _v$16, _p$.a));
+                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$21, "fg", _v$17, _p$.o));
                 return _p$;
               }, {
                 e: void 0,
@@ -3497,7 +3497,7 @@ function UsageStatPanel(props) {
                 a: void 0,
                 o: void 0
               });
-              return _el$15;
+              return _el$14;
             })();
           }
         })];

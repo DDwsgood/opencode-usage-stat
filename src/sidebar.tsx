@@ -302,13 +302,12 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
       <box flexDirection="row" justifyContent="space-between" onMouseDown={toggle.global} paddingX={1}>
         <text fg={primaryColor()}>{isPanelCollapsed() ? "▶" : "▾"} {t("panelTitle")}</text>
         <text fg={mutedColor()}>
-          {isPanelCollapsed() ? (
-            <>{formatTokens(sessionTotals().totalTokens)}
-              {globalHitRate() >= 0 ? <span style={{ fg: hitRateColor(globalHitRate()) } as any}>{` (${globalHitRate().toFixed(1)}% hit)`}</span> : ""}
-            </>
-          ) : (
-            globalHitRate() >= 0 ? <span style={{ fg: hitRateColor(globalHitRate()) } as any}>{`${globalHitRate().toFixed(1)}% hit`}</span> : ""
-          )}
+          {isPanelCollapsed() ? formatTokens(sessionTotals().totalTokens) : ""}
+          {globalHitRate() >= 0 ? (
+            <span style={{ fg: hitRateColor(globalHitRate()) } as any}>
+              {isPanelCollapsed() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`}
+            </span>
+          ) : ""}
         </text>
       </box>
 
