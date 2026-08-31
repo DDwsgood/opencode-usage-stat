@@ -14,10 +14,12 @@ import {
   buildCopilotWindows,
   parseCursorUsage,
   parseXaiUsage,
+  parseCommandCodeUsage,
   collapsedSummary,
   fetchOpenCodeGoUsage,
   fetchDeepSeekBalance,
   fetchCodexUsage,
+  fetchCommandCodeUsage,
   checkProviderUsage,
   resolveProviderUsageConfig,
   USAGE_STAT_PROVIDER_IDS,
@@ -187,6 +189,83 @@ test("fetchCodexUsage sends ChatGPT-Account-Id when account present", async () =
   assert.equal(windows[0].valueLabel, "$2.00")
 })
 
+test("parseCommandCodeUsage maps 5h, weekly, monthly, and plan data", () => {
+  const parsed = parseCommandCodeUsage({
+    credits: {
+      credits: { monthlyCredits: 38, purchasedCredits: 5, freeCredits: 2, planId: "individual-pro-v1" },
+      windowLimits: {
+        limited: true,
+        fiveHour: { used: 5.6, cap: 16, resetAt: 1785487200000 },
+        weekly: { used: 12.4, cap: 40, resetAt: 1785600000000 },
+      },
+    },
+    subscription: {
+      data: {
+        planId: "individual-pro-v1",
+        currentPeriodEnd: "2026-09-01T00:00:00.000Z",
+      },
+    },
+    summary: { totalCost: 37.5 },
+  })
+  assert.equal(parsed.planLabel, "Pro")
+  assert.deepEqual(parsed.windows.map(window => window.label), ["5h", "7d", "Monthly", "Credits"])
+  assert.equal(parsed.windows[0].percent, 35)
+  assert.equal(parsed.windows[1].percent, 31)
+  assert.ok(Math.abs((parsed.windows[2].percent ?? 0) - (37.5 / 82.5) * 100) < 1e-9)
+  assert.equal(parsed.windows[2].resetsAt, "2026-09-01T00:00:00.000Z")
+  assert.equal(parsed.windows[3].valueLabel, "$45.00 left")
+})
+
+test("parseCommandCodeUsage omits rolling windows for unlimited plans", () => {
+  const parsed = parseCommandCodeUsage({
+    credits: {
+      credits: { purchasedCredits: 20, planId: "individual-provider" },
+      windowLimits: { limited: false },
+    },
+    subscription: { data: { currentPeriodEnd: "2026-09-01T00:00:00Z" } },
+    summary: { totalCost: 5 },
+  })
+  assert.deepEqual(parsed.windows.map(window => window.label), ["Monthly", "Credits"])
+  assert.equal(parsed.planLabel, "Provider")
+})
+
+test("fetchCommandCodeUsage follows the official CLI alpha endpoint sequence", async () => {
+  const paths: string[] = []
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    paths.push(url)
+    assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer command-secret")
+    const body = url.endsWith("/alpha/whoami")
+      ? { org: { id: "org_1" } }
+      : url.includes("/alpha/billing/credits?")
+        ? { credits: { monthlyCredits: 10 }, windowLimits: { limited: true, fiveHour: { used: 1, cap: 10 } } }
+        : url.includes("/alpha/billing/subscriptions?")
+          ? { data: { planId: "individual-goat", currentPeriodStart: "2026-08-01T00:00:00Z", currentPeriodEnd: "2026-09-01T00:00:00Z" } }
+          : { totalCost: 2 }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response
+  }) as unknown as typeof fetch
+
+  const parsed = await fetchCommandCodeUsage("command-secret", fetchImpl)
+  assert.equal(parsed.planLabel, "GOAT")
+  assert.equal(parsed.windows[0].label, "5h")
+  assert.equal(paths.length, 4)
+  assert.ok(paths.some(path => path.includes("/alpha/billing/credits?orgId=org_1")))
+  assert.ok(paths.some(path => path.includes("/alpha/usage/summary?orgId=org_1&since=2026-08-01T00%3A00%3A00Z")))
+})
+
+test("fetchCommandCodeUsage reports rejected credentials without leaking the key", async () => {
+  const fetchImpl = (async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: "invalid credentials" }),
+    text: async () => JSON.stringify({ error: "invalid credentials" }),
+  }) as Response) as unknown as typeof fetch
+  await assert.rejects(fetchCommandCodeUsage("command-secret", fetchImpl), error => {
+    assert.match(String(error), /session expired/i)
+    assert.doesNotMatch(String(error), /command-secret/)
+    return true
+  })
+})
+
 // checkProviderUsage with injected fake credentials (offline, never touches real auth)
 
 function fakeCredential(value: string | null, accountId: string | null = null) {
@@ -259,11 +338,12 @@ test("resolveProviderUsageConfig defaults all providers to disabled", () => {
 
 test("resolveProviderUsageConfig enables only explicitly true providers", () => {
   const config = resolveProviderUsageConfig({
-    providerUsage: { "opencode-go": true, deepseek: "yes", codex: true },
+    providerUsage: { "opencode-go": true, deepseek: "yes", codex: true, "command-code": true },
   })
   assert.equal(config["opencode-go"], true)
   assert.equal(config.deepseek, false)
   assert.equal(config.codex, true)
+  assert.equal(config["command-code"], true)
   assert.equal(config.claude, false)
 })
 
@@ -293,7 +373,7 @@ test("parseClaudeUsage extracts 5h/weekly windows and ignores monthly extras in 
   assert.equal(windows[0].label, "5h")
   assert.equal(windows[0].percent, 37.4)
   assert.equal(windows[1].label, "7d")
-  assert.equal(collapsedSummary(windows, "used"), "37%/13%")
+  assert.equal(collapsedSummary(windows, "used"), "37%/5h 13%/7d")
 })
 
 test("parseClaudeUsage falls back to legacy five_hour/seven_day and adds scoped models after aggregates", () => {
@@ -453,7 +533,7 @@ test("parseXaiUsage extracts percent and reset from a gRPC-web framed response",
   assert.ok(parsed.resetAt != null && parsed.resetAt > Date.now())
 })
 
-// ── Collapsed header summary ("n%/m%") ──
+// ── Collapsed header summary ("n%/5h m%/7d") ──
 
 test("collapsedSummary shows 5h/weekly pair and skips monthly/billing windows", () => {
   const windows = [
@@ -461,8 +541,8 @@ test("collapsedSummary shows 5h/weekly pair and skips monthly/billing windows", 
     { label: "7d", percent: 34.6, resetsAt: null, valueLabel: null },
     { label: "Monthly", percent: 90, resetsAt: null, valueLabel: null },
   ]
-  assert.equal(collapsedSummary(windows, "used"), "12%/35%")
-  assert.equal(collapsedSummary(windows, "remaining"), "88%/65%")
+  assert.equal(collapsedSummary(windows, "used"), "12%/5h 35%/7d")
+  assert.equal(collapsedSummary(windows, "remaining"), "88%/5h 65%/7d")
 })
 
 test("collapsedSummary falls back gracefully per provider shape", () => {
@@ -470,7 +550,7 @@ test("collapsedSummary falls back gracefully per provider shape", () => {
     { label: "Rolling", percent: 5, resetsAt: null, valueLabel: null },
     { label: "Weekly", percent: 9, resetsAt: null, valueLabel: null },
     { label: "Monthly", percent: 77, resetsAt: null, valueLabel: null },
-  ], "used"), "5%/9%")
+  ], "used"), "5%/5h 9%/7d")
   assert.equal(collapsedSummary([{ label: "Balance", percent: null, resetsAt: null, valueLabel: "$5.00" }], "used"), "$5.00")
   assert.equal(collapsedSummary([], "used"), null)
   assert.equal(collapsedSummary(undefined, "used"), null)

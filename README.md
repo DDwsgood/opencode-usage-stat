@@ -7,7 +7,7 @@ Token usage statistics and polished offline HTML dashboards for **OpenCode V2** 
 - the real-time **TUI sidebar** (token / cache / performance stats for the current session) from the tokenwatch lineage, and
 - the **polished self-contained session & cumulative HTML dashboards** (model logos, ECharts, interactive background) from the original usage-stat.
 
-It also adds an opt-in **Provider Usage** sidebar block for **OpenCode Go**, **DeepSeek**, and **Codex** quota/balance endpoints (~15 s timeout, auto-refresh every 2 minutes). Each enabled provider appears collapsed immediately.
+It also adds an opt-in **Provider Usage** sidebar block with 17 quota/balance integrations, including **OpenCode Go**, **Codex**, **Claude**, **Ollama Cloud**, and **Command Code** (~15 s timeout, auto-refresh every 2 minutes). Each enabled provider appears collapsed immediately.
 
 Everything runs locally. V2 has no `opencode db` CLI, so all aggregation uses the V2 client (`@opencode-ai/client` OpenCodeClient, exposed as `context.client`) — sessions and messages are fetched through the V2 API (cursor-paginated `session.list` / `message.list`) and folded into the same report contract the dashboards expect.
 
@@ -33,14 +33,16 @@ Shortcut arguments:
 
 - Per-model token totals, cache hits / MISSING, cost, trend
 - Performance: TTFT, TPS, latency (per model, avg/min/max/percentiles)
-  - TTFT currently means **local OpenCode prompt enqueue → first reasoning/text event**. OpenCode V2 does not expose a transport-neutral “provider request sent” timestamp, so this value is an upper bound that includes local queueing and request preparation. It is recorded only for user/subagent prompt first steps; tool continuations and automatic retries show no TTFT sample.
-  - Latency means **local prompt enqueue → final reasoning/text event** for the same first step, excluding later tool execution. Tool continuations and retries without a prompt start have no latency sample.
-  - TPS uses `(visible output + reasoning tokens) / (final output event − first output event)`, so reasoning models and tool settlement time do not distort generation speed.
+  - TTFT means **local OpenCode prompt enqueue → first text/reasoning/tool-input event**. V2 does not expose a transport-neutral “provider request sent” timestamp, so this is an upper bound that includes local queueing and request preparation. It is recorded only when a user prompt can be associated with the first step.
+  - Latency means **local prompt enqueue → provider response-body end** (`session.step.streamed`) for that first step, excluding subsequent local tool execution.
+  - TPS is response-body throughput: `(visible output + reasoning tokens) / (step streamed − step started)`. The sidebar aggregates samples as total completion tokens divided by total response-body time, rather than averaging per-step rates. This keeps tool-input tokens and their streaming time in the same measurement domain.
+  - Performance records use schema v2; legacy performance samples are ignored because their timing window did not include tool-input streaming.
 - Pricing estimates
 - **Provider Usage** block:
   - **OpenCode Go** — rolling / weekly / monthly windows with percent + reset time
   - **DeepSeek** — account balance (USD preferred, then CNY)
   - **Codex** — rate-limit windows (primary/secondary) and credits / spend limit
+  - **Command Code** — 5-hour / weekly windows, billing-cycle credits, and plan
   - Each enabled provider appears collapsed immediately and refreshes independently every 2 minutes with a ~15 s timeout.
 
 ### Session / total dashboards
@@ -115,7 +117,8 @@ Provider usage checks are disabled by default. Enable them explicitly in the TUI
           "github-copilot-addon": false,
           "google": false,
           "xai": false,
-          "cursor": false
+          "cursor": false,
+          "command-code": false
         },
         "providerUsageDisplay": "used"
       }
@@ -145,10 +148,11 @@ Only providers set to `true` are queried. The plugin reads credentials **at runt
 | `google` | Google Gemini / Antigravity | OAuth refresh token (auth.json / antigravity-accounts.json) |
 | `xai` | xAI / Grok | OAuth access + refresh token (auth.json) |
 | `cursor` | Cursor | access token (secure JSON file) |
+| `command-code` | Command Code | API key (`COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json`) |
 
-While collapsed, each provider row shows the short-form usage `n%/m%` where
-*n* is the 5-hour/session window and *m* the weekly/7-day window (monthly or
-billing-cycle totals are only shown when expanded). Expanding a row lists every
+While collapsed, each provider row shows the labeled short-form usage
+`n%/5h m%/7d`; remaining mode also appends `left`/`剩余`. Monthly or
+billing-cycle totals are only shown when expanded. Expanding a row lists every
 quota window with reset times. The display mode — used vs remaining percentage —
 can be switched via `/usage ▸ Settings ▸ Provider Usage Display Mode`, or set
 with the `providerUsageDisplay: "used" | "remaining"` plugin option.
@@ -164,10 +168,13 @@ Resolution order (per provider):
    - z.ai: `ZAI_API_KEY`; Zhipu: `ZHIPUAI_CODING_PLAN_API_KEY` / `ZHIPU_API_KEY`
    - MiniMax: `MINIMAX_CODING_PLAN_API_KEY`; MiniMax CN: `MINIMAX_CN_CODING_PLAN_API_KEY`
    - OpenRouter: `OPENROUTER_API_KEY`
-4. **Secure per-provider JSON files** (0600-style local secrets):
+   - Command Code: `COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY`
+4. **Provider CLI auth files**:
+   - Command Code: `~/.commandcode/auth.json` (`{"apiKey": "..."}`)
+5. **Secure per-provider JSON files** (0600-style local secrets):
    - Ollama Cloud cookie: `~/.config/openchamber/quota/ollama-cloud.json` (`{"cookie": "..."}`) or `~/.config/opencode/usage-stat/ollama-cloud.json`
    - Cursor access token: `~/.config/openchamber/quota/cursor.json` (`{"accessToken": "..."}`) or `~/.config/opencode/usage-stat/cursor.json`
-5. **Safe `.env` parse** (no shell evaluation): `~/.env`, then ancestor directories of the working directory, then an inferred WSL Windows home `.env` — no hardcoded user paths.
+6. **Safe `.env` parse** (no shell evaluation): `~/.env`, then ancestor directories of the working directory, then an inferred WSL Windows home `.env` — no hardcoded user paths.
 
 **Codex note:** Codex quota uses the OpenCode V2 **OAuth access token** from SQLite/auth.json (with optional `ChatGPT-Account-Id` header) — **not a cookie**. Do not hardcode API keys in plugin configuration or source.
 
@@ -182,7 +189,7 @@ In the TUI type `/usage` and pick an action. Reports are written to `~/.opencode
 ## Data and privacy
 
 - Sessions/messages are read locally through the V2 plugin client.
-- Provider quota checks call the official/known endpoints for each enabled provider with credentials resolved at runtime. Claude uses the Anthropic OAuth usage endpoint; Ollama Cloud scrapes the settings page with a user-supplied session cookie; xAI uses a gRPC-web billing RPC; Google uses the Gemini CLI/Antigravity internal quota RPCs. These are undocumented endpoints and may change without notice.
+- Provider quota checks call the official/known endpoints for each enabled provider with credentials resolved at runtime. Claude uses the Anthropic OAuth usage endpoint; Ollama Cloud scrapes the settings page with a user-supplied session cookie; Command Code uses the official CLI's undocumented `/alpha/*` usage endpoints; xAI uses a gRPC-web billing RPC; Google uses the Gemini CLI/Antigravity internal quota RPCs. Undocumented endpoints may change without notice.
 - Reports are generated locally and are not uploaded by this plugin.
 - API-equivalent cost is an estimate; it may differ from provider billing because of caching, discounts, free tiers, rounding, or missing upstream usage fields.
 

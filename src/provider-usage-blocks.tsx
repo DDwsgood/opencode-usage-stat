@@ -2,8 +2,8 @@
  * provider-usage-blocks.tsx - "Provider Usage" collapsible blocks in the TUI
  * sidebar. Providers are opt-in via plugin config `providerUsage: { <id>:
  * boolean }` (all default to false). Each enabled provider appears collapsed
- * immediately; the collapsed header shows the 5h/session and weekly windows as
- * "n%/m%" (monthly/billing totals only show when expanded). Expanding shows
+ * immediately; the collapsed header labels the 5h/session and weekly windows
+ * explicitly (monthly/billing totals only show when expanded). Expanding shows
  * all quota windows, balances and reset times. Collapse state is persisted
  * via V2 storage ("usage-stat-provider-collapse"); the used/remaining display
  * mode comes from the shared settings store. Enabled providers refresh
@@ -53,6 +53,7 @@ const PROVIDER_COLORS: Record<string, RGBA> = {
   google: RGBA.fromInts(120, 185, 95, 255),
   xai: RGBA.fromInts(225, 225, 235, 255),
   cursor: RGBA.fromInts(200, 200, 210, 255),
+  "command-code": RGBA.fromInts(235, 190, 90, 255),
 }
 
 export interface ProviderUsageBlocksProps {
@@ -176,7 +177,9 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
           const headerText = () => {
             if (state.loading && !state.result) return `${t("providerRefreshing")}…`
             const summary = collapsedSummary(state.result?.windows, displayMode())
-            if (state.result?.ok && summary != null) return summary
+            if (state.result?.ok && summary != null) {
+              return displayMode() === "remaining" ? `${summary} ${t("left")}` : summary
+            }
             const status = state.result?.status ?? t("providerNotConfigured")
             const prefix = `${PROVIDER_NAMES[state.id]} — `
             return status.startsWith(prefix) ? status.slice(prefix.length) : status

@@ -18,6 +18,7 @@
 //                   v1internal quota RPCs (per-model remaining fractions)
 //   - xai           grok.com gRPC-web billing RPC (hand-rolled protobuf scan)
 //   - cursor        POST api2.cursor.sh GetCurrentPeriodUsage (access token file)
+//   - command-code  Command Code CLI alpha usage endpoints (API key)
 //
 // Credentials resolve via the OpenCode V2 credential DB, ~/.local/share/opencode/auth.json,
 // env vars and .env files; ollama-cloud/cursor use secure JSON files. Secrets are
@@ -1259,13 +1260,135 @@ export async function fetchCursorUsage(accessToken: string, fetchImpl: FetchLike
   return windows
 }
 
+// ── Command Code (undocumented alpha endpoints used by the official CLI) ──
+
+export const COMMAND_CODE_ALIASES = ["command-code", "commandcode"]
+export const COMMAND_CODE_ENV_KEYS = ["COMMAND_CODE_API_KEY", "COMMANDCODE_API_KEY"]
+export const COMMAND_CODE_API_BASE = "https://api.commandcode.ai"
+
+const COMMAND_CODE_PLAN_NAMES: Record<string, string> = {
+  "individual-go": "Go",
+  "individual-goat": "GOAT",
+  "individual-pro": "Pro",
+  "individual-pro-v1": "Pro",
+  "individual-provider": "Provider",
+  "individual-max": "Max",
+  "individual-ultra": "Ultra",
+  "teams-pro": "Teams Pro",
+}
+
+export interface CommandCodeUsageData {
+  credits?: unknown
+  subscription?: unknown
+  summary?: unknown
+}
+
+function commandCodeMoney(value: number): string {
+  return `$${value.toFixed(2)}`
+}
+
+/** Parse the official Command Code CLI's alpha usage responses. */
+export function parseCommandCodeUsage(data: CommandCodeUsageData): { windows: UsageWindow[]; planLabel: string | null } {
+  const creditsResponse = asObject(data.credits)
+  const balances = asObject(creditsResponse?.credits)
+  const limits = asObject(creditsResponse?.windowLimits)
+  const subscription = asObject(asObject(data.subscription)?.data)
+  const summary = asObject(data.summary)
+  const windows: UsageWindow[] = []
+
+  if (limits?.limited !== false) {
+    for (const [key, label] of [["fiveHour", "5h"], ["weekly", "7d"]] as const) {
+      const limit = asObject(limits?.[key])
+      const used = toNumber(limit?.used)
+      const cap = toNumber(limit?.cap)
+      if (used == null && cap == null) continue
+      windows.push({
+        label,
+        percent: used != null && cap != null && cap > 0 ? clampPct((used / cap) * 100) : null,
+        resetsAt: toResetTimestamp(limit?.resetAt),
+        valueLabel: used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null,
+      })
+    }
+  }
+
+  const creditParts = [balances?.monthlyCredits, balances?.purchasedCredits, balances?.freeCredits]
+    .map(toNumber)
+    .filter((value): value is number => value !== null)
+  const remaining = creditParts.length > 0 ? creditParts.reduce((sum, value) => sum + value, 0) : null
+  const spent = toNumber(summary?.totalCost)
+  if (spent != null && remaining != null) {
+    const total = spent + remaining
+    windows.push({
+      label: "Monthly",
+      percent: total > 0 ? clampPct((spent / total) * 100) : null,
+      resetsAt: toResetTimestamp(subscription?.currentPeriodEnd),
+      valueLabel: `${commandCodeMoney(spent)} / ${commandCodeMoney(total)}`,
+    })
+  }
+  if (remaining != null) {
+    windows.push({ label: "Credits", percent: null, resetsAt: null, valueLabel: `${commandCodeMoney(remaining)} left` })
+  }
+
+  const planId = nonEmptyString(subscription?.planId) ?? nonEmptyString(balances?.planId)
+  return { windows, planLabel: planId ? COMMAND_CODE_PLAN_NAMES[planId] ?? planId : null }
+}
+
+/** Prefer the normal resolver, then reuse the official CLI's local auth file. */
+export function resolveCommandCodeCredential(resolved: ResolvedCredential): string | null {
+  if (resolved.value && resolved.source !== "dotenv") return resolved.value
+  try {
+    const authPath = join(homedir(), ".commandcode", "auth.json")
+    if (existsSync(authPath)) {
+      const apiKey = nonEmptyString(asObject(JSON.parse(readFileSync(authPath, "utf8")))?.apiKey)
+      if (apiKey) return apiKey
+    }
+  } catch {
+    // Fall through to the resolved .env value.
+  }
+  return resolved.value
+}
+
+async function fetchCommandCodeJson(path: string, apiKey: string, fetchImpl: FetchLike): Promise<unknown> {
+  const response = await fetchWithTimeout(`${COMMAND_CODE_API_BASE}${path}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "User-Agent": "opencode-usage-stat",
+    },
+  }, fetchImpl)
+  if (!response.ok) {
+    throw await errorFrom(response, "Command Code", response.status === 401 || response.status === 403
+      ? "Command Code session expired — re-authenticate with cmd auth login"
+      : undefined)
+  }
+  return response.json().catch(() => null)
+}
+
+export async function fetchCommandCodeUsage(apiKey: string, fetchImpl: FetchLike = fetch): Promise<{ windows: UsageWindow[]; planLabel: string | null }> {
+  const whoami = asObject(await fetchCommandCodeJson("/alpha/whoami", apiKey, fetchImpl))
+  const orgId = nonEmptyString(asObject(whoami?.org)?.id)
+  if (!orgId) throw new Error("Command Code account organization could not be resolved")
+  const orgQuery = new URLSearchParams({ orgId }).toString()
+  const [credits, subscription] = await Promise.all([
+    fetchCommandCodeJson(`/alpha/billing/credits?${orgQuery}`, apiKey, fetchImpl),
+    fetchCommandCodeJson(`/alpha/billing/subscriptions?${orgQuery}`, apiKey, fetchImpl),
+  ])
+  const currentPeriodStart = nonEmptyString(asObject(asObject(subscription)?.data)?.currentPeriodStart)
+  const summaryQuery = new URLSearchParams({ orgId, ...(currentPeriodStart ? { since: currentPeriodStart } : {}) }).toString()
+  const summary = await fetchCommandCodeJson(`/alpha/usage/summary?${summaryQuery}`, apiKey, fetchImpl)
+  const parsed = parseCommandCodeUsage({ credits, subscription, summary })
+  if (parsed.windows.length === 0) throw new Error("Command Code usage data could not be parsed")
+  return parsed
+}
+
 // ── Registry & orchestration ──
 
 export type ProviderId =
   | "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding"
   | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan"
   | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon"
-  | "google" | "xai" | "cursor"
+  | "google" | "xai" | "cursor" | "command-code"
 
 interface ProviderSpec {
   id: ProviderId
@@ -1291,6 +1414,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   { id: "google", name: "Google Gemini", aliases: GOOGLE_ALIASES, envKeys: GOOGLE_ENV_KEYS },
   { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
   { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
+  { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS },
 ]
 
 export const USAGE_STAT_PROVIDER_IDS: readonly ProviderId[] = PROVIDERS.map(p => p.id)
@@ -1303,8 +1427,8 @@ export interface CredentialResolver {
 export const defaultCredentialResolver: CredentialResolver = (spec) => resolveCredential(spec)
 
 /**
- * Collapsed-row summary: "n%/m%" where n is the 5h/session window usage and m
- * the 7d/weekly window usage. Monthly/billing-cycle totals are intentionally
+ * Collapsed-row summary: "n%/5h m%/7d" for the session and weekly windows.
+ * Monthly/billing-cycle totals are intentionally
  * ignored in the collapsed state (they remain visible when expanded).
  * Returns null when nothing displayable exists (caller falls back to status text).
  */
@@ -1320,9 +1444,9 @@ export function collapsedSummary(windows: UsageWindow[] | undefined, mode: Usage
   const weekly = windows.find(w => isWeeklyWin(w.label))
   const n = session ? shown(session) : null
   const m = weekly ? shown(weekly) : null
-  if (n != null && m != null) return `${n}%/${m}%`
-  if (n != null) return `${n}%`
-  if (m != null) return `${m}%`
+  if (n != null && m != null) return `${n}%/5h ${m}%/7d`
+  if (n != null) return `${n}%/5h`
+  if (m != null) return `${m}%/7d`
   const firstPercent = windows.map(shown).find(v => v != null)
   if (firstPercent != null) return `${firstPercent}%`
   return windows.find(w => w.valueLabel)?.valueLabel ?? null
@@ -1386,7 +1510,7 @@ export async function checkProviderUsage(
     }
   }
 
-  const secret = resolved.value
+  const secret = spec.id === "command-code" ? resolveCommandCodeCredential(resolved) : resolved.value
   if (!secret) {
     return finishError(false, "not configured")
   }
@@ -1438,6 +1562,12 @@ export async function checkProviderUsage(
         const token = resolveCursorCredential(resolved)
         if (!token) return finishError(false, "Not configured (no saved access token)")
         windows = await fetchCursorUsage(token, fetchImpl)
+        break
+      }
+      case "command-code": {
+        const parsed = await fetchCommandCodeUsage(secret, fetchImpl)
+        windows = parsed.windows
+        planLabel = parsed.planLabel
         break
       }
     }

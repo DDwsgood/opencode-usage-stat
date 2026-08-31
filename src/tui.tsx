@@ -47,7 +47,9 @@ const plugin = define({
     let currentSessionID = ""
     let currentFamily: string[] = []
     const cleanups: (() => void)[] = []
-    const knownCompleted = new Map<string, Set<string>>()
+    // The installed SDK types predate a few current V2 events, while the host
+    // exposes them at runtime. Keep the compatibility cast at this boundary.
+    const onEvent = context.data.on as unknown as (type: string, handler: (event: any) => void) => () => void
 
     // ── Perf / token events (real V2 events) ──
     const unsubInboxEnqueued = context.data.on("session.inbox.enqueued", (event: any) => {
@@ -60,12 +62,12 @@ const plugin = define({
     })
     cleanups.push(unsubInboxDelivered)
 
-    const unsubStepStarted = context.data.on("session.step.started", (event: any) => {
+    const unsubStepStarted = onEvent("session.step.started", (event: any) => {
       perfTracker.handleStepStarted(event)
     })
     cleanups.push(unsubStepStarted)
 
-    const unsubPart = context.data.on("session.text.started", (event: any) => {
+    const unsubPart = onEvent("session.text.started", (event: any) => {
       perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
@@ -75,7 +77,7 @@ const plugin = define({
     })
     cleanups.push(unsubPart)
 
-    const unsubReasoning = context.data.on("session.reasoning.started", (event: any) => {
+    const unsubReasoning = onEvent("session.reasoning.started", (event: any) => {
       perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
@@ -85,27 +87,32 @@ const plugin = define({
     })
     cleanups.push(unsubReasoning)
 
-    const unsubTextEnded = context.data.on("session.text.ended", (event: any) => {
-      perfTracker.handlePartEnded({
+    const unsubToolInput = onEvent("session.tool.input.started", (event: any) => {
+      perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
-        type: "text",
+        session_id: event?.data?.sessionID,
+        type: "tool",
         time: { start: event?.created },
       })
     })
-    cleanups.push(unsubTextEnded)
+    cleanups.push(unsubToolInput)
 
-    const unsubReasoningEnded = context.data.on("session.reasoning.ended", (event: any) => {
-      perfTracker.handlePartEnded({
-        message_id: event?.data?.assistantMessageID,
-        type: "reasoning",
-        time: { start: event?.created },
-      })
+    const unsubStepStreamed = onEvent("session.step.streamed", (event: any) => {
+      perfTracker.handleStepStreamed(event)
     })
-    cleanups.push(unsubReasoningEnded)
+    cleanups.push(unsubStepStreamed)
+
+    const settleStep = (event: any) => {
+      perfTracker.handleStepTerminal(event)
+      setSidebarRevision((value) => value + 1)
+    }
+    const unsubStepEnded = onEvent("session.step.ended", settleStep)
+    const unsubStepFailed = onEvent("session.step.failed", settleStep)
+    cleanups.push(unsubStepEnded, unsubStepFailed)
 
     const unsubUsage = context.data.on("session.usage.updated", (event: any) => {
       const sessionID = event?.data?.sessionID
-      if (sessionID && currentFamily.includes(sessionID)) void refreshSession(sessionID, true)
+      if (sessionID && currentFamily.includes(sessionID)) void refreshSession(sessionID)
       setSidebarRevision((v) => v + 1)
     })
     cleanups.push(unsubUsage)
@@ -133,46 +140,8 @@ const plugin = define({
       setAllTokenMessages(messages)
     }
 
-    function processNewCompletions(sessionID: string, messages: readonly any[]): void {
-      const known = knownCompleted.get(sessionID) ?? new Set<string>()
-      knownCompleted.set(sessionID, known)
-      for (const msg of messages) {
-        if (msg?.type !== "assistant" || !msg?.time?.completed || known.has(msg.id)) continue
-        known.add(msg.id)
-        const tokens = msg.tokens
-        if (!tokens) continue
-        perfTracker.handleMessageUpdated({
-          properties: {
-            info: {
-              id: msg.id,
-              sessionID,
-              role: "assistant",
-              providerID: msg.model?.providerID ?? "unknown",
-              modelID: msg.model?.id ?? "unknown",
-              tokens: {
-                input: tokens.input ?? 0,
-                output: tokens.output ?? 0,
-                reasoning: tokens.reasoning ?? 0,
-                cache: { read: tokens.cache?.read ?? 0, write: tokens.cache?.write ?? 0 },
-              },
-              cost: msg.cost ?? 0,
-              time: { created: msg.time.created, completed: msg.time.completed },
-            },
-          },
-        })
-      }
-    }
-
-    async function refreshSession(sessionID: string, trackNew: boolean): Promise<void> {
+    async function refreshSession(sessionID: string): Promise<void> {
       await context.data.session.message.sync(sessionID).catch(() => {})
-      const messages = context.data.session.message.list(sessionID) ?? []
-      if (trackNew) {
-        processNewCompletions(sessionID, messages)
-      } else {
-        knownCompleted.set(sessionID, new Set(
-          messages.filter((message: any) => message?.type === "assistant" && message?.time?.completed).map((message: any) => message.id),
-        ))
-      }
       if (currentFamily.includes(sessionID)) updateTokenMessages()
       setSidebarRevision((value) => value + 1)
     }
@@ -193,17 +162,17 @@ const plugin = define({
       if (rootID !== currentSessionID) return
       currentFamily = familyFor(rootID)
       perfTracker.loadSessions(currentFamily)
-      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID, false)))
+      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID)))
       updateTokenMessages()
     }
 
     const unsubExec = context.data.on("session.execution.succeeded", (event: any) => {
-      void refreshSession(event.data.sessionID, true)
+      void refreshSession(event.data.sessionID)
     })
     cleanups.push(unsubExec)
 
     const unsubExecFailed = context.data.on("session.execution.failed", (event: any) => {
-      void refreshSession(event.data.sessionID, true)
+      void refreshSession(event.data.sessionID)
     })
     cleanups.push(unsubExecFailed)
 
@@ -212,7 +181,7 @@ const plugin = define({
       const parentID = event?.data?.parentID
       if (!sessionID || !parentID || !currentFamily.includes(parentID) || currentFamily.includes(sessionID)) return
       currentFamily = [...currentFamily, sessionID]
-      void refreshSession(sessionID, false)
+      void refreshSession(sessionID)
     })
     cleanups.push(unsubCreated)
 
@@ -243,11 +212,6 @@ const plugin = define({
           if (sessionID && sessionID !== currentSessionID) {
             currentSessionID = sessionID
             currentFamily = familyFor(sessionID)
-            // Prune completion sets of sessions no longer in the current
-            // family so the map cannot grow without bound.
-            for (const knownId of [...knownCompleted.keys()]) {
-              if (!currentFamily.includes(knownId)) knownCompleted.delete(knownId)
-            }
             perfTracker.loadSessions(currentFamily)
             setAllTokenMessages([])
             void syncFamilyTree(sessionID)

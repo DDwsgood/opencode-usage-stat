@@ -435,7 +435,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
                         <span style={{ fg: missingColor() } as any}>{progressRemaining(0, modelBarWidth())}{" "}{t("missing")}</span>
                       ) : (
                         <span style={{ fg: hitRateColor(hitRate) } as any}>
-                          {progressFilled(hitRate, modelBarWidth())}{progressRemaining(hitRate, modelBarWidth())}{" "}{hitRate.toFixed(0)}%
+                          {progressFilled(hitRate, modelBarWidth())}{progressRemaining(hitRate, modelBarWidth())}{" "}{hitRate.toFixed(1)}%
                         </span>
                       )}
                       {trendStr() ? <span style={{ fg: trendColor() } as any}>{trendStr()}</span> : null}

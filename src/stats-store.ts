@@ -5,7 +5,7 @@
  * - 每次请求完成时，通过 updatePersistedStats() 增量写入 JSON 统计文件
  * - 统计文件永久累积，不受 JSONL 日志轮转/窗口限制影响
  * - 百分位数采用 Reservoir Sampling 保持有界内存占用
- * - 首次启动时自动从现有 JSONL 日志迁移，不丢失历史数据
+ * - 首次启动时从同版本 JSONL 日志重建；旧口径性能样本不会混入
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
@@ -31,7 +31,7 @@ function resolveLogPath(): string {
 }
 
 const RESERVOIR_SIZE = 500   // 每个指标最多保留的原始样本数
-const CURRENT_VERSION = 1
+const CURRENT_VERSION = 2
 
 /** 持久化存储的单模型统计（含原始样本用于分位数计算） */
 interface PersistedModelStats {
@@ -52,6 +52,8 @@ interface PersistedModelStats {
   avgTPS: number | null
   maxTPS: number | null
   minTPS: number | null
+  tpsTotalTokens: number
+  tpsTotalTimeMs: number
   avgLatency: number | null
   maxLatency: number | null
   minLatency: number | null
@@ -59,6 +61,8 @@ interface PersistedModelStats {
   ttftReservoir: number[]
   /** 端到端延迟原始样本 */
   latencyReservoir: number[]
+  /** 每 step TPS 原始样本；avgTPS 使用 token/time 加权值。 */
+  tpsReservoir: number[]
 }
 
 interface StatsFile {
@@ -123,6 +127,7 @@ function reservoirAdd(reservoir: number[], value: number, totalCount: number): n
 // ─────────────────────────────────────────────
 
 function applyEntryToModels(models: Record<string, PersistedModelStats>, entry: LogEntry): void {
+  if (entry.schema !== 2) return
   const key = entry.model
   let s = models[key]
   if (!s) {
@@ -140,9 +145,12 @@ function applyEntryToModels(models: Record<string, PersistedModelStats>, entry: 
       totalCost: 0,
       avgTTFT: null, maxTTFT: null, minTTFT: null,
       avgTPS: null, maxTPS: null, minTPS: null,
+      tpsTotalTokens: 0,
+      tpsTotalTimeMs: 0,
       avgLatency: null, maxLatency: null, minLatency: null,
       ttftReservoir: [],
       latencyReservoir: [],
+      tpsReservoir: [],
     }
     models[key] = s
   }
@@ -163,12 +171,14 @@ function applyEntryToModels(models: Record<string, PersistedModelStats>, entry: 
     s.ttftReservoir = reservoirAdd(s.ttftReservoir, entry.ttft_ms, s.ttftCount)
   }
 
-  if (entry.tps != null) {
+  if (entry.tps != null && entry.tpsTokens != null && entry.tpsWindowMs != null && entry.tpsWindowMs > 0) {
     s.tpsCount++
-    const c = s.tpsCount
-    s.avgTPS = s.avgTPS != null ? s.avgTPS + (entry.tps - s.avgTPS) / c : entry.tps
+    s.tpsTotalTokens += entry.tpsTokens
+    s.tpsTotalTimeMs += entry.tpsWindowMs
+    s.avgTPS = (s.tpsTotalTokens / s.tpsTotalTimeMs) * 1000
     s.maxTPS = s.maxTPS != null ? Math.max(s.maxTPS, entry.tps) : entry.tps
     s.minTPS = s.minTPS != null ? Math.min(s.minTPS, entry.tps) : entry.tps
+    s.tpsReservoir = reservoirAdd(s.tpsReservoir, entry.tps, s.tpsCount)
   }
 
   if (entry.latency_ms != null) {
@@ -186,7 +196,7 @@ function applyEntryToModels(models: Record<string, PersistedModelStats>, entry: 
 // ─────────────────────────────────────────────
 
 /**
- * 如果统计文件尚未完成迁移，则读取全量 JSONL 日志并批量写入统计文件。
+ * 如果统计文件尚未完成迁移，则读取 schema v2 JSONL 日志并批量写入统计文件。
  * 只在首次调用 readPersistedStats() 时执行一次，之后通过 migratedFromLogs 标志跳过。
  */
 function migrateFromLogsIfNeeded(file: StatsFile): boolean {
@@ -206,7 +216,7 @@ function migrateFromLogsIfNeeded(file: StatsFile): boolean {
       if (!line) continue
       try {
         const entry = JSON.parse(line) as LogEntry
-        if (entry.model && entry.ts) {
+        if (entry.schema === 2 && entry.model && entry.ts) {
           applyEntryToModels(file.models, entry)
           migrated++
         }
@@ -280,6 +290,7 @@ export function readPersistedStats(): ModelPerfStats[] {
 
     return Object.values(file.models).map(s => {
       const ttftArr = [...s.ttftReservoir].sort((a, b) => a - b)
+      const tpsArr = [...s.tpsReservoir].sort((a, b) => a - b)
       const latArr = [...s.latencyReservoir].sort((a, b) => a - b)
       const denom = s.totalInput + s.totalCacheRead
       return {
@@ -303,6 +314,11 @@ export function readPersistedStats(): ModelPerfStats[] {
         avgTPS: s.avgTPS,
         maxTPS: s.maxTPS,
         minTPS: s.minTPS,
+        p50TPS: percentile(tpsArr, 50),
+        p95TPS: percentile(tpsArr, 95),
+        p99TPS: percentile(tpsArr, 99),
+        tpsTotalTokens: s.tpsTotalTokens,
+        tpsTotalTimeMs: s.tpsTotalTimeMs,
         avgLatency: s.avgLatency,
         maxLatency: s.maxLatency,
         minLatency: s.minLatency,

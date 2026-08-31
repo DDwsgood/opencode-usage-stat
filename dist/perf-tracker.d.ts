@@ -26,38 +26,37 @@ interface InboxDeliveredEvent {
     };
 }
 interface StepStartedEvent {
+    created?: number;
+    data?: {
+        sessionID?: string;
+        assistantMessageID?: string;
+        model?: {
+            providerID?: string;
+            id?: string;
+        };
+    };
+}
+interface StepStreamedEvent {
+    created?: number;
     data?: {
         sessionID?: string;
         assistantMessageID?: string;
     };
 }
-interface MessageUpdateEvent {
-    properties: {
-        info: {
-            id?: string;
-            sessionID?: string;
-            role?: string;
-            providerID?: string;
-            modelID?: string;
-            model?: {
-                providerID?: string;
-                id?: string;
-            };
-            tokens?: {
-                input?: number;
-                output?: number;
-                reasoning?: number;
-                cache?: {
-                    read?: number;
-                    write?: number;
-                };
-            };
-            cost?: number;
-            time?: {
-                created?: number;
-                completed?: number;
+interface StepTerminalEvent {
+    data?: {
+        sessionID?: string;
+        assistantMessageID?: string;
+        tokens?: {
+            input?: number;
+            output?: number;
+            reasoning?: number;
+            cache?: {
+                read?: number;
+                write?: number;
             };
         };
+        cost?: number;
     };
 }
 interface MessageRemoveEvent {
@@ -67,23 +66,25 @@ interface MessageRemoveEvent {
     };
 }
 declare class PerfTracker {
-    private firstPartTimes;
-    private lastPartTimes;
+    private steps;
     private inboxStarts;
     private promptStarts;
     private messagePromptStarts;
     private promptAssociationAttempted;
+    private settledMessages;
     private statsMap;
     /** 原始样本串，用于分位数计算，不持久化 */
     private ttftSamples;
+    private tpsSamples;
     private latencySamples;
     handleInboxEnqueued(event: InboxEnqueuedEvent): void;
     handleInboxDelivered(event: InboxDeliveredEvent): void;
     private associatePrompt;
     handleStepStarted(event: StepStartedEvent): void;
     handlePartUpdated(event: PartEvent): void;
-    handlePartEnded(event: PartEvent): void;
-    handleMessageUpdated(event: MessageUpdateEvent): void;
+    handleStepStreamed(event: StepStreamedEvent): void;
+    handleStepTerminal(event: StepTerminalEvent): void;
+    private clearMessage;
     private appendLog;
     handleMessageRemoved(event: MessageRemoveEvent): void;
     private updateStats;

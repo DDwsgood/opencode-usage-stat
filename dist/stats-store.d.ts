@@ -5,7 +5,7 @@
  * - 每次请求完成时，通过 updatePersistedStats() 增量写入 JSON 统计文件
  * - 统计文件永久累积，不受 JSONL 日志轮转/窗口限制影响
  * - 百分位数采用 Reservoir Sampling 保持有界内存占用
- * - 首次启动时自动从现有 JSONL 日志迁移，不丢失历史数据
+ * - 首次启动时从同版本 JSONL 日志重建；旧口径性能样本不会混入
  */
 import type { LogEntry, ModelPerfStats } from "./formatter.js";
 export declare function setUsageStatStorePaths(stats: string, log: string): void;

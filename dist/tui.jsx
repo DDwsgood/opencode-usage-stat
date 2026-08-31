@@ -117,7 +117,7 @@ function resolveLogPath() {
   return logPath ?? DEFAULT_LOG_PATH;
 }
 var RESERVOIR_SIZE = 500;
-var CURRENT_VERSION = 1;
+var CURRENT_VERSION = 2;
 function loadStatsFile() {
   try {
     if (!existsSync(resolveStatsPath())) {
@@ -150,6 +150,7 @@ function reservoirAdd(reservoir, value, totalCount) {
   return reservoir;
 }
 function applyEntryToModels(models, entry) {
+  if (entry.schema !== 2) return;
   const key = entry.model;
   let s = models[key];
   if (!s) {
@@ -171,11 +172,14 @@ function applyEntryToModels(models, entry) {
       avgTPS: null,
       maxTPS: null,
       minTPS: null,
+      tpsTotalTokens: 0,
+      tpsTotalTimeMs: 0,
       avgLatency: null,
       maxLatency: null,
       minLatency: null,
       ttftReservoir: [],
-      latencyReservoir: []
+      latencyReservoir: [],
+      tpsReservoir: []
     };
     models[key] = s;
   }
@@ -193,12 +197,14 @@ function applyEntryToModels(models, entry) {
     s.minTTFT = s.minTTFT != null ? Math.min(s.minTTFT, entry.ttft_ms) : entry.ttft_ms;
     s.ttftReservoir = reservoirAdd(s.ttftReservoir, entry.ttft_ms, s.ttftCount);
   }
-  if (entry.tps != null) {
+  if (entry.tps != null && entry.tpsTokens != null && entry.tpsWindowMs != null && entry.tpsWindowMs > 0) {
     s.tpsCount++;
-    const c = s.tpsCount;
-    s.avgTPS = s.avgTPS != null ? s.avgTPS + (entry.tps - s.avgTPS) / c : entry.tps;
+    s.tpsTotalTokens += entry.tpsTokens;
+    s.tpsTotalTimeMs += entry.tpsWindowMs;
+    s.avgTPS = s.tpsTotalTokens / s.tpsTotalTimeMs * 1e3;
     s.maxTPS = s.maxTPS != null ? Math.max(s.maxTPS, entry.tps) : entry.tps;
     s.minTPS = s.minTPS != null ? Math.min(s.minTPS, entry.tps) : entry.tps;
+    s.tpsReservoir = reservoirAdd(s.tpsReservoir, entry.tps, s.tpsCount);
   }
   if (entry.latency_ms != null) {
     s.latencyCount++;
@@ -226,7 +232,7 @@ function migrateFromLogsIfNeeded(file) {
       if (!line) continue;
       try {
         const entry = JSON.parse(line);
-        if (entry.model && entry.ts) {
+        if (entry.schema === 2 && entry.model && entry.ts) {
           applyEntryToModels(file.models, entry);
           migrated++;
         }
@@ -271,6 +277,7 @@ function readPersistedStats() {
     }
     return Object.values(file.models).map((s) => {
       const ttftArr = [...s.ttftReservoir].sort((a, b) => a - b);
+      const tpsArr = [...s.tpsReservoir].sort((a, b) => a - b);
       const latArr = [...s.latencyReservoir].sort((a, b) => a - b);
       const denom = s.totalInput + s.totalCacheRead;
       return {
@@ -294,6 +301,11 @@ function readPersistedStats() {
         avgTPS: s.avgTPS,
         maxTPS: s.maxTPS,
         minTPS: s.minTPS,
+        p50TPS: percentile(tpsArr, 50),
+        p95TPS: percentile(tpsArr, 95),
+        p99TPS: percentile(tpsArr, 99),
+        tpsTotalTokens: s.tpsTotalTokens,
+        tpsTotalTimeMs: s.tpsTotalTimeMs,
         avgLatency: s.avgLatency,
         maxLatency: s.maxLatency,
         minLatency: s.minLatency,
@@ -314,17 +326,19 @@ var logPath2 = null;
 function resolveLogPath2() {
   return logPath2 ?? DEFAULT_LOG_PATH2;
 }
-var FIRST_OUTPUT_PART_TYPES = /* @__PURE__ */ new Set(["text", "reasoning"]);
+var FIRST_OUTPUT_PART_TYPES = /* @__PURE__ */ new Set(["text", "reasoning", "tool"]);
+var MIN_TPS_WINDOW_MS = 50;
 var PerfTracker = class {
-  firstPartTimes = /* @__PURE__ */ new Map();
-  lastPartTimes = /* @__PURE__ */ new Map();
+  steps = /* @__PURE__ */ new Map();
   inboxStarts = /* @__PURE__ */ new Map();
   promptStarts = /* @__PURE__ */ new Map();
   messagePromptStarts = /* @__PURE__ */ new Map();
   promptAssociationAttempted = /* @__PURE__ */ new Set();
+  settledMessages = /* @__PURE__ */ new Set();
   statsMap = /* @__PURE__ */ new Map();
   /** 原始样本串，用于分位数计算，不持久化 */
   ttftSamples = /* @__PURE__ */ new Map();
+  tpsSamples = /* @__PURE__ */ new Map();
   latencySamples = /* @__PURE__ */ new Map();
   handleInboxEnqueued(event) {
     const sessionID = event.data?.sessionID;
@@ -353,79 +367,84 @@ var PerfTracker = class {
   }
   handleStepStarted(event) {
     const messageID = event.data?.assistantMessageID;
-    if (messageID) this.associatePrompt(messageID, event.data?.sessionID);
+    const sessionID = event.data?.sessionID;
+    const startedAt = event.created;
+    if (!messageID || !sessionID || typeof startedAt !== "number") return;
+    this.associatePrompt(messageID, sessionID);
+    this.steps.set(messageID, {
+      sessionID,
+      providerID: event.data?.model?.providerID ?? "unknown",
+      modelID: event.data?.model?.id ?? "unknown",
+      startedAt,
+      streamedAt: null,
+      firstOutputAt: null
+    });
   }
   handlePartUpdated(event) {
     if (!event.time?.start || !event.message_id) return;
     const type = event.type ?? "";
     if (!FIRST_OUTPUT_PART_TYPES.has(type)) return;
     this.associatePrompt(event.message_id, event.session_id);
-    const cur = this.firstPartTimes.get(event.message_id) ?? Number.POSITIVE_INFINITY;
-    if (event.time.start < cur) {
-      this.firstPartTimes.set(event.message_id, event.time.start);
-    }
+    const step = this.steps.get(event.message_id);
+    if (!step) return;
+    step.firstOutputAt = step.firstOutputAt === null ? event.time.start : Math.min(step.firstOutputAt, event.time.start);
   }
-  handlePartEnded(event) {
-    if (!event.time?.start || !event.message_id || !FIRST_OUTPUT_PART_TYPES.has(event.type ?? "")) return;
-    const current = this.lastPartTimes.get(event.message_id) ?? Number.NEGATIVE_INFINITY;
-    if (event.time.start > current) this.lastPartTimes.set(event.message_id, event.time.start);
+  handleStepStreamed(event) {
+    const messageID = event.data?.assistantMessageID;
+    const streamedAt = event.created;
+    if (!messageID || typeof streamedAt !== "number") return;
+    const step = this.steps.get(messageID);
+    if (!step || streamedAt < step.startedAt) return;
+    step.streamedAt = streamedAt;
   }
-  handleMessageUpdated(event) {
-    const info = event.properties?.info;
-    if (!info || info.role !== "assistant") return;
-    if (!info.time?.completed) return;
-    const messageID = info.id ?? "";
-    const created = info.time.created;
-    const completed = info.time.completed;
-    if (!created || !completed) {
-      this.firstPartTimes.delete(messageID);
-      this.lastPartTimes.delete(messageID);
-      this.messagePromptStarts.delete(messageID);
-      this.promptAssociationAttempted.delete(messageID);
+  handleStepTerminal(event) {
+    const messageID = event.data?.assistantMessageID;
+    if (!messageID) return;
+    const step = this.steps.get(messageID);
+    if (!step) return;
+    const settledKey = `${step.sessionID}/${messageID}`;
+    if (this.settledMessages.has(settledKey)) {
+      this.clearMessage(messageID);
       return;
     }
-    const sessionID = info.sessionID ?? "";
-    const providerID = info.providerID ?? info.model?.providerID ?? "unknown";
-    const modelID = info.modelID ?? info.model?.id ?? "unknown";
-    const model = `${providerID}/${modelID}`;
-    const tokens = info.tokens;
+    const tokens = event.data?.tokens;
     const inputTokens = tokens?.input ?? 0;
     const outputTokens = tokens?.output ?? 0;
     const reasoningTokens = tokens?.reasoning ?? 0;
     const cacheRead = tokens?.cache?.read ?? 0;
     const cacheWrite = tokens?.cache?.write ?? 0;
-    const cost = info.cost ?? 0;
+    const cost = event.data?.cost ?? 0;
     if (inputTokens + outputTokens + reasoningTokens + cacheRead + cacheWrite === 0) {
-      this.firstPartTimes.delete(messageID);
-      this.lastPartTimes.delete(messageID);
-      this.messagePromptStarts.delete(messageID);
-      this.promptAssociationAttempted.delete(messageID);
+      this.clearMessage(messageID);
       return;
     }
-    const firstPart = this.firstPartTimes.get(messageID) ?? null;
-    const lastPart = this.lastPartTimes.get(messageID) ?? null;
     const promptStart = this.messagePromptStarts.get(messageID) ?? null;
-    const ttftMs = firstPart !== null && promptStart !== null && firstPart >= promptStart ? firstPart - promptStart : null;
-    const latencyMs = lastPart !== null && promptStart !== null && lastPart >= promptStart ? lastPart - promptStart : null;
-    const genMs = firstPart !== null && lastPart !== null ? lastPart - firstPart : null;
+    const ttftMs = step.firstOutputAt !== null && promptStart !== null && step.firstOutputAt >= promptStart ? step.firstOutputAt - promptStart : null;
+    const latencyMs = step.streamedAt !== null && promptStart !== null && step.streamedAt >= promptStart ? step.streamedAt - promptStart : null;
+    const bodyMs = step.streamedAt !== null ? step.streamedAt - step.startedAt : null;
     const generatedTokens = outputTokens + reasoningTokens;
-    const tps = genMs !== null && genMs > 0 && generatedTokens > 0 ? generatedTokens / genMs * 1e3 : null;
-    this.firstPartTimes.delete(messageID);
-    this.lastPartTimes.delete(messageID);
-    this.messagePromptStarts.delete(messageID);
-    this.promptAssociationAttempted.delete(messageID);
+    const tps = bodyMs !== null && bodyMs >= MIN_TPS_WINDOW_MS && generatedTokens > 0 ? generatedTokens / bodyMs * 1e3 : null;
+    this.settledMessages.add(settledKey);
+    this.clearMessage(messageID);
+    const providerID = step.providerID;
+    const modelID = step.modelID;
+    const model = `${providerID}/${modelID}`;
     const entry = {
+      schema: 2,
       ts: (/* @__PURE__ */ new Date()).toISOString(),
+      messageID,
       model,
       providerID,
       modelID,
-      sessionID,
+      sessionID: step.sessionID,
       ttft_ms: ttftMs,
       ttft_source: "inbox-enqueued",
       tps,
-      tps_source: "all-output-window",
+      tps_source: "step-body-window",
+      tpsTokens: generatedTokens,
+      tpsWindowMs: tps === null ? void 0 : bodyMs ?? void 0,
       latency_ms: latencyMs,
-      latency_source: "inbox-to-last-output",
+      latency_source: "inbox-to-step-streamed",
       inputTokens,
       outputTokens,
       reasoningTokens,
@@ -435,6 +454,11 @@ var PerfTracker = class {
     };
     this.appendLog(entry);
     this.updateStats(model, entry);
+  }
+  clearMessage(messageID) {
+    this.steps.delete(messageID);
+    this.messagePromptStarts.delete(messageID);
+    this.promptAssociationAttempted.delete(messageID);
   }
   appendLog(entry) {
     try {
@@ -451,12 +475,7 @@ var PerfTracker = class {
   }
   handleMessageRemoved(event) {
     const mid = event.properties?.messageID ?? "";
-    if (mid) {
-      this.firstPartTimes.delete(mid);
-      this.lastPartTimes.delete(mid);
-      this.messagePromptStarts.delete(mid);
-      this.promptAssociationAttempted.delete(mid);
-    }
+    if (mid) this.clearMessage(mid);
   }
   updateStats(model, entry) {
     let stats = this.statsMap.get(model);
@@ -482,6 +501,11 @@ var PerfTracker = class {
         avgTPS: null,
         maxTPS: null,
         minTPS: null,
+        p50TPS: null,
+        p95TPS: null,
+        p99TPS: null,
+        tpsTotalTokens: 0,
+        tpsTotalTimeMs: 0,
         avgLatency: null,
         maxLatency: null,
         minLatency: null,
@@ -509,13 +533,16 @@ var PerfTracker = class {
       ttftArr.push(entry.ttft_ms);
       this.ttftSamples.set(model, ttftArr);
     }
-    if (entry.tps !== null) {
+    if (entry.tps !== null && entry.tpsTokens != null && entry.tpsWindowMs != null && entry.tpsWindowMs > 0) {
       stats.tpsCount++;
-      const c = stats.tpsCount;
-      const prev = stats.avgTPS;
-      stats.avgTPS = prev !== null ? prev + (entry.tps - prev) / c : entry.tps;
+      stats.tpsTotalTokens += entry.tpsTokens;
+      stats.tpsTotalTimeMs += entry.tpsWindowMs;
+      stats.avgTPS = stats.tpsTotalTokens / stats.tpsTotalTimeMs * 1e3;
       stats.maxTPS = stats.maxTPS !== null ? Math.max(stats.maxTPS, entry.tps) : entry.tps;
       stats.minTPS = stats.minTPS !== null ? Math.min(stats.minTPS, entry.tps) : entry.tps;
+      const tpsArr = this.tpsSamples.get(model) ?? [];
+      tpsArr.push(entry.tps);
+      this.tpsSamples.set(model, tpsArr);
     }
     if (entry.latency_ms !== null) {
       stats.latencyCount++;
@@ -553,6 +580,10 @@ var PerfTracker = class {
       s.p50TTFT = this.percentile(ttftArr, 50);
       s.p95TTFT = this.percentile(ttftArr, 95);
       s.p99TTFT = this.percentile(ttftArr, 99);
+      const tpsArr = [...this.tpsSamples.get(model) ?? []].sort((a, b) => a - b);
+      s.p50TPS = this.percentile(tpsArr, 50);
+      s.p95TPS = this.percentile(tpsArr, 95);
+      s.p99TPS = this.percentile(tpsArr, 99);
       const latArr = [...this.latencySamples.get(model) ?? []].sort((a, b) => a - b);
       s.p50Latency = this.percentile(latArr, 50);
       s.p95Latency = this.percentile(latArr, 95);
@@ -577,46 +608,49 @@ var PerfTracker = class {
       if (!content) return [];
       const lines = content.split("\n");
       const entries = [];
-      for (let i = Math.max(0, lines.length - last); i < lines.length; i++) {
+      for (let i = lines.length - 1; i >= 0 && entries.length < last; i--) {
         try {
           const entry = JSON.parse(lines[i]);
+          if (entry.schema !== 2 || entry.tps_source !== "step-body-window") continue;
           entries.push({
             ...entry,
             ttft_ms: entry.ttft_source === "inbox-enqueued" ? entry.ttft_ms : null,
-            tps: entry.tps_source === "all-output-window" ? entry.tps : null,
-            latency_ms: entry.latency_source === "inbox-to-last-output" ? entry.latency_ms : null
+            tps: entry.schema === 2 && entry.tps_source === "step-body-window" ? entry.tps : null,
+            latency_ms: entry.schema === 2 && entry.latency_source === "inbox-to-step-streamed" ? entry.latency_ms : null
           });
         } catch {
         }
       }
-      return entries;
+      return entries.reverse();
     } catch {
       return [];
     }
   }
   reset() {
-    this.firstPartTimes.clear();
-    this.lastPartTimes.clear();
+    this.steps.clear();
     this.inboxStarts.clear();
     this.promptStarts.clear();
     this.messagePromptStarts.clear();
     this.promptAssociationAttempted.clear();
+    this.settledMessages.clear();
     this.statsMap.clear();
     this.ttftSamples.clear();
+    this.tpsSamples.clear();
     this.latencySamples.clear();
   }
   loadSession(sessionID) {
     this.loadSessions(sessionID ? [sessionID] : []);
   }
   loadSessions(sessionIDs) {
-    this.firstPartTimes.clear();
-    this.lastPartTimes.clear();
+    this.steps.clear();
     this.inboxStarts.clear();
     this.promptStarts.clear();
     this.messagePromptStarts.clear();
     this.promptAssociationAttempted.clear();
+    this.settledMessages.clear();
     this.statsMap.clear();
     this.ttftSamples.clear();
+    this.tpsSamples.clear();
     this.latencySamples.clear();
     const ids = new Set(sessionIDs.filter(Boolean));
     if (ids.size === 0) return;
@@ -629,12 +663,14 @@ var PerfTracker = class {
         if (!line) continue;
         try {
           const entry = JSON.parse(line);
+          if (entry.schema !== 2 || entry.tps_source !== "step-body-window") continue;
+          if (entry.messageID) this.settledMessages.add(`${entry.sessionID}/${entry.messageID}`);
           if (ids.has(entry.sessionID)) {
             this.updateStats(entry.model, {
               ...entry,
               ttft_ms: entry.ttft_source === "inbox-enqueued" ? entry.ttft_ms : null,
-              tps: entry.tps_source === "all-output-window" ? entry.tps : null,
-              latency_ms: entry.latency_source === "inbox-to-last-output" ? entry.latency_ms : null
+              tps: entry.tps,
+              latency_ms: entry.latency_source === "inbox-to-step-streamed" ? entry.latency_ms : null
             });
           }
         } catch {
@@ -2149,6 +2185,103 @@ async function fetchCursorUsage(accessToken, fetchImpl = fetch) {
   if (windows.length === 0) throw new Error("Cursor usage data could not be parsed");
   return windows;
 }
+var COMMAND_CODE_ALIASES = ["command-code", "commandcode"];
+var COMMAND_CODE_ENV_KEYS = ["COMMAND_CODE_API_KEY", "COMMANDCODE_API_KEY"];
+var COMMAND_CODE_API_BASE = "https://api.commandcode.ai";
+var COMMAND_CODE_PLAN_NAMES = {
+  "individual-go": "Go",
+  "individual-goat": "GOAT",
+  "individual-pro": "Pro",
+  "individual-pro-v1": "Pro",
+  "individual-provider": "Provider",
+  "individual-max": "Max",
+  "individual-ultra": "Ultra",
+  "teams-pro": "Teams Pro"
+};
+function commandCodeMoney(value) {
+  return `$${value.toFixed(2)}`;
+}
+function parseCommandCodeUsage(data) {
+  const creditsResponse = asObject(data.credits);
+  const balances = asObject(creditsResponse?.credits);
+  const limits = asObject(creditsResponse?.windowLimits);
+  const subscription = asObject(asObject(data.subscription)?.data);
+  const summary = asObject(data.summary);
+  const windows = [];
+  if (limits?.limited !== false) {
+    for (const [key, label] of [["fiveHour", "5h"], ["weekly", "7d"]]) {
+      const limit = asObject(limits?.[key]);
+      const used = toNumber(limit?.used);
+      const cap = toNumber(limit?.cap);
+      if (used == null && cap == null) continue;
+      windows.push({
+        label,
+        percent: used != null && cap != null && cap > 0 ? clampPct(used / cap * 100) : null,
+        resetsAt: toResetTimestamp(limit?.resetAt),
+        valueLabel: used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null
+      });
+    }
+  }
+  const creditParts = [balances?.monthlyCredits, balances?.purchasedCredits, balances?.freeCredits].map(toNumber).filter((value) => value !== null);
+  const remaining = creditParts.length > 0 ? creditParts.reduce((sum, value) => sum + value, 0) : null;
+  const spent = toNumber(summary?.totalCost);
+  if (spent != null && remaining != null) {
+    const total = spent + remaining;
+    windows.push({
+      label: "Monthly",
+      percent: total > 0 ? clampPct(spent / total * 100) : null,
+      resetsAt: toResetTimestamp(subscription?.currentPeriodEnd),
+      valueLabel: `${commandCodeMoney(spent)} / ${commandCodeMoney(total)}`
+    });
+  }
+  if (remaining != null) {
+    windows.push({ label: "Credits", percent: null, resetsAt: null, valueLabel: `${commandCodeMoney(remaining)} left` });
+  }
+  const planId = nonEmptyString(subscription?.planId) ?? nonEmptyString(balances?.planId);
+  return { windows, planLabel: planId ? COMMAND_CODE_PLAN_NAMES[planId] ?? planId : null };
+}
+function resolveCommandCodeCredential(resolved) {
+  if (resolved.value && resolved.source !== "dotenv") return resolved.value;
+  try {
+    const authPath = join4(homedir4(), ".commandcode", "auth.json");
+    if (existsSync4(authPath)) {
+      const apiKey = nonEmptyString(asObject(JSON.parse(readFileSync4(authPath, "utf8")))?.apiKey);
+      if (apiKey) return apiKey;
+    }
+  } catch {
+  }
+  return resolved.value;
+}
+async function fetchCommandCodeJson(path, apiKey, fetchImpl) {
+  const response = await fetchWithTimeout(`${COMMAND_CODE_API_BASE}${path}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "User-Agent": "opencode-usage-stat"
+    }
+  }, fetchImpl);
+  if (!response.ok) {
+    throw await errorFrom(response, "Command Code", response.status === 401 || response.status === 403 ? "Command Code session expired \u2014 re-authenticate with cmd auth login" : void 0);
+  }
+  return response.json().catch(() => null);
+}
+async function fetchCommandCodeUsage(apiKey, fetchImpl = fetch) {
+  const whoami = asObject(await fetchCommandCodeJson("/alpha/whoami", apiKey, fetchImpl));
+  const orgId = nonEmptyString(asObject(whoami?.org)?.id);
+  if (!orgId) throw new Error("Command Code account organization could not be resolved");
+  const orgQuery = new URLSearchParams({ orgId }).toString();
+  const [credits, subscription] = await Promise.all([
+    fetchCommandCodeJson(`/alpha/billing/credits?${orgQuery}`, apiKey, fetchImpl),
+    fetchCommandCodeJson(`/alpha/billing/subscriptions?${orgQuery}`, apiKey, fetchImpl)
+  ]);
+  const currentPeriodStart = nonEmptyString(asObject(asObject(subscription)?.data)?.currentPeriodStart);
+  const summaryQuery = new URLSearchParams({ orgId, ...currentPeriodStart ? { since: currentPeriodStart } : {} }).toString();
+  const summary = await fetchCommandCodeJson(`/alpha/usage/summary?${summaryQuery}`, apiKey, fetchImpl);
+  const parsed = parseCommandCodeUsage({ credits, subscription, summary });
+  if (parsed.windows.length === 0) throw new Error("Command Code usage data could not be parsed");
+  return parsed;
+}
 var PROVIDERS = [
   { id: "opencode-go", name: "OpenCode Go", aliases: OPENCODE_GO_ALIASES, envKeys: OPENCODE_GO_ENV_KEYS },
   { id: "deepseek", name: "DeepSeek", aliases: DEEPSEEK_ALIASES, envKeys: DEEPSEEK_ENV_KEYS },
@@ -2165,7 +2298,8 @@ var PROVIDERS = [
   { id: "github-copilot-addon", name: "Copilot Add-on", aliases: COPILOT_ALIASES, envKeys: COPILOT_ENV_KEYS },
   { id: "google", name: "Google Gemini", aliases: GOOGLE_ALIASES, envKeys: GOOGLE_ENV_KEYS },
   { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
-  { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS }
+  { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
+  { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS }
 ];
 var USAGE_STAT_PROVIDER_IDS = PROVIDERS.map((p) => p.id);
 var defaultCredentialResolver = (spec) => resolveCredential(spec);
@@ -2181,9 +2315,9 @@ function collapsedSummary(windows, mode) {
   const weekly = windows.find((w) => isWeeklyWin(w.label));
   const n = session ? shown(session) : null;
   const m = weekly ? shown(weekly) : null;
-  if (n != null && m != null) return `${n}%/${m}%`;
-  if (n != null) return `${n}%`;
-  if (m != null) return `${m}%`;
+  if (n != null && m != null) return `${n}%/5h ${m}%/7d`;
+  if (n != null) return `${n}%/5h`;
+  if (m != null) return `${m}%/7d`;
   const firstPercent = windows.map(shown).find((v) => v != null);
   if (firstPercent != null) return `${firstPercent}%`;
   return windows.find((w) => w.valueLabel)?.valueLabel ?? null;
@@ -2231,7 +2365,7 @@ async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential =
       return finishError(true, err instanceof Error ? err.message : "Request failed");
     }
   }
-  const secret = resolved.value;
+  const secret = spec.id === "command-code" ? resolveCommandCodeCredential(resolved) : resolved.value;
   if (!secret) {
     return finishError(false, "not configured");
   }
@@ -2282,6 +2416,12 @@ async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential =
         const token = resolveCursorCredential(resolved);
         if (!token) return finishError(false, "Not configured (no saved access token)");
         windows = await fetchCursorUsage(token, fetchImpl);
+        break;
+      }
+      case "command-code": {
+        const parsed = await fetchCommandCodeUsage(secret, fetchImpl);
+        windows = parsed.windows;
+        planLabel = parsed.planLabel;
         break;
       }
     }
@@ -2410,7 +2550,8 @@ var PROVIDER_COLORS = {
   "github-copilot-addon": RGBA2.fromInts(130, 165, 250, 255),
   google: RGBA2.fromInts(120, 185, 95, 255),
   xai: RGBA2.fromInts(225, 225, 235, 255),
-  cursor: RGBA2.fromInts(200, 200, 210, 255)
+  cursor: RGBA2.fromInts(200, 200, 210, 255),
+  "command-code": RGBA2.fromInts(235, 190, 90, 255)
 };
 function ProviderUsageBlocks(props) {
   const {
@@ -2535,7 +2676,9 @@ function ProviderUsageBlocks(props) {
           const headerText = () => {
             if (state.loading && !state.result) return `${t("providerRefreshing")}\u2026`;
             const summary = collapsedSummary(state.result?.windows, displayMode());
-            if (state.result?.ok && summary != null) return summary;
+            if (state.result?.ok && summary != null) {
+              return displayMode() === "remaining" ? `${summary} ${t("left")}` : summary;
+            }
             const status = state.result?.status ?? t("providerNotConfigured");
             const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
             return status.startsWith(prefix) ? status.slice(prefix.length) : status;
@@ -3255,7 +3398,7 @@ function UsageStatPanel(props) {
                     _$insertNode2(_el$42, _el$44);
                     _$insert2(_el$42, () => progressFilled(hitRate, modelBarWidth()), _el$43);
                     _$insert2(_el$42, () => progressRemaining(hitRate, modelBarWidth()), _el$43);
-                    _$insert2(_el$42, () => hitRate.toFixed(0), _el$44);
+                    _$insert2(_el$42, () => hitRate.toFixed(1), _el$44);
                     _$effect2((_$p) => _$setProp2(_el$42, "style", {
                       fg: hitRateColor(hitRate)
                     }, _$p));
@@ -7383,7 +7526,7 @@ var plugin = define({
     let currentSessionID = "";
     let currentFamily = [];
     const cleanups = [];
-    const knownCompleted = /* @__PURE__ */ new Map();
+    const onEvent = context.data.on;
     const unsubInboxEnqueued = context.data.on("session.inbox.enqueued", (event) => {
       perfTracker.handleInboxEnqueued(event);
     });
@@ -7392,11 +7535,11 @@ var plugin = define({
       perfTracker.handleInboxDelivered(event);
     });
     cleanups.push(unsubInboxDelivered);
-    const unsubStepStarted = context.data.on("session.step.started", (event) => {
+    const unsubStepStarted = onEvent("session.step.started", (event) => {
       perfTracker.handleStepStarted(event);
     });
     cleanups.push(unsubStepStarted);
-    const unsubPart = context.data.on("session.text.started", (event) => {
+    const unsubPart = onEvent("session.text.started", (event) => {
       perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
@@ -7407,7 +7550,7 @@ var plugin = define({
       });
     });
     cleanups.push(unsubPart);
-    const unsubReasoning = context.data.on("session.reasoning.started", (event) => {
+    const unsubReasoning = onEvent("session.reasoning.started", (event) => {
       perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
         session_id: event?.data?.sessionID,
@@ -7418,29 +7561,31 @@ var plugin = define({
       });
     });
     cleanups.push(unsubReasoning);
-    const unsubTextEnded = context.data.on("session.text.ended", (event) => {
-      perfTracker.handlePartEnded({
+    const unsubToolInput = onEvent("session.tool.input.started", (event) => {
+      perfTracker.handlePartUpdated({
         message_id: event?.data?.assistantMessageID,
-        type: "text",
+        session_id: event?.data?.sessionID,
+        type: "tool",
         time: {
           start: event?.created
         }
       });
     });
-    cleanups.push(unsubTextEnded);
-    const unsubReasoningEnded = context.data.on("session.reasoning.ended", (event) => {
-      perfTracker.handlePartEnded({
-        message_id: event?.data?.assistantMessageID,
-        type: "reasoning",
-        time: {
-          start: event?.created
-        }
-      });
+    cleanups.push(unsubToolInput);
+    const unsubStepStreamed = onEvent("session.step.streamed", (event) => {
+      perfTracker.handleStepStreamed(event);
     });
-    cleanups.push(unsubReasoningEnded);
+    cleanups.push(unsubStepStreamed);
+    const settleStep = (event) => {
+      perfTracker.handleStepTerminal(event);
+      setSidebarRevision((value) => value + 1);
+    };
+    const unsubStepEnded = onEvent("session.step.ended", settleStep);
+    const unsubStepFailed = onEvent("session.step.failed", settleStep);
+    cleanups.push(unsubStepEnded, unsubStepFailed);
     const unsubUsage = context.data.on("session.usage.updated", (event) => {
       const sessionID = event?.data?.sessionID;
-      if (sessionID && currentFamily.includes(sessionID)) void refreshSession(sessionID, true);
+      if (sessionID && currentFamily.includes(sessionID)) void refreshSession(sessionID);
       setSidebarRevision((v) => v + 1);
     });
     cleanups.push(unsubUsage);
@@ -7465,50 +7610,9 @@ var plugin = define({
       }
       setAllTokenMessages(messages);
     }
-    function processNewCompletions(sessionID, messages) {
-      const known = knownCompleted.get(sessionID) ?? /* @__PURE__ */ new Set();
-      knownCompleted.set(sessionID, known);
-      for (const msg of messages) {
-        if (msg?.type !== "assistant" || !msg?.time?.completed || known.has(msg.id)) continue;
-        known.add(msg.id);
-        const tokens = msg.tokens;
-        if (!tokens) continue;
-        perfTracker.handleMessageUpdated({
-          properties: {
-            info: {
-              id: msg.id,
-              sessionID,
-              role: "assistant",
-              providerID: msg.model?.providerID ?? "unknown",
-              modelID: msg.model?.id ?? "unknown",
-              tokens: {
-                input: tokens.input ?? 0,
-                output: tokens.output ?? 0,
-                reasoning: tokens.reasoning ?? 0,
-                cache: {
-                  read: tokens.cache?.read ?? 0,
-                  write: tokens.cache?.write ?? 0
-                }
-              },
-              cost: msg.cost ?? 0,
-              time: {
-                created: msg.time.created,
-                completed: msg.time.completed
-              }
-            }
-          }
-        });
-      }
-    }
-    async function refreshSession(sessionID, trackNew) {
+    async function refreshSession(sessionID) {
       await context.data.session.message.sync(sessionID).catch(() => {
       });
-      const messages = context.data.session.message.list(sessionID) ?? [];
-      if (trackNew) {
-        processNewCompletions(sessionID, messages);
-      } else {
-        knownCompleted.set(sessionID, new Set(messages.filter((message) => message?.type === "assistant" && message?.time?.completed).map((message) => message.id)));
-      }
       if (currentFamily.includes(sessionID)) updateTokenMessages();
       setSidebarRevision((value) => value + 1);
     }
@@ -7531,15 +7635,15 @@ var plugin = define({
       if (rootID !== currentSessionID) return;
       currentFamily = familyFor(rootID);
       perfTracker.loadSessions(currentFamily);
-      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID, false)));
+      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID)));
       updateTokenMessages();
     }
     const unsubExec = context.data.on("session.execution.succeeded", (event) => {
-      void refreshSession(event.data.sessionID, true);
+      void refreshSession(event.data.sessionID);
     });
     cleanups.push(unsubExec);
     const unsubExecFailed = context.data.on("session.execution.failed", (event) => {
-      void refreshSession(event.data.sessionID, true);
+      void refreshSession(event.data.sessionID);
     });
     cleanups.push(unsubExecFailed);
     const unsubCreated = context.data.on("session.created", (event) => {
@@ -7547,7 +7651,7 @@ var plugin = define({
       const parentID = event?.data?.parentID;
       if (!sessionID || !parentID || !currentFamily.includes(parentID) || currentFamily.includes(sessionID)) return;
       currentFamily = [...currentFamily, sessionID];
-      void refreshSession(sessionID, false);
+      void refreshSession(sessionID);
     });
     cleanups.push(unsubCreated);
     function CommandsMount(props) {
@@ -7570,9 +7674,6 @@ var plugin = define({
           if (sessionID && sessionID !== currentSessionID) {
             currentSessionID = sessionID;
             currentFamily = familyFor(sessionID);
-            for (const knownId of [...knownCompleted.keys()]) {
-              if (!currentFamily.includes(knownId)) knownCompleted.delete(knownId);
-            }
             perfTracker.loadSessions(currentFamily);
             setAllTokenMessages([]);
             void syncFamilyTree(sessionID);

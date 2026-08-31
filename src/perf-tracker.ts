@@ -20,15 +20,8 @@ function resolveLogPath(): string {
   return logPath ?? DEFAULT_LOG_PATH
 }
 
-/**
- * Part types that represent a real model streaming output ("first token").
- * Text is the classic body; reasoning streams first on many models (e.g.
- * DeepSeek-R1, Claude, o-series). Counting only later text inflates TTFT and
- * understates the generation interval, so TPS becomes unrealistically high.
- * We accept both (and any delta part that carries a timestamp) and keep the
- * EARLIEST one for TTFT / TPS generation-window start.
- */
-const FIRST_OUTPUT_PART_TYPES = new Set(["text", "reasoning"])
+const FIRST_OUTPUT_PART_TYPES = new Set(["text", "reasoning", "tool"])
+const MIN_TPS_WINDOW_MS = 50
 
 interface PartEvent {
   message_id?: string
@@ -48,27 +41,30 @@ interface InboxDeliveredEvent {
 }
 
 interface StepStartedEvent {
+  created?: number
+  data?: {
+    sessionID?: string
+    assistantMessageID?: string
+    model?: { providerID?: string; id?: string }
+  }
+}
+
+interface StepStreamedEvent {
+  created?: number
   data?: { sessionID?: string; assistantMessageID?: string }
 }
 
-interface MessageUpdateEvent {
-  properties: {
-    info: {
-      id?: string
-      sessionID?: string
-      role?: string
-      providerID?: string
-      modelID?: string
-      model?: { providerID?: string; id?: string }
-      tokens?: {
-        input?: number
-        output?: number
-        reasoning?: number
-        cache?: { read?: number; write?: number }
-      }
-      cost?: number
-      time?: { created?: number; completed?: number }
+interface StepTerminalEvent {
+  data?: {
+    sessionID?: string
+    assistantMessageID?: string
+    tokens?: {
+      input?: number
+      output?: number
+      reasoning?: number
+      cache?: { read?: number; write?: number }
     }
+    cost?: number
   }
 }
 
@@ -79,16 +75,26 @@ interface MessageRemoveEvent {
   }
 }
 
+interface StepTiming {
+  sessionID: string
+  providerID: string
+  modelID: string
+  startedAt: number
+  streamedAt: number | null
+  firstOutputAt: number | null
+}
+
 class PerfTracker {
-  private firstPartTimes = new Map<string, number>()
-  private lastPartTimes = new Map<string, number>()
+  private steps = new Map<string, StepTiming>()
   private inboxStarts = new Map<string, { sessionID: string; created: number }>()
   private promptStarts = new Map<string, number[]>()
   private messagePromptStarts = new Map<string, number>()
   private promptAssociationAttempted = new Set<string>()
+  private settledMessages = new Set<string>()
   private statsMap = new Map<string, ModelPerfStats>()
   /** 原始样本串，用于分位数计算，不持久化 */
   private ttftSamples = new Map<string, number[]>()
+  private tpsSamples = new Map<string, number[]>()
   private latencySamples = new Map<string, number[]>()
 
   handleInboxEnqueued(event: InboxEnqueuedEvent): void {
@@ -121,98 +127,105 @@ class PerfTracker {
 
   handleStepStarted(event: StepStartedEvent): void {
     const messageID = event.data?.assistantMessageID
-    if (messageID) this.associatePrompt(messageID, event.data?.sessionID)
+    const sessionID = event.data?.sessionID
+    const startedAt = event.created
+    if (!messageID || !sessionID || typeof startedAt !== "number") return
+    this.associatePrompt(messageID, sessionID)
+    this.steps.set(messageID, {
+      sessionID,
+      providerID: event.data?.model?.providerID ?? "unknown",
+      modelID: event.data?.model?.id ?? "unknown",
+      startedAt,
+      streamedAt: null,
+      firstOutputAt: null,
+    })
   }
 
   handlePartUpdated(event: PartEvent): void {
     if (!event.time?.start || !event.message_id) return
-    // Only count parts that represent real model streaming output. Reasoning is
-    // often the first streamed content; text may never arrive for tool-only
-    // turns. Ignore tool/snapshot/step-start control parts so TTFT measures the
-    // true first output token.
+    // The first text, reasoning, or tool-input fragment is the closest host-side
+    // approximation of first output. TPS itself uses Step.Started/Streamed.
     const type = event.type ?? ""
     if (!FIRST_OUTPUT_PART_TYPES.has(type)) return
     this.associatePrompt(event.message_id, event.session_id)
-    // Bug fix: take the EARLIEST first-output part (e.g. reasoning before text).
-    const cur = this.firstPartTimes.get(event.message_id) ?? Number.POSITIVE_INFINITY
-    if (event.time.start < cur) {
-      this.firstPartTimes.set(event.message_id, event.time.start)
-    }
+    const step = this.steps.get(event.message_id)
+    if (!step) return
+    step.firstOutputAt = step.firstOutputAt === null
+      ? event.time.start
+      : Math.min(step.firstOutputAt, event.time.start)
   }
 
-  handlePartEnded(event: PartEvent): void {
-    if (!event.time?.start || !event.message_id || !FIRST_OUTPUT_PART_TYPES.has(event.type ?? "")) return
-    const current = this.lastPartTimes.get(event.message_id) ?? Number.NEGATIVE_INFINITY
-    if (event.time.start > current) this.lastPartTimes.set(event.message_id, event.time.start)
+  handleStepStreamed(event: StepStreamedEvent): void {
+    const messageID = event.data?.assistantMessageID
+    const streamedAt = event.created
+    if (!messageID || typeof streamedAt !== "number") return
+    const step = this.steps.get(messageID)
+    if (!step || streamedAt < step.startedAt) return
+    step.streamedAt = streamedAt
   }
 
-  handleMessageUpdated(event: MessageUpdateEvent): void {
-    const info = event.properties?.info
-    if (!info || info.role !== "assistant") return
-    if (!info.time?.completed) return
+  handleStepTerminal(event: StepTerminalEvent): void {
+    const messageID = event.data?.assistantMessageID
+    if (!messageID) return
+    const step = this.steps.get(messageID)
+    if (!step) return
 
-    const messageID = info.id ?? ""
-    const created = info.time.created
-    const completed = info.time.completed
-    if (!created || !completed) {
-      this.firstPartTimes.delete(messageID)
-      this.lastPartTimes.delete(messageID)
-      this.messagePromptStarts.delete(messageID)
-      this.promptAssociationAttempted.delete(messageID)
+    const settledKey = `${step.sessionID}/${messageID}`
+    if (this.settledMessages.has(settledKey)) {
+      this.clearMessage(messageID)
       return
     }
 
-    const sessionID = info.sessionID ?? ""
-    const providerID = info.providerID ?? info.model?.providerID ?? "unknown"
-    const modelID = info.modelID ?? info.model?.id ?? "unknown"
-    const model = `${providerID}/${modelID}`
-    const tokens = info.tokens
+    const tokens = event.data?.tokens
 
     const inputTokens = tokens?.input ?? 0
     const outputTokens = tokens?.output ?? 0
     const reasoningTokens = tokens?.reasoning ?? 0
     const cacheRead = tokens?.cache?.read ?? 0
     const cacheWrite = tokens?.cache?.write ?? 0
-    const cost = info.cost ?? 0
+    const cost = event.data?.cost ?? 0
 
-    // 过滤全零 token 的失败请求，不写入日志和统计，防止污染数据
     if (inputTokens + outputTokens + reasoningTokens + cacheRead + cacheWrite === 0) {
-      this.firstPartTimes.delete(messageID)
-      this.lastPartTimes.delete(messageID)
-      this.messagePromptStarts.delete(messageID)
-      this.promptAssociationAttempted.delete(messageID)
+      this.clearMessage(messageID)
       return
     }
 
-    const firstPart = this.firstPartTimes.get(messageID) ?? null
-    const lastPart = this.lastPartTimes.get(messageID) ?? null
     const promptStart = this.messagePromptStarts.get(messageID) ?? null
-
-    const ttftMs = firstPart !== null && promptStart !== null && firstPart >= promptStart ? firstPart - promptStart : null
-    const latencyMs = lastPart !== null && promptStart !== null && lastPart >= promptStart ? lastPart - promptStart : null
-    const genMs = firstPart !== null && lastPart !== null ? lastPart - firstPart : null
+    const ttftMs = step.firstOutputAt !== null && promptStart !== null && step.firstOutputAt >= promptStart
+      ? step.firstOutputAt - promptStart
+      : null
+    const latencyMs = step.streamedAt !== null && promptStart !== null && step.streamedAt >= promptStart
+      ? step.streamedAt - promptStart
+      : null
+    const bodyMs = step.streamedAt !== null ? step.streamedAt - step.startedAt : null
     const generatedTokens = outputTokens + reasoningTokens
-    const tps = (genMs !== null && genMs > 0 && generatedTokens > 0)
-      ? (generatedTokens / genMs) * 1000
+    const tps = (bodyMs !== null && bodyMs >= MIN_TPS_WINDOW_MS && generatedTokens > 0)
+      ? (generatedTokens / bodyMs) * 1000
       : null
 
-    this.firstPartTimes.delete(messageID)
-    this.lastPartTimes.delete(messageID)
-    this.messagePromptStarts.delete(messageID)
-    this.promptAssociationAttempted.delete(messageID)
+    this.settledMessages.add(settledKey)
+    this.clearMessage(messageID)
+
+    const providerID = step.providerID
+    const modelID = step.modelID
+    const model = `${providerID}/${modelID}`
 
     const entry: LogEntry = {
+      schema: 2,
       ts: new Date().toISOString(),
+      messageID,
       model,
       providerID,
       modelID,
-      sessionID,
+      sessionID: step.sessionID,
       ttft_ms: ttftMs,
       ttft_source: "inbox-enqueued",
       tps,
-      tps_source: "all-output-window",
+      tps_source: "step-body-window",
+      tpsTokens: generatedTokens,
+      tpsWindowMs: tps === null ? undefined : bodyMs ?? undefined,
       latency_ms: latencyMs,
-      latency_source: "inbox-to-last-output",
+      latency_source: "inbox-to-step-streamed",
       inputTokens,
       outputTokens,
       reasoningTokens,
@@ -223,6 +236,12 @@ class PerfTracker {
 
     this.appendLog(entry)
     this.updateStats(model, entry)
+  }
+
+  private clearMessage(messageID: string): void {
+    this.steps.delete(messageID)
+    this.messagePromptStarts.delete(messageID)
+    this.promptAssociationAttempted.delete(messageID)
   }
 
   private appendLog(entry: LogEntry): void {
@@ -242,12 +261,7 @@ class PerfTracker {
 
   handleMessageRemoved(event: MessageRemoveEvent): void {
     const mid = event.properties?.messageID ?? ""
-    if (mid) {
-      this.firstPartTimes.delete(mid)
-      this.lastPartTimes.delete(mid)
-      this.messagePromptStarts.delete(mid)
-      this.promptAssociationAttempted.delete(mid)
-    }
+    if (mid) this.clearMessage(mid)
   }
 
   private updateStats(model: string, entry: LogEntry): void {
@@ -274,6 +288,11 @@ class PerfTracker {
         avgTPS: null,
         maxTPS: null,
         minTPS: null,
+        p50TPS: null,
+        p95TPS: null,
+        p99TPS: null,
+        tpsTotalTokens: 0,
+        tpsTotalTimeMs: 0,
         avgLatency: null,
         maxLatency: null,
         minLatency: null,
@@ -304,13 +323,16 @@ class PerfTracker {
       this.ttftSamples.set(model, ttftArr)
     }
 
-    if (entry.tps !== null) {
+    if (entry.tps !== null && entry.tpsTokens != null && entry.tpsWindowMs != null && entry.tpsWindowMs > 0) {
       stats.tpsCount++
-      const c = stats.tpsCount
-      const prev = stats.avgTPS
-      stats.avgTPS = prev !== null ? prev + (entry.tps - prev) / c : entry.tps
+      stats.tpsTotalTokens += entry.tpsTokens
+      stats.tpsTotalTimeMs += entry.tpsWindowMs
+      stats.avgTPS = (stats.tpsTotalTokens / stats.tpsTotalTimeMs) * 1000
       stats.maxTPS = stats.maxTPS !== null ? Math.max(stats.maxTPS, entry.tps) : entry.tps
       stats.minTPS = stats.minTPS !== null ? Math.min(stats.minTPS, entry.tps) : entry.tps
+      const tpsArr = this.tpsSamples.get(model) ?? []
+      tpsArr.push(entry.tps)
+      this.tpsSamples.set(model, tpsArr)
     }
 
     if (entry.latency_ms !== null) {
@@ -354,6 +376,11 @@ class PerfTracker {
       s.p95TTFT = this.percentile(ttftArr, 95)
       s.p99TTFT = this.percentile(ttftArr, 99)
 
+      const tpsArr = [...(this.tpsSamples.get(model) ?? [])].sort((a, b) => a - b)
+      s.p50TPS = this.percentile(tpsArr, 50)
+      s.p95TPS = this.percentile(tpsArr, 95)
+      s.p99TPS = this.percentile(tpsArr, 99)
+
       const latArr = [...(this.latencySamples.get(model) ?? [])].sort((a, b) => a - b)
       s.p50Latency = this.percentile(latArr, 50)
       s.p95Latency = this.percentile(latArr, 95)
@@ -383,34 +410,36 @@ class PerfTracker {
       if (!content) return []
       const lines = content.split("\n")
       const entries: LogEntry[] = []
-      for (let i = Math.max(0, lines.length - last); i < lines.length; i++) {
+      for (let i = lines.length - 1; i >= 0 && entries.length < last; i--) {
         try {
           const entry = JSON.parse(lines[i]) as LogEntry
+          if (entry.schema !== 2 || entry.tps_source !== "step-body-window") continue
           entries.push({
             ...entry,
             ttft_ms: entry.ttft_source === "inbox-enqueued" ? entry.ttft_ms : null,
-            tps: entry.tps_source === "all-output-window" ? entry.tps : null,
-            latency_ms: entry.latency_source === "inbox-to-last-output" ? entry.latency_ms : null,
+            tps: entry.schema === 2 && entry.tps_source === "step-body-window" ? entry.tps : null,
+            latency_ms: entry.schema === 2 && entry.latency_source === "inbox-to-step-streamed" ? entry.latency_ms : null,
           })
         } catch {
           // Skip malformed lines
         }
       }
-      return entries
+      return entries.reverse()
     } catch {
       return []
     }
   }
 
   reset(): void {
-    this.firstPartTimes.clear()
-    this.lastPartTimes.clear()
+    this.steps.clear()
     this.inboxStarts.clear()
     this.promptStarts.clear()
     this.messagePromptStarts.clear()
     this.promptAssociationAttempted.clear()
+    this.settledMessages.clear()
     this.statsMap.clear()
     this.ttftSamples.clear()
+    this.tpsSamples.clear()
     this.latencySamples.clear()
   }
 
@@ -419,14 +448,15 @@ class PerfTracker {
   }
 
   loadSessions(sessionIDs: readonly string[]): void {
-    this.firstPartTimes.clear()
-    this.lastPartTimes.clear()
+    this.steps.clear()
     this.inboxStarts.clear()
     this.promptStarts.clear()
     this.messagePromptStarts.clear()
     this.promptAssociationAttempted.clear()
+    this.settledMessages.clear()
     this.statsMap.clear()
     this.ttftSamples.clear()
+    this.tpsSamples.clear()
     this.latencySamples.clear()
 
     const ids = new Set(sessionIDs.filter(Boolean))
@@ -441,12 +471,14 @@ class PerfTracker {
         if (!line) continue
         try {
           const entry = JSON.parse(line) as LogEntry
+          if (entry.schema !== 2 || entry.tps_source !== "step-body-window") continue
+          if (entry.messageID) this.settledMessages.add(`${entry.sessionID}/${entry.messageID}`)
           if (ids.has(entry.sessionID)) {
             this.updateStats(entry.model, {
               ...entry,
               ttft_ms: entry.ttft_source === "inbox-enqueued" ? entry.ttft_ms : null,
-              tps: entry.tps_source === "all-output-window" ? entry.tps : null,
-              latency_ms: entry.latency_source === "inbox-to-last-output" ? entry.latency_ms : null,
+              tps: entry.tps,
+              latency_ms: entry.latency_source === "inbox-to-step-streamed" ? entry.latency_ms : null,
             })
           }
         } catch {

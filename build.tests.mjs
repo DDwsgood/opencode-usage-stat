@@ -26,6 +26,7 @@ const files = [
   "test/queries.test.ts",
   "test/credentials.test.ts",
   "test/perf-tracker.test.ts",
+  "test/stats-store.test.ts",
 ]
 
 await Promise.all(

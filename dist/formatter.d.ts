@@ -210,9 +210,17 @@ export interface ModelPerfStats {
     p50TTFT: number | null;
     p95TTFT: number | null;
     p99TTFT: number | null;
+    /** Token/time weighted response-body TPS across valid steps. */
     avgTPS: number | null;
     maxTPS: number | null;
     minTPS: number | null;
+    p50TPS: number | null;
+    p95TPS: number | null;
+    p99TPS: number | null;
+    /** Completion tokens represented by valid TPS samples. */
+    tpsTotalTokens: number;
+    /** Provider response-body milliseconds represented by valid TPS samples. */
+    tpsTotalTimeMs: number;
     avgLatency: number | null;
     maxLatency: number | null;
     minLatency: number | null;
@@ -232,7 +240,10 @@ export interface TokenDistribution {
     total: number;
 }
 export interface LogEntry {
+    /** Performance record schema. Version 2 uses step response-body timing. */
+    schema?: 2;
     ts: string;
+    messageID?: string;
     model: string;
     providerID: string;
     modelID: string;
@@ -241,11 +252,13 @@ export interface LogEntry {
     /** TTFT start clock; absent entries used the obsolete assistant-created clock. */
     ttft_source?: "inbox-enqueued";
     tps: number | null;
-    /** TPS uses visible + reasoning tokens over the first-to-last output window. */
-    tps_source?: "all-output-window";
+    /** TPS uses completion tokens over the provider response-body window. */
+    tps_source?: "all-output-window" | "step-body-window";
+    tpsTokens?: number;
+    tpsWindowMs?: number;
     latency_ms: number | null;
-    /** Latency uses prompt enqueue to the final reasoning/text output event. */
-    latency_source?: "inbox-to-last-output";
+    /** Latency uses prompt enqueue to the provider response-body boundary. */
+    latency_source?: "inbox-to-last-output" | "inbox-to-step-streamed";
     inputTokens: number;
     outputTokens: number;
     reasoningTokens: number;

@@ -157,7 +157,26 @@ export interface CursorCredential {
 export declare function resolveCursorCredential(resolved: ResolvedCredential): string | null;
 export declare function parseCursorUsage(payload: unknown): UsageWindow[];
 export declare function fetchCursorUsage(accessToken: string, fetchImpl?: FetchLike): Promise<UsageWindow[]>;
-export type ProviderId = "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding" | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan" | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon" | "google" | "xai" | "cursor";
+export declare const COMMAND_CODE_ALIASES: string[];
+export declare const COMMAND_CODE_ENV_KEYS: string[];
+export declare const COMMAND_CODE_API_BASE = "https://api.commandcode.ai";
+export interface CommandCodeUsageData {
+    credits?: unknown;
+    subscription?: unknown;
+    summary?: unknown;
+}
+/** Parse the official Command Code CLI's alpha usage responses. */
+export declare function parseCommandCodeUsage(data: CommandCodeUsageData): {
+    windows: UsageWindow[];
+    planLabel: string | null;
+};
+/** Prefer the normal resolver, then reuse the official CLI's local auth file. */
+export declare function resolveCommandCodeCredential(resolved: ResolvedCredential): string | null;
+export declare function fetchCommandCodeUsage(apiKey: string, fetchImpl?: FetchLike): Promise<{
+    windows: UsageWindow[];
+    planLabel: string | null;
+}>;
+export type ProviderId = "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding" | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan" | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon" | "google" | "xai" | "cursor" | "command-code";
 interface ProviderSpec {
     id: ProviderId;
     name: string;
@@ -175,8 +194,8 @@ export interface CredentialResolver {
 /** Default resolver: OpenCode credential DB → auth.json → env → .env. */
 export declare const defaultCredentialResolver: CredentialResolver;
 /**
- * Collapsed-row summary: "n%/m%" where n is the 5h/session window usage and m
- * the 7d/weekly window usage. Monthly/billing-cycle totals are intentionally
+ * Collapsed-row summary: "n%/5h m%/7d" for the session and weekly windows.
+ * Monthly/billing-cycle totals are intentionally
  * ignored in the collapsed state (they remain visible when expanded).
  * Returns null when nothing displayable exists (caller falls back to status text).
  */
