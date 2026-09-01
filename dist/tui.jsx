@@ -3038,7 +3038,7 @@ function UsageStatPanel(props) {
     }
     return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
   });
-  const sessionTotals = createMemo(() => {
+  const messageTotals = createMemo(() => {
     let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
     for (const [, s] of modelStats()) {
       i += s.totalInput;
@@ -3056,6 +3056,33 @@ function UsageStatPanel(props) {
       totalCacheRead: cr,
       totalCacheWrite: cw,
       totalRequests: r,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw
+    };
+  });
+  const sessionTotals = createMemo(() => {
+    void props.revision();
+    const selected = context.data.session.get(props.sessionID);
+    if (!selected) return messageTotals();
+    const family = selected.parentID ? [props.sessionID] : context.data.session.family(props.sessionID).length > 0 ? context.data.session.family(props.sessionID) : [props.sessionID];
+    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, c = 0;
+    for (const sessionID of family) {
+      const session = context.data.session.get(sessionID);
+      if (!session) continue;
+      i += session.tokens.input;
+      o += session.tokens.output;
+      ir += session.tokens.reasoning;
+      cr += session.tokens.cache.read;
+      cw += session.tokens.cache.write;
+      c += session.cost;
+    }
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: messageTotals().totalRequests,
       totalCost: c,
       totalTokens: i + o + ir + cr + cw
     };
@@ -7496,31 +7523,67 @@ function registerCommands(context) {
   }));
 }
 
-// src/tui.tsx
+// src/token-messages.ts
 function messageToTokenMessage(msg, sessionID) {
-  if (!msg || msg?.type !== "assistant") return null;
-  const tokens = msg?.tokens;
-  if (!tokens || typeof tokens !== "object") return null;
-  if ((tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) === 0) return null;
+  if (!msg || msg.type !== "assistant" || !msg.tokens) return null;
+  const tokens = msg.tokens;
+  const inputTokens = tokens.input ?? 0;
+  const outputTokens = tokens.output ?? 0;
+  const reasoningTokens = tokens.reasoning ?? 0;
+  const cacheRead = tokens.cache?.read ?? 0;
+  const cacheWrite = tokens.cache?.write ?? 0;
+  if (inputTokens + outputTokens + reasoningTokens + cacheRead + cacheWrite === 0) return null;
   return {
     id: msg.id,
     sessionID,
     providerID: msg.model?.providerID ?? "unknown",
-    modelID: msg.model?.id ?? msg.model?.modelID ?? "unknown",
-    inputTokens: tokens.input ?? 0,
-    outputTokens: tokens.output ?? 0,
-    reasoningTokens: tokens.reasoning ?? 0,
-    cacheRead: tokens.cache?.read ?? 0,
-    cacheWrite: tokens.cache?.write ?? 0,
+    modelID: msg.model?.id ?? "unknown",
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheRead,
+    cacheWrite,
     cost: msg.cost ?? 0
   };
 }
+async function fetchSessionTokenMessages(client2, sessionID, mode = "all") {
+  const messages = [];
+  const cursors = /* @__PURE__ */ new Set();
+  let cursor;
+  for (; ; ) {
+    const response = await client2.message.list({
+      sessionID,
+      limit: 200,
+      order: cursor ? void 0 : mode === "all" ? "asc" : "desc",
+      cursor
+    });
+    if (!Array.isArray(response?.data) || response.data.length === 0) break;
+    for (const message of response.data) {
+      const tokenMessage = messageToTokenMessage(message, sessionID);
+      if (tokenMessage) messages.push(tokenMessage);
+    }
+    if (mode === "recent") break;
+    const next = response.cursor?.next;
+    if (!next || cursors.has(next)) break;
+    cursors.add(next);
+    cursor = next;
+  }
+  return mode === "recent" ? messages.reverse() : messages;
+}
+function mergeTokenMessages(existing, incoming) {
+  const messages = new Map(existing.map((message) => [message.id, message]));
+  for (const message of incoming) messages.set(message.id, message);
+  return Array.from(messages.values());
+}
+
+// src/tui.tsx
 var plugin = define({
   id: "opencode-usage-stat",
   setup: async (context) => {
     const perfTracker = createPerfTracker();
     const [sidebarRevision, setSidebarRevision] = createSignal3(0);
     const [allTokenMessages, setAllTokenMessages] = createSignal3([]);
+    const tokenMessagesBySession = /* @__PURE__ */ new Map();
     let currentSessionID = "";
     let currentFamily = [];
     const cleanups = [];
@@ -7598,20 +7661,25 @@ var plugin = define({
       const seen = /* @__PURE__ */ new Set();
       const messages = [];
       for (const sessionID of currentFamily) {
-        for (const message of context.data.session.message.list(sessionID) ?? []) {
-          const tokenMessage = messageToTokenMessage(message, sessionID);
-          if (tokenMessage && !seen.has(tokenMessage.id)) {
-            seen.add(tokenMessage.id);
-            messages.push(tokenMessage);
+        for (const message of tokenMessagesBySession.get(sessionID) ?? []) {
+          if (!seen.has(message.id)) {
+            seen.add(message.id);
+            messages.push(message);
           }
         }
       }
       setAllTokenMessages(messages);
     }
     async function refreshSession(sessionID) {
-      await context.data.session.message.sync(sessionID).catch(() => {
-      });
-      if (currentFamily.includes(sessionID)) updateTokenMessages();
+      try {
+        const existing = tokenMessagesBySession.get(sessionID);
+        const incoming = await fetchSessionTokenMessages(context.client, sessionID, existing ? "recent" : "all");
+        if (!currentFamily.includes(sessionID)) return;
+        tokenMessagesBySession.set(sessionID, existing ? mergeTokenMessages(existing, incoming) : incoming);
+        updateTokenMessages();
+      } catch (err) {
+        console.warn(`[opencode-usage-stat] failed to restore token history for ${sessionID}:`, err);
+      }
       setSidebarRevision((value) => value + 1);
     }
     async function syncFamilyTree(rootID) {
@@ -7633,7 +7701,9 @@ var plugin = define({
       if (rootID !== currentSessionID) return;
       currentFamily = familyFor(rootID);
       perfTracker.loadSessions(currentFamily);
-      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID)));
+      for (let i = 0; i < currentFamily.length; i += 8) {
+        await Promise.all(currentFamily.slice(i, i + 8).map((sessionID) => refreshSession(sessionID)));
+      }
       updateTokenMessages();
     }
     const unsubExec = context.data.on("session.execution.succeeded", (event) => {

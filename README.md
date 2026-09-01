@@ -32,6 +32,7 @@ Shortcut arguments:
 ### TUI sidebar (current session, real-time)
 
 - Per-model token totals, cache hits / MISSING, cost, trend
+- Cursor-paginated history restore, so pre-compaction usage remains counted after service or TUI restarts
 - Performance: TTFT, TPS, latency (per model, avg/min/max/percentiles)
   - TTFT means **local OpenCode prompt enqueue → first text/reasoning/tool-input event**. V2 does not expose a transport-neutral “provider request sent” timestamp, so this is an upper bound that includes local queueing and request preparation. It is recorded only when a user prompt can be associated with the first step.
   - Latency means **local prompt enqueue → provider response-body end** (`session.step.streamed`) for that first step, excluding subsequent local tool execution.
@@ -66,7 +67,7 @@ Single self-contained HTML files (ECharts, background, icons, styles embedded). 
 After the package is published, install and configure both entrypoints globally:
 
 ```bash
-opencode2 plugin add opencode-usage-stat@2.1.2
+opencode2 plugin add opencode-usage-stat@2.4.3
 ```
 
 Or clone and build from source:

@@ -8,7 +8,7 @@ import { RGBA } from "@opentui/core"
 import { formatTokens, formatCost, formatDuration, isMissingCache } from "./formatter.js"
 import { t as baseT, setLanguage } from "./i18n.js"
 import type { PerfTracker } from "./perf-tracker.js"
-import type { TokenMessage } from "./tui.js"
+import type { TokenMessage } from "./token-messages.js"
 import { ProviderUsageBlocks } from "./provider-usage-blocks.jsx"
 import type { ThemeColorMap } from "./theme-map.js"
 import { resolveThemeColors } from "./theme-map.js"
@@ -210,13 +210,45 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
       .sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex)
   })
 
-  const sessionTotals = createMemo(() => {
+  const messageTotals = createMemo(() => {
     let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0
     for (const [, s] of modelStats()) {
       i += s.totalInput; o += s.totalOutput; ir += s.totalReasoning
       cr += s.cacheRead; cw += s.cacheWrite; r += s.requestCount; c += s.totalCost
     }
     return { totalInput: i, totalOutput: o, totalReasoning: ir, totalCacheRead: cr, totalCacheWrite: cw, totalRequests: r, totalCost: c, totalTokens: i + o + ir + cr + cw }
+  })
+
+  const sessionTotals = createMemo(() => {
+    void props.revision()
+    const selected = context.data.session.get(props.sessionID)
+    if (!selected) return messageTotals()
+    const family = selected.parentID
+      ? [props.sessionID]
+      : context.data.session.family(props.sessionID).length > 0
+        ? context.data.session.family(props.sessionID)
+        : [props.sessionID]
+    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, c = 0
+    for (const sessionID of family) {
+      const session = context.data.session.get(sessionID)
+      if (!session) continue
+      i += session.tokens.input
+      o += session.tokens.output
+      ir += session.tokens.reasoning
+      cr += session.tokens.cache.read
+      cw += session.tokens.cache.write
+      c += session.cost
+    }
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: messageTotals().totalRequests,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw,
+    }
   })
 
   const globalHitRate = createMemo(() => {

@@ -5,38 +5,8 @@ import { createPerfTracker } from "./perf-tracker.js"
 import type { PerfTracker } from "./perf-tracker.js"
 import { UsageStatPanel } from "./sidebar.jsx"
 import { registerCommands } from "./commands.js"
-
-export interface TokenMessage {
-  id: string
-  sessionID: string
-  providerID: string
-  modelID: string
-  inputTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  cacheRead: number
-  cacheWrite: number
-  cost: number
-}
-
-function messageToTokenMessage(msg: any, sessionID: string): TokenMessage | null {
-  if (!msg || msg?.type !== "assistant") return null
-  const tokens = msg?.tokens
-  if (!tokens || typeof tokens !== "object") return null
-  if ((tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) === 0) return null
-  return {
-    id: msg.id,
-    sessionID,
-    providerID: msg.model?.providerID ?? "unknown",
-    modelID: msg.model?.id ?? msg.model?.modelID ?? "unknown",
-    inputTokens: tokens.input ?? 0,
-    outputTokens: tokens.output ?? 0,
-    reasoningTokens: tokens.reasoning ?? 0,
-    cacheRead: tokens.cache?.read ?? 0,
-    cacheWrite: tokens.cache?.write ?? 0,
-    cost: msg.cost ?? 0,
-  }
-}
+import { fetchSessionTokenMessages, mergeTokenMessages, messageToTokenMessage } from "./token-messages.js"
+import type { TokenMessage } from "./token-messages.js"
 
 const plugin = define({
   id: "opencode-usage-stat",
@@ -44,6 +14,7 @@ const plugin = define({
     const perfTracker: PerfTracker = createPerfTracker()
     const [sidebarRevision, setSidebarRevision] = createSignal(0)
     const [allTokenMessages, setAllTokenMessages] = createSignal<TokenMessage[]>([])
+    const tokenMessagesBySession = new Map<string, TokenMessage[]>()
     let currentSessionID = ""
     let currentFamily: string[] = []
     const cleanups: (() => void)[] = []
@@ -129,11 +100,10 @@ const plugin = define({
       const seen = new Set<string>()
       const messages: TokenMessage[] = []
       for (const sessionID of currentFamily) {
-        for (const message of context.data.session.message.list(sessionID) ?? []) {
-          const tokenMessage = messageToTokenMessage(message, sessionID)
-          if (tokenMessage && !seen.has(tokenMessage.id)) {
-            seen.add(tokenMessage.id)
-            messages.push(tokenMessage)
+        for (const message of tokenMessagesBySession.get(sessionID) ?? []) {
+          if (!seen.has(message.id)) {
+            seen.add(message.id)
+            messages.push(message)
           }
         }
       }
@@ -141,8 +111,15 @@ const plugin = define({
     }
 
     async function refreshSession(sessionID: string): Promise<void> {
-      await context.data.session.message.sync(sessionID).catch(() => {})
-      if (currentFamily.includes(sessionID)) updateTokenMessages()
+      try {
+        const existing = tokenMessagesBySession.get(sessionID)
+        const incoming = await fetchSessionTokenMessages(context.client, sessionID, existing ? "recent" : "all")
+        if (!currentFamily.includes(sessionID)) return
+        tokenMessagesBySession.set(sessionID, existing ? mergeTokenMessages(existing, incoming) : incoming)
+        updateTokenMessages()
+      } catch (err) {
+        console.warn(`[opencode-usage-stat] failed to restore token history for ${sessionID}:`, err)
+      }
       setSidebarRevision((value) => value + 1)
     }
 
@@ -162,7 +139,9 @@ const plugin = define({
       if (rootID !== currentSessionID) return
       currentFamily = familyFor(rootID)
       perfTracker.loadSessions(currentFamily)
-      await Promise.all(currentFamily.map((sessionID) => refreshSession(sessionID)))
+      for (let i = 0; i < currentFamily.length; i += 8) {
+        await Promise.all(currentFamily.slice(i, i + 8).map((sessionID) => refreshSession(sessionID)))
+      }
       updateTokenMessages()
     }
 
@@ -241,4 +220,4 @@ const plugin = define({
 
 export default plugin
 export { plugin, messageToTokenMessage }
-export type { PerfTracker }
+export type { PerfTracker, TokenMessage }

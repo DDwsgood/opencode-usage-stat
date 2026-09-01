@@ -2,7 +2,7 @@ import type { JSX } from "solid-js";
 import type { Context } from "@opencode-ai/plugin/tui/context";
 import { formatTokens, formatCost } from "./formatter.js";
 import type { PerfTracker } from "./perf-tracker.js";
-import type { TokenMessage } from "./tui.js";
+import type { TokenMessage } from "./token-messages.js";
 export interface SidebarConfig {
     sidebar: {
         showPerformance: boolean;
