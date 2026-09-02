@@ -464,6 +464,29 @@ test("parseOllamaSettingsHtml scrapes session/weekly/premium percentages", () =>
   assert.deepEqual(parseOllamaSettingsHtml("<p>nothing here</p>"), [])
 })
 
+test("parseOllamaSettingsHtml scrapes new monthly-dollar billing", () => {
+  const html = `<h2>Included usage</h2><span class="rounded-full" >pro</span>
+    <span class="text-sm">Monthly usage</span><span>$12.5 of $60 used</span>
+    <div class="local-time" data-time="2026-10-02T09:54:08Z">Resets in 4 weeks.</div>
+    <div>Balance remaining</div><div class="text-2xl">$3.20</div>`
+  const windows = parseOllamaSettingsHtml(html)
+  assert.equal(windows.length, 2)
+  assert.equal(windows[0].label, "Monthly")
+  assert.equal(windows[0].percent, 12.5 / 60 * 100)
+  assert.equal(windows[0].valueLabel, "$47.50 / $60.00 left")
+  assert.equal(windows[0].resetsAt, "2026-10-02T09:54:08.000Z")
+  assert.equal(windows[1].label, "Extra (pro)")
+  assert.equal(windows[1].valueLabel, "$3.20 left")
+})
+
+test("parseOllamaSettingsHtml new billing wins over legacy scrapes", () => {
+  const html = `<div>Session usage 42%</div><div>Weekly usage 7%</div>
+    <span>Monthly usage</span><span>$30 of $60 used</span>`
+  const windows = parseOllamaSettingsHtml(html)
+  assert.deepEqual(windows.map(w => w.label), ["Monthly"])
+  assert.equal(windows[0].percent, 50)
+})
+
 test("buildCopilotWindows computes used percent from entitlement/remaining", () => {
   const windows = buildCopilotWindows({
     quota_reset_date: "2026-09-01T00:00:00Z",
@@ -559,4 +582,20 @@ test("collapsedSummary falls back gracefully per provider shape", () => {
     { label: "Tokens", percent: 44, resetsAt: null, valueLabel: null },
     { label: "MCP Tools", percent: 3, resetsAt: null, valueLabel: null },
   ], "used"), "44%")
+})
+
+// ── Ollama Cloud new-billing display ──
+
+test("ollama collapsed summary shows remaining dollar valueLabel", () => {
+  const windows = [
+    { label: "Monthly", percent: 20.833, resetsAt: null, valueLabel: "$47.50 / $60.00 left" },
+  ]
+  assert.equal(collapsedSummary(windows, "remaining"), "79%/47.5$")
+  assert.equal(collapsedSummary(windows, "used"), "21%/12.5$")
+})
+
+test("parseOllamaSettingsHtml monthly valueLabel carries remaining dollars", () => {
+  const html = `<span>Monthly usage</span><span>$18 of $60 used</span>`
+  const windows = parseOllamaSettingsHtml(html)
+  assert.equal(windows[0].valueLabel, "$42.00 / $60.00 left")
 })

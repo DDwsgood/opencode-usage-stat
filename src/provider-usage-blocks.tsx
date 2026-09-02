@@ -22,6 +22,10 @@ import {
   PROVIDERS,
   USAGE_STAT_PROVIDER_IDS,
   collapsedSummary,
+  DOLLAR_POOL_LABEL,
+  dollarPoolRemaining,
+  shortDollars,
+  toNumber,
 } from "./provider-usage.js"
 import type { ProviderId, ProviderUsageResult, UsageDisplayMode } from "./provider-usage.js"
 import { t } from "./i18n.js"
@@ -160,6 +164,11 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     return "█".repeat(filled) + "░".repeat(Math.max(0, width - filled))
   }
 
+  /** Total dollars from a dollar-pool value label, 0 when not one. */
+  function totalDollars(valueLabel: string | null): number {
+    return toNumber(valueLabel?.match(/\/\s*\$([\d,.]+)/)?.[1]?.replace(/,/g, "")) ?? 0
+  }
+
   return (
     <Show when={states().length > 0}>
       <box flexDirection="column" marginTop={1} paddingX={1}>
@@ -215,21 +224,50 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                   <Show when={state.result !== null && state.result.ok && state.result.windows}>
                     <For each={state.result?.windows ?? []}>
                       {win => {
+                        const isDollarPool = DOLLAR_POOL_LABEL.test(win.valueLabel ?? "")
                         const label = win.label ? win.label + ": " : ""
                         if (win.percent != null) {
                           const shownPercent = () =>
                             displayMode() === "remaining" ? 100 - win.percent! : win.percent!
+                          // Dollar pools render "Monthly: [bar] N% left" plus a
+                          // second line "[credits]$/[allowance]$"; other windows
+                          // keep " · resets <duration>".
+                          const poolCredits = isDollarPool
+                            ? (displayMode() === "remaining"
+                              ? dollarPoolRemaining(win.valueLabel)
+                              : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)))
+                            : null
+                          const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null
                           return (
-                            <text fg={mutedColor()}>
-                              {label}
-                              <span style={{ fg: color() } as any}>
-                                {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                {displayMode() === "remaining" ? ` ${t("left")}` : ""}
-                              </span>
-                              {win.resetsAt ? (
-                                <span style={{ fg: dimColor() } as any}> · {t("providerResets")} {formatResetDuration(win.resetsAt)}</span>
-                              ) : null}
-                            </text>
+                            <Show when={!isDollarPool} fallback={
+                              <box flexDirection="column">
+                                <text fg={mutedColor()}>
+                                  {label}
+                                  <span style={{ fg: color() } as any}>
+                                    {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
+                                    {displayMode() === "remaining" ? ` ${t("left")}` : ""}
+                                  </span>
+                                </text>
+                                <text>
+                                  <span style={{ fg: color() } as any}>
+                                    {`${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`}
+                                  </span>
+                                </text>
+                              </box>
+                            }>
+                              <text fg={mutedColor()}>
+                                {label}
+                                <span style={{ fg: color() } as any}>
+                                  {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
+                                  {displayMode() === "remaining" ? ` ${t("left")}` : ""}
+                                </span>
+                                {win.resetsAt ? (
+                                  <span style={{ fg: dimColor() } as any}>
+                                    {` · ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`}
+                                  </span>
+                                ) : null}
+                              </text>
+                            </Show>
                           )
                         }
                         if (win.valueLabel) {

@@ -23,6 +23,8 @@ export interface ProviderUsageResult {
 /** How collapsed headers present usage percentages. */
 export type UsageDisplayMode = "used" | "remaining";
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+declare function toNumber(value: unknown): number | null;
+export { toNumber };
 export declare const OPENCODE_GO_ENV_KEYS: string[];
 export declare const OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/usage";
 export interface OpenCodeGoPayload {
@@ -124,7 +126,12 @@ export interface OllamaCloudCredential {
 }
 /** Cookie from the plugin's own secure file or OpenChamber's shared one. */
 export declare function resolveOllamaCloudCookie(): string | null;
-/** Parse https://ollama.com/settings HTML into usage windows. Fragile by design. */
+/**
+ * Parse https://ollama.com/settings HTML into usage windows. Fragile by design.
+ * New billing (Sept 2026): "Monthly usage" meter, "$X of $Y used", reset via
+ * data-time, plan badge after "Included usage", plus "Balance remaining".
+ * Legacy billing: Session/Weekly percentages and "Premium requests N / M".
+ */
 export declare function parseOllamaSettingsHtml(html: string): UsageWindow[];
 export declare function fetchOllamaCloudUsage(cookie: string, fetchImpl?: FetchLike): Promise<UsageWindow[]>;
 export declare const COPILOT_ALIASES: string[];
@@ -193,11 +200,19 @@ export interface CredentialResolver {
 }
 /** Default resolver: OpenCode credential DB → auth.json → env → .env. */
 export declare const defaultCredentialResolver: CredentialResolver;
+/** Dollar-pool value label produced by the Ollama Cloud new-billing parser. */
+export declare const DOLLAR_POOL_LABEL: RegExp;
+/** Remaining dollars from a dollar-pool value label, null when not one. */
+export declare function dollarPoolRemaining(valueLabel: string | null): number | null;
+/** Compact dollar amount without symbol: "60" / "47.5" / "12.34". */
+export declare function shortDollars(value: number): string;
 /**
  * Collapsed-row summary: "n%/5h m%/7d" for the session and weekly windows.
  * Monthly/billing-cycle totals are intentionally
- * ignored in the collapsed state (they remain visible when expanded).
- * Returns null when nothing displayable exists (caller falls back to status text).
+ * ignored in the collapsed state (they remain visible when expanded),
+ * except dollar-pool windows (Ollama Cloud new billing) surface
+ * "[percent]%/[credits]$". Returns null when nothing displayable
+ * exists (caller falls back to status text).
  */
 export declare function collapsedSummary(windows: UsageWindow[] | undefined, mode: UsageDisplayMode): string | null;
 /**

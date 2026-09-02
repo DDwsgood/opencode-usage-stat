@@ -109,6 +109,7 @@ function toNumber(value: unknown): number | null {
   if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value)
   return null
 }
+export { toNumber }
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null
@@ -693,18 +694,46 @@ export function resolveOllamaCloudCookie(): string | null {
   return cookie ?? null
 }
 
-/** Parse https://ollama.com/settings HTML into usage windows. Fragile by design. */
+/**
+ * Parse https://ollama.com/settings HTML into usage windows. Fragile by design.
+ * New billing (Sept 2026): "Monthly usage" meter, "$X of $Y used", reset via
+ * data-time, plan badge after "Included usage", plus "Balance remaining".
+ * Legacy billing: Session/Weekly percentages and "Premium requests N / M".
+ */
 export function parseOllamaSettingsHtml(html: string): UsageWindow[] {
   const out: UsageWindow[] = []
-  const sessionMatch = html.match(/Session\s+usage[^0-9]*([0-9.]+)%/i)
-  if (sessionMatch) out.push(percentWindow("Session", toNumber(sessionMatch[1]), null))
-  const weeklyMatch = html.match(/Weekly\s+usage[^0-9]*([0-9.]+)%/i)
-  if (weeklyMatch) out.push(percentWindow("Weekly", toNumber(weeklyMatch[1]), null))
-  const premiumMatch = html.match(/Premium[^0-9]*([0-9]+)\s*\/\s*([0-9]+)/i)
-  if (premiumMatch) {
-    const used = toNumber(premiumMatch[1]) ?? 0
-    const total = toNumber(premiumMatch[2]) ?? 0
-    out.push(percentWindow("Premium", total > 0 ? Math.min(100, (used / total) * 100) : null, null, `${used} / ${total}`))
+  // Plan badge: first "capitalize" chip following the "Included usage" heading.
+  const planMatch = html.match(/Included\s+usage[\s\S]{0,300}?rounded-full[^>]*>\s*([A-Za-z0-9 ._-]+?)\s*</i)
+  const planLabel = planMatch ? planMatch[1].trim() : null
+  const monthly = html.match(/Monthly\s+usage[\s\S]{0,400}?\$\s*([0-9][0-9,.]*)\s*of\s*\$\s*([0-9][0-9,.]*)\s*used/i)
+  if (monthly) {
+    const used = Number(monthly[1].replace(/,/g, ""))
+    const total = Number(monthly[2].replace(/,/g, ""))
+    if (Number.isFinite(used) && Number.isFinite(total)) {
+      const reset = html.match(/data-time="([^"]+)"[^>]*>\s*Resets in/i)
+      const remaining = total - used
+      out.push(percentWindow("Monthly", total > 0 ? clampPct((used / total) * 100) : null,
+        reset ? reset[1] : null, `$${fmtMoney(remaining)} / $${fmtMoney(total)} left`))
+    }
+  }
+  if (out.length === 0) {
+    const sessionMatch = html.match(/Session\s+usage[^0-9]*([0-9.]+)%/i)
+    if (sessionMatch) out.push(percentWindow("Session", toNumber(sessionMatch[1]), null))
+    const weeklyMatch = html.match(/Weekly\s+usage[^0-9]*([0-9.]+)%/i)
+    if (weeklyMatch) out.push(percentWindow("Weekly", toNumber(weeklyMatch[1]), null))
+    const premiumMatch = html.match(/Premium[^0-9]*([0-9]+)\s*\/\s*([0-9]+)/i)
+    if (premiumMatch) {
+      const used = toNumber(premiumMatch[1]) ?? 0
+      const total = toNumber(premiumMatch[2]) ?? 0
+      out.push(percentWindow("Premium", total > 0 ? Math.min(100, (used / total) * 100) : null, null, `${used} / ${total}`))
+    }
+  }
+  const balanceMatch = html.match(/Balance\s+remaining[\s\S]{0,200}?\$\s*([0-9][0-9,.]*)/i)
+  if (balanceMatch) {
+    const balance = Number(balanceMatch[1].replace(/,/g, ""))
+    if (Number.isFinite(balance)) {
+      out.push({ label: planLabel ? `Extra (${planLabel})` : "Extra", percent: null, resetsAt: null, valueLabel: `$${fmtMoney(balance)} left` })
+    }
   }
   return out
 }
@@ -1426,11 +1455,27 @@ export interface CredentialResolver {
 /** Default resolver: OpenCode credential DB → auth.json → env → .env. */
 export const defaultCredentialResolver: CredentialResolver = (spec) => resolveCredential(spec)
 
+/** Dollar-pool value label produced by the Ollama Cloud new-billing parser. */
+export const DOLLAR_POOL_LABEL = /^\s*\$[\d,.]+\s*\/\s*\$[\d,.]+\s*left\s*$/
+
+/** Remaining dollars from a dollar-pool value label, null when not one. */
+export function dollarPoolRemaining(valueLabel: string | null): number | null {
+  if (!valueLabel || !DOLLAR_POOL_LABEL.test(valueLabel)) return null
+  return toNumber(valueLabel.match(/\$([\d,.]+)/)?.[1]?.replace(/,/g, ""))
+}
+
+/** Compact dollar amount without symbol: "60" / "47.5" / "12.34". */
+export function shortDollars(value: number): string {
+  return value.toFixed(2).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
+}
+
 /**
  * Collapsed-row summary: "n%/5h m%/7d" for the session and weekly windows.
  * Monthly/billing-cycle totals are intentionally
- * ignored in the collapsed state (they remain visible when expanded).
- * Returns null when nothing displayable exists (caller falls back to status text).
+ * ignored in the collapsed state (they remain visible when expanded),
+ * except dollar-pool windows (Ollama Cloud new billing) surface
+ * "[percent]%/[credits]$". Returns null when nothing displayable
+ * exists (caller falls back to status text).
  */
 export function collapsedSummary(windows: UsageWindow[] | undefined, mode: UsageDisplayMode): string | null {
   if (!windows || windows.length === 0) return null
@@ -1447,6 +1492,18 @@ export function collapsedSummary(windows: UsageWindow[] | undefined, mode: Usage
   if (n != null && m != null) return `${n}%/5h ${m}%/7d`
   if (n != null) return `${n}%/5h`
   if (m != null) return `${m}%/7d`
+  // Dollar-pool windows (Ollama Cloud new billing): "[percent]%/[credits]$" —
+  // remaining mode shows credits left, used mode shows credits spent.
+  const pool = windows.find(w => DOLLAR_POOL_LABEL.test(w.valueLabel ?? ""))
+  if (pool) {
+    const remaining = dollarPoolRemaining(pool.valueLabel)
+    const total = toNumber((pool.valueLabel ?? "").match(/\/\s*\$([\d,.]+)/)?.[1]?.replace(/,/g, ""))
+    const p = shown(pool)
+    if (p != null && remaining != null && total != null) {
+      const dollars = mode === "remaining" ? remaining : Math.max(0, total - remaining)
+      return `${p}%/${shortDollars(dollars)}$`
+    }
+  }
   const firstPercent = windows.map(shown).find(v => v != null)
   if (firstPercent != null) return `${firstPercent}%`
   return windows.find(w => w.valueLabel)?.valueLabel ?? null

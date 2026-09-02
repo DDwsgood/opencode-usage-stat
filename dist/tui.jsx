@@ -1705,15 +1705,41 @@ function resolveOllamaCloudCookie() {
 }
 function parseOllamaSettingsHtml(html) {
   const out = [];
-  const sessionMatch = html.match(/Session\s+usage[^0-9]*([0-9.]+)%/i);
-  if (sessionMatch) out.push(percentWindow("Session", toNumber(sessionMatch[1]), null));
-  const weeklyMatch = html.match(/Weekly\s+usage[^0-9]*([0-9.]+)%/i);
-  if (weeklyMatch) out.push(percentWindow("Weekly", toNumber(weeklyMatch[1]), null));
-  const premiumMatch = html.match(/Premium[^0-9]*([0-9]+)\s*\/\s*([0-9]+)/i);
-  if (premiumMatch) {
-    const used = toNumber(premiumMatch[1]) ?? 0;
-    const total = toNumber(premiumMatch[2]) ?? 0;
-    out.push(percentWindow("Premium", total > 0 ? Math.min(100, used / total * 100) : null, null, `${used} / ${total}`));
+  const planMatch = html.match(/Included\s+usage[\s\S]{0,300}?rounded-full[^>]*>\s*([A-Za-z0-9 ._-]+?)\s*</i);
+  const planLabel = planMatch ? planMatch[1].trim() : null;
+  const monthly = html.match(/Monthly\s+usage[\s\S]{0,400}?\$\s*([0-9][0-9,.]*)\s*of\s*\$\s*([0-9][0-9,.]*)\s*used/i);
+  if (monthly) {
+    const used = Number(monthly[1].replace(/,/g, ""));
+    const total = Number(monthly[2].replace(/,/g, ""));
+    if (Number.isFinite(used) && Number.isFinite(total)) {
+      const reset = html.match(/data-time="([^"]+)"[^>]*>\s*Resets in/i);
+      const remaining = total - used;
+      out.push(percentWindow(
+        "Monthly",
+        total > 0 ? clampPct(used / total * 100) : null,
+        reset ? reset[1] : null,
+        `$${fmtMoney(remaining)} / $${fmtMoney(total)} left`
+      ));
+    }
+  }
+  if (out.length === 0) {
+    const sessionMatch = html.match(/Session\s+usage[^0-9]*([0-9.]+)%/i);
+    if (sessionMatch) out.push(percentWindow("Session", toNumber(sessionMatch[1]), null));
+    const weeklyMatch = html.match(/Weekly\s+usage[^0-9]*([0-9.]+)%/i);
+    if (weeklyMatch) out.push(percentWindow("Weekly", toNumber(weeklyMatch[1]), null));
+    const premiumMatch = html.match(/Premium[^0-9]*([0-9]+)\s*\/\s*([0-9]+)/i);
+    if (premiumMatch) {
+      const used = toNumber(premiumMatch[1]) ?? 0;
+      const total = toNumber(premiumMatch[2]) ?? 0;
+      out.push(percentWindow("Premium", total > 0 ? Math.min(100, used / total * 100) : null, null, `${used} / ${total}`));
+    }
+  }
+  const balanceMatch = html.match(/Balance\s+remaining[\s\S]{0,200}?\$\s*([0-9][0-9,.]*)/i);
+  if (balanceMatch) {
+    const balance = Number(balanceMatch[1].replace(/,/g, ""));
+    if (Number.isFinite(balance)) {
+      out.push({ label: planLabel ? `Extra (${planLabel})` : "Extra", percent: null, resetsAt: null, valueLabel: `$${fmtMoney(balance)} left` });
+    }
   }
   return out;
 }
@@ -2303,6 +2329,14 @@ var PROVIDERS = [
 ];
 var USAGE_STAT_PROVIDER_IDS = PROVIDERS.map((p) => p.id);
 var defaultCredentialResolver = (spec) => resolveCredential(spec);
+var DOLLAR_POOL_LABEL = /^\s*\$[\d,.]+\s*\/\s*\$[\d,.]+\s*left\s*$/;
+function dollarPoolRemaining(valueLabel) {
+  if (!valueLabel || !DOLLAR_POOL_LABEL.test(valueLabel)) return null;
+  return toNumber(valueLabel.match(/\$([\d,.]+)/)?.[1]?.replace(/,/g, ""));
+}
+function shortDollars(value) {
+  return value.toFixed(2).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
 function collapsedSummary(windows, mode) {
   if (!windows || windows.length === 0) return null;
   const shown = (win) => {
@@ -2318,6 +2352,16 @@ function collapsedSummary(windows, mode) {
   if (n != null && m != null) return `${n}%/5h ${m}%/7d`;
   if (n != null) return `${n}%/5h`;
   if (m != null) return `${m}%/7d`;
+  const pool = windows.find((w) => DOLLAR_POOL_LABEL.test(w.valueLabel ?? ""));
+  if (pool) {
+    const remaining = dollarPoolRemaining(pool.valueLabel);
+    const total = toNumber((pool.valueLabel ?? "").match(/\/\s*\$([\d,.]+)/)?.[1]?.replace(/,/g, ""));
+    const p = shown(pool);
+    if (p != null && remaining != null && total != null) {
+      const dollars = mode === "remaining" ? remaining : Math.max(0, total - remaining);
+      return `${p}%/${shortDollars(dollars)}$`;
+    }
+  }
   const firstPercent = windows.map(shown).find((v) => v != null);
   if (firstPercent != null) return `${firstPercent}%`;
   return windows.find((w) => w.valueLabel)?.valueLabel ?? null;
@@ -2650,6 +2694,9 @@ function ProviderUsageBlocks(props) {
     const filled = Math.max(0, Math.min(width, Math.floor(percent / 100 * width)));
     return "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
   }
+  function totalDollars(valueLabel) {
+    return toNumber(valueLabel?.match(/\/\s*\$([\d,.]+)/)?.[1]?.replace(/,/g, "")) ?? 0;
+  }
   return _$createComponent(Show, {
     get when() {
       return states().length > 0;
@@ -2767,75 +2814,114 @@ function ProviderUsageBlocks(props) {
                         return state.result?.windows ?? [];
                       },
                       children: (win) => {
+                        const isDollarPool = DOLLAR_POOL_LABEL.test(win.valueLabel ?? "");
                         const label = win.label ? win.label + ": " : "";
                         if (win.percent != null) {
                           const shownPercent = () => displayMode() === "remaining" ? 100 - win.percent : win.percent;
-                          return (() => {
-                            var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createTextNode(` `), _el$17 = _$createTextNode(`%`);
-                            _$insertNode(_el$14, _el$15);
-                            _$insert(_el$14, label, _el$15);
-                            _$insertNode(_el$15, _el$16);
-                            _$insertNode(_el$15, _el$17);
-                            _$insert(_el$15, () => percentBar(shownPercent(), 12), _el$16);
-                            _$insert(_el$15, () => Math.round(shownPercent()), _el$17);
-                            _$insert(_el$15, (() => {
-                              var _c$2 = _$memo(() => displayMode() === "remaining");
-                              return () => _c$2() ? ` ${t("left")}` : "";
-                            })(), null);
-                            _$insert(_el$14, (() => {
-                              var _c$3 = _$memo(() => !!win.resetsAt);
-                              return () => _c$3() ? (() => {
-                                var _el$18 = _$createElement("span"), _el$19 = _$createTextNode(` \xB7 `), _el$20 = _$createTextNode(` `);
+                          const poolCredits = isDollarPool ? displayMode() === "remaining" ? dollarPoolRemaining(win.valueLabel) : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)) : null;
+                          const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null;
+                          return _$createComponent(Show, {
+                            when: !isDollarPool,
+                            get fallback() {
+                              return (() => {
+                                var _el$18 = _$createElement("box"), _el$19 = _$createElement("text"), _el$20 = _$createElement("span"), _el$21 = _$createTextNode(` `), _el$22 = _$createTextNode(`%`), _el$23 = _$createElement("text"), _el$24 = _$createElement("span");
                                 _$insertNode(_el$18, _el$19);
-                                _$insertNode(_el$18, _el$20);
-                                _$insert(_el$18, () => t("providerResets"), _el$20);
-                                _$insert(_el$18, () => formatResetDuration(win.resetsAt), null);
-                                _$effect((_$p) => _$setProp(_el$18, "style", {
-                                  fg: dimColor()
-                                }, _$p));
+                                _$insertNode(_el$18, _el$23);
+                                _$setProp(_el$18, "flexDirection", "column");
+                                _$insertNode(_el$19, _el$20);
+                                _$insert(_el$19, label, _el$20);
+                                _$insertNode(_el$20, _el$21);
+                                _$insertNode(_el$20, _el$22);
+                                _$insert(_el$20, () => percentBar(shownPercent(), 12), _el$21);
+                                _$insert(_el$20, () => Math.round(shownPercent()), _el$22);
+                                _$insert(_el$20, (() => {
+                                  var _c$4 = _$memo(() => displayMode() === "remaining");
+                                  return () => _c$4() ? ` ${t("left")}` : "";
+                                })(), null);
+                                _$insertNode(_el$23, _el$24);
+                                _$insert(_el$24, () => `${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`);
+                                _$effect((_p$) => {
+                                  var _v$7 = mutedColor(), _v$8 = {
+                                    fg: color()
+                                  }, _v$9 = {
+                                    fg: color()
+                                  };
+                                  _v$7 !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$7, _p$.e));
+                                  _v$8 !== _p$.t && (_p$.t = _$setProp(_el$20, "style", _v$8, _p$.t));
+                                  _v$9 !== _p$.a && (_p$.a = _$setProp(_el$24, "style", _v$9, _p$.a));
+                                  return _p$;
+                                }, {
+                                  e: void 0,
+                                  t: void 0,
+                                  a: void 0
+                                });
                                 return _el$18;
-                              })() : null;
-                            })(), null);
-                            _$effect((_p$) => {
-                              var _v$5 = mutedColor(), _v$6 = {
-                                fg: color()
-                              };
-                              _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
-                              _v$6 !== _p$.t && (_p$.t = _$setProp(_el$15, "style", _v$6, _p$.t));
-                              return _p$;
-                            }, {
-                              e: void 0,
-                              t: void 0
-                            });
-                            return _el$14;
-                          })();
+                              })();
+                            },
+                            get children() {
+                              var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createTextNode(` `), _el$17 = _$createTextNode(`%`);
+                              _$insertNode(_el$14, _el$15);
+                              _$insert(_el$14, label, _el$15);
+                              _$insertNode(_el$15, _el$16);
+                              _$insertNode(_el$15, _el$17);
+                              _$insert(_el$15, () => percentBar(shownPercent(), 12), _el$16);
+                              _$insert(_el$15, () => Math.round(shownPercent()), _el$17);
+                              _$insert(_el$15, (() => {
+                                var _c$2 = _$memo(() => displayMode() === "remaining");
+                                return () => _c$2() ? ` ${t("left")}` : "";
+                              })(), null);
+                              _$insert(_el$14, (() => {
+                                var _c$3 = _$memo(() => !!win.resetsAt);
+                                return () => _c$3() ? (() => {
+                                  var _el$25 = _$createElement("span");
+                                  _$insert(_el$25, () => ` \xB7 ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`);
+                                  _$effect((_$p) => _$setProp(_el$25, "style", {
+                                    fg: dimColor()
+                                  }, _$p));
+                                  return _el$25;
+                                })() : null;
+                              })(), null);
+                              _$effect((_p$) => {
+                                var _v$5 = mutedColor(), _v$6 = {
+                                  fg: color()
+                                };
+                                _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
+                                _v$6 !== _p$.t && (_p$.t = _$setProp(_el$15, "style", _v$6, _p$.t));
+                                return _p$;
+                              }, {
+                                e: void 0,
+                                t: void 0
+                              });
+                              return _el$14;
+                            }
+                          });
                         }
                         if (win.valueLabel) {
                           return (() => {
-                            var _el$21 = _$createElement("text"), _el$22 = _$createElement("span");
-                            _$insertNode(_el$21, _el$22);
-                            _$insert(_el$21, label, _el$22);
-                            _$insert(_el$22, () => win.valueLabel);
+                            var _el$26 = _$createElement("text"), _el$27 = _$createElement("span");
+                            _$insertNode(_el$26, _el$27);
+                            _$insert(_el$26, label, _el$27);
+                            _$insert(_el$27, () => win.valueLabel);
                             _$effect((_p$) => {
-                              var _v$7 = mutedColor(), _v$8 = {
+                              var _v$0 = mutedColor(), _v$1 = {
                                 fg: greenColor()
                               };
-                              _v$7 !== _p$.e && (_p$.e = _$setProp(_el$21, "fg", _v$7, _p$.e));
-                              _v$8 !== _p$.t && (_p$.t = _$setProp(_el$22, "style", _v$8, _p$.t));
+                              _v$0 !== _p$.e && (_p$.e = _$setProp(_el$26, "fg", _v$0, _p$.e));
+                              _v$1 !== _p$.t && (_p$.t = _$setProp(_el$27, "style", _v$1, _p$.t));
                               return _p$;
                             }, {
                               e: void 0,
                               t: void 0
                             });
-                            return _el$21;
+                            return _el$26;
                           })();
                         }
                         return (() => {
-                          var _el$23 = _$createElement("text"), _el$24 = _$createTextNode(`\u2014`);
-                          _$insertNode(_el$23, _el$24);
-                          _$insert(_el$23, label, _el$24);
-                          _$effect((_$p) => _$setProp(_el$23, "fg", mutedColor(), _$p));
-                          return _el$23;
+                          var _el$28 = _$createElement("text"), _el$29 = _$createTextNode(`\u2014`);
+                          _$insertNode(_el$28, _el$29);
+                          _$insert(_el$28, label, _el$29);
+                          _$effect((_$p) => _$setProp(_el$28, "fg", mutedColor(), _$p));
+                          return _el$28;
                         })();
                       }
                     });
