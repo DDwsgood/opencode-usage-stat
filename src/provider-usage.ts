@@ -1396,16 +1396,19 @@ async function fetchCommandCodeJson(path: string, apiKey: string, fetchImpl: Fet
 
 export async function fetchCommandCodeUsage(apiKey: string, fetchImpl: FetchLike = fetch): Promise<{ windows: UsageWindow[]; planLabel: string | null }> {
   const whoami = asObject(await fetchCommandCodeJson("/alpha/whoami", apiKey, fetchImpl))
+  // User API keys may carry no organization (whoami.org is null). The alpha
+  // billing/usage endpoints accept the same key without orgId in that case.
   const orgId = nonEmptyString(asObject(whoami?.org)?.id)
-  if (!orgId) throw new Error("Command Code account organization could not be resolved")
-  const orgQuery = new URLSearchParams({ orgId }).toString()
+  const scoped = (path: string): string => (orgId ? `${path}?${new URLSearchParams({ orgId })}` : path)
   const [credits, subscription] = await Promise.all([
-    fetchCommandCodeJson(`/alpha/billing/credits?${orgQuery}`, apiKey, fetchImpl),
-    fetchCommandCodeJson(`/alpha/billing/subscriptions?${orgQuery}`, apiKey, fetchImpl),
+    fetchCommandCodeJson(scoped("/alpha/billing/credits"), apiKey, fetchImpl),
+    fetchCommandCodeJson(scoped("/alpha/billing/subscriptions"), apiKey, fetchImpl),
   ])
   const currentPeriodStart = nonEmptyString(asObject(asObject(subscription)?.data)?.currentPeriodStart)
-  const summaryQuery = new URLSearchParams({ orgId, ...(currentPeriodStart ? { since: currentPeriodStart } : {}) }).toString()
-  const summary = await fetchCommandCodeJson(`/alpha/usage/summary?${summaryQuery}`, apiKey, fetchImpl)
+  const summaryParams = new URLSearchParams({ ...(orgId ? { orgId } : {}), ...(currentPeriodStart ? { since: currentPeriodStart } : {}) })
+  const summaryQuery = summaryParams.toString()
+  const summaryPath = summaryQuery ? `/alpha/usage/summary?${summaryQuery}` : "/alpha/usage/summary"
+  const summary = await fetchCommandCodeJson(summaryPath, apiKey, fetchImpl)
   const parsed = parseCommandCodeUsage({ credits, subscription, summary })
   if (parsed.windows.length === 0) throw new Error("Command Code usage data could not be parsed")
   return parsed

@@ -252,6 +252,31 @@ test("fetchCommandCodeUsage follows the official CLI alpha endpoint sequence", a
   assert.ok(paths.some(path => path.includes("/alpha/usage/summary?orgId=org_1&since=2026-08-01T00%3A00%3A00Z")))
 })
 
+test("fetchCommandCodeUsage works with a user key that has no organization", async () => {
+  const paths: string[] = []
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    paths.push(url)
+    assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer command-secret")
+    const body = url.endsWith("/alpha/whoami")
+      ? { success: true, user: { id: "user_1" }, org: null }
+      : url.endsWith("/alpha/billing/credits")
+        ? { credits: { monthlyCredits: 70 }, windowLimits: { limited: true, fiveHour: { used: 1, cap: 14 }, weekly: { used: 2, cap: 35 } } }
+        : url.endsWith("/alpha/billing/subscriptions")
+          ? { data: { planId: "individual-goat", currentPeriodStart: "2026-08-01T00:00:00Z", currentPeriodEnd: "2026-09-01T00:00:00Z" } }
+          : { totalCost: 2 }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response
+  }) as unknown as typeof fetch
+
+  const parsed = await fetchCommandCodeUsage("command-secret", fetchImpl)
+  assert.equal(parsed.planLabel, "GOAT")
+  assert.equal(parsed.windows[0].label, "5h")
+  assert.equal(paths.length, 4)
+  assert.ok(paths.some(path => path.endsWith("/alpha/billing/credits")))
+  assert.ok(paths.some(path => path.endsWith("/alpha/billing/subscriptions")))
+  assert.ok(paths.some(path => path.includes("/alpha/usage/summary?since=2026-08-01T00%3A00%3A00Z")))
+  assert.ok(paths.every(path => !path.includes("orgId")))
+})
+
 test("fetchCommandCodeUsage reports rejected credentials without leaking the key", async () => {
   const fetchImpl = (async () => ({
     ok: false,
