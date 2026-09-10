@@ -41,6 +41,8 @@ export interface UsageWindow {
   percent: number | null
   resetsAt: string | null
   valueLabel: string | null
+  /** Window start when the API/plan defines one; enables on-pace budget markers. */
+  startsAt?: string | null
 }
 
 export interface ProviderUsageResult {
@@ -162,9 +164,29 @@ function windowSeconds(duration: unknown, unit: unknown): number | null {
   return null
 }
 
-function percentWindow(label: string, percent: unknown, resetMs: unknown, valueLabel: string | null = null): UsageWindow {
+function percentWindow(label: string, percent: unknown, resetMs: unknown, valueLabel: string | null = null, startOffsetSeconds: number | null = null): UsageWindow {
   const pctValue = toNumber(percent)
-  return { label, percent: pctValue != null ? clampPct(pctValue) : null, resetsAt: toResetTimestamp(resetMs), valueLabel }
+  const resetsAt = toResetTimestamp(resetMs)
+  const window: UsageWindow = { label, percent: pctValue != null ? clampPct(pctValue) : null, resetsAt, valueLabel }
+  if (resetsAt && startOffsetSeconds != null) window.startsAt = shiftIsoTimestamp(resetsAt, -startOffsetSeconds)
+  return window
+}
+
+/** Shift an ISO instant by a signed number of seconds. */
+function shiftIsoTimestamp(iso: string, seconds: number): string {
+  return new Date(new Date(iso).getTime() + seconds * 1000).toISOString()
+}
+
+/** Instant one calendar month before an ISO instant (billing-cycle windows). */
+function monthBefore(iso: string): string {
+  const end = new Date(iso)
+  const day = end.getUTCDate()
+  const start = new Date(end)
+  start.setUTCDate(1) // avoid month-end rollover while shifting the month
+  start.setUTCMonth(start.getUTCMonth() - 1)
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate()
+  start.setUTCDate(Math.min(day, lastDay))
+  return start.toISOString()
 }
 
 // ── OpenCode Go ──
@@ -182,24 +204,28 @@ export function parseOpenCodeGoUsage(payload: unknown): UsageWindow[] {
   const usage = asObject(asObject(payload)?.usage)
   if (!usage) return []
   const out: UsageWindow[] = []
-  const order: Array<[string, string]> = [
-    ["rolling", "Rolling"],
-    ["weekly", "Weekly"],
-    ["monthly", "Monthly"],
+  const order: Array<[string, string, number | null]> = [
+    ["rolling", "Rolling", 5 * 3600],
+    ["weekly", "Weekly", 7 * 86400],
+    ["monthly", "Monthly", null], // billing month: one calendar month back from reset
   ]
-  for (const [key, label] of order) {
+  for (const [key, label, windowSeconds] of order) {
     const entry = asObject(usage[key])
     if (!entry) continue
     const percent = entry.percent
     if (typeof percent !== "number" || !Number.isFinite(percent)) continue
     const resetsAt = typeof entry.resetsAt === "string" ? entry.resetsAt : null
     if (resetsAt != null && !Number.isFinite(new Date(resetsAt).getTime())) continue
-    out.push({
+    const window: UsageWindow = {
       label,
       percent: clampPct(percent),
       resetsAt,
       valueLabel: `${percent.toFixed(1)}% used`,
-    })
+    }
+    if (resetsAt) {
+      window.startsAt = windowSeconds != null ? shiftIsoTimestamp(resetsAt, -windowSeconds) : monthBefore(resetsAt)
+    }
+    out.push(window)
   }
   return out
 }
@@ -303,14 +329,14 @@ export function parseCodexUsage(payload: unknown): UsageWindow[] {
     const percent = toNumber(primary.used_percent)
     const seconds = toNumber(primary.limit_window_seconds)
     out.push(percentWindow(windowLabelFromSeconds(seconds), percent, primary.reset_at,
-      percent != null ? `${percent.toFixed(1)}% used` : null))
+      percent != null ? `${percent.toFixed(1)}% used` : null, seconds))
   }
   const secondary = data.rate_limit?.secondary_window
   if (secondary) {
     const percent = toNumber(secondary.used_percent)
     const seconds = toNumber(secondary.limit_window_seconds)
     out.push(percentWindow(windowLabelFromSeconds(seconds), percent, secondary.reset_at,
-      percent != null ? `${percent.toFixed(1)}% used` : null))
+      percent != null ? `${percent.toFixed(1)}% used` : null, seconds))
   }
   if (data.credits) {
     const balance = toNumber(data.credits.balance)
@@ -377,20 +403,20 @@ export function parseClaudeUsage(payload: unknown): UsageWindow[] {
     const percent = toNumber(item.percent)
     const resetAt = item.resets_at
     if (item.kind === "session") {
-      out.push(percentWindow("5h", percent, resetAt))
+      out.push(percentWindow("5h", percent, resetAt, null, 5 * 3600))
     } else if (item.kind === "weekly_all") {
-      out.push(percentWindow("7d", percent, resetAt))
+      out.push(percentWindow("7d", percent, resetAt, null, 7 * 86400))
     } else if (item.kind === "weekly_scoped") {
       const scopeModel = asObject(asObject(item.scope)?.model)
       const model = nonEmptyString(scopeModel?.display_name ?? item.scope)
-      if (model) out.push(percentWindow(`7d · ${model}`, percent, resetAt))
+      if (model) out.push(percentWindow(`7d · ${model}`, percent, resetAt, null, 7 * 86400))
     }
   }
   if (!limits.length) {
     const fiveHour = asObject(data.five_hour)
     const sevenDay = asObject(data.seven_day)
-    if (fiveHour) out.push(percentWindow("5h", fiveHour.utilization, fiveHour.resets_at))
-    if (sevenDay) out.push(percentWindow("7d", sevenDay.utilization, sevenDay.resets_at))
+    if (fiveHour) out.push(percentWindow("5h", fiveHour.utilization, fiveHour.resets_at, null, 5 * 3600))
+    if (sevenDay) out.push(percentWindow("7d", sevenDay.utilization, sevenDay.resets_at, null, 7 * 86400))
   }
   const spend = asObject(data.spend)
   if (spend?.enabled === true) {
@@ -451,7 +477,7 @@ export function parseKimiUsage(payload: unknown): UsageWindow[] {
   const out: UsageWindow[] = []
   const usage = asObject(data.usage)
   if (usage) {
-    out.push(percentWindow("Weekly", computeKimiUsedPercent(usage.limit, usage.used, usage.remaining), usage.resetTime))
+    out.push(percentWindow("Weekly", computeKimiUsedPercent(usage.limit, usage.used, usage.remaining), usage.resetTime, null, 7 * 86400))
   }
   const limits = Array.isArray(data.limits) ? data.limits : []
   for (const raw of limits) {
@@ -462,7 +488,7 @@ export function parseKimiUsage(payload: unknown): UsageWindow[] {
     const seconds = windowSeconds(win?.duration, win?.timeUnit)
     const rawLabel = windowLabel(win?.duration, win?.timeUnit)
     const label = seconds === 5 * 3600 ? `Rate Limit (${rawLabel})` : rawLabel
-    out.push(percentWindow(label, computeKimiUsedPercent(detail?.limit, detail?.used, detail?.remaining), detail?.resetTime))
+    out.push(percentWindow(label, computeKimiUsedPercent(detail?.limit, detail?.used, detail?.remaining), detail?.resetTime, null, seconds))
   }
   return out.filter(w => w.percent != null || w.resetsAt != null)
 }
@@ -532,7 +558,7 @@ function parseZaiStyleUsage(payload: unknown, options: { tokensLabel: string }):
     const type = limit?.type
     if (type !== "TOKENS_LIMIT" && type !== "CREDIT_LIMIT") continue
     const seconds = zaiWindowSeconds(limit)
-    windows.push(percentWindow(shortWindowLabel(seconds), limit.percentage, limit.nextResetTime, zaiCreditValueLabel(limit)))
+    windows.push(percentWindow(shortWindowLabel(seconds), limit.percentage, limit.nextResetTime, zaiCreditValueLabel(limit), seconds))
   }
   const mcp = limits.find(l => l?.type === "TIME_LIMIT")
   if (mcp) {
@@ -619,10 +645,12 @@ export function parseMiniMaxUsage(payload: unknown, usageFieldsAreRemaining: boo
   const intervalPercent = pct(intervalValue, intervalTotal)
   const intervalStart = toNumber(model.start_time)
   const intervalEnd = toNumber(model.end_time)
-  out.push(percentWindow("5h", intervalPercent, intervalEnd, intervalPercent != null ? `${intervalPercent.toFixed(0)}% used` : null))
-  void intervalStart
+  const intervalWindow = percentWindow("5h", intervalPercent, intervalEnd, intervalPercent != null ? `${intervalPercent.toFixed(0)}% used` : null)
+  const intervalStartIso = intervalStart != null ? toResetTimestamp(intervalStart) : null
+  if (intervalStartIso) intervalWindow.startsAt = intervalStartIso
+  out.push(intervalWindow)
   const weeklyPercent = pct(weeklyValue, weeklyTotal)
-  out.push(percentWindow("weekly", weeklyPercent, model.weekly_end_time, weeklyPercent != null ? `${weeklyPercent.toFixed(0)}% used` : null))
+  out.push(percentWindow("weekly", weeklyPercent, model.weekly_end_time, weeklyPercent != null ? `${weeklyPercent.toFixed(0)}% used` : null, 7 * 86400))
   void weeklyTotal
   return out
 }
@@ -1331,12 +1359,13 @@ export function parseCommandCodeUsage(data: CommandCodeUsageData): { windows: Us
       const used = toNumber(limit?.used)
       const cap = toNumber(limit?.cap)
       if (used == null && cap == null) continue
-      windows.push({
+      windows.push(percentWindow(
         label,
-        percent: used != null && cap != null && cap > 0 ? clampPct((used / cap) * 100) : null,
-        resetsAt: toResetTimestamp(limit?.resetAt),
-        valueLabel: used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null,
-      })
+        used != null && cap != null && cap > 0 ? (used / cap) * 100 : null,
+        limit?.resetAt,
+        used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null,
+        key === "fiveHour" ? 5 * 3600 : 7 * 86400,
+      ))
     }
   }
 
@@ -1510,6 +1539,42 @@ export function collapsedSummary(windows: UsageWindow[] | undefined, mode: Usage
   const firstPercent = windows.map(shown).find(v => v != null)
   if (firstPercent != null) return `${firstPercent}%`
   return windows.find(w => w.valueLabel)?.valueLabel ?? null
+}
+
+/**
+ * On-pace used percentage (0-100) for a window with known start and reset:
+ * the share of the quota even pacing would have spent by `nowMs`.
+ * Null when the window bounds are missing or invalid.
+ */
+export function windowPacePercent(win: Pick<UsageWindow, "startsAt" | "resetsAt">, nowMs: number = Date.now()): number | null {
+  if (!win.startsAt || !win.resetsAt) return null
+  const start = Date.parse(win.startsAt)
+  const end = Date.parse(win.resetsAt)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
+  return clampPct(((nowMs - start) / (end - start)) * 100)
+}
+
+/**
+ * Marker cell index (0-based) for the pace position inside a bar of `width`
+ * cells, oriented to the displayed percentage (used vs remaining).
+ * Null when the window has no pace data.
+ */
+export function paceMarkerIndex(
+  win: Pick<UsageWindow, "startsAt" | "resetsAt">,
+  mode: UsageDisplayMode,
+  width: number,
+  nowMs: number = Date.now(),
+): number | null {
+  const pace = windowPacePercent(win, nowMs)
+  if (pace == null || width <= 0) return null
+  const shown = mode === "remaining" ? 100 - pace : pace
+  return Math.max(0, Math.min(width - 1, Math.floor((shown / 100) * width)))
+}
+
+/** True when the window's used share has moved past its even-pace budget. */
+export function isOverPace(win: Pick<UsageWindow, "percent" | "startsAt" | "resetsAt">, nowMs: number = Date.now()): boolean {
+  const pace = windowPacePercent(win, nowMs)
+  return win.percent != null && pace != null && win.percent > pace
 }
 
 /**

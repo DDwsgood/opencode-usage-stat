@@ -26,6 +26,8 @@ import {
   dollarPoolRemaining,
   shortDollars,
   toNumber,
+  paceMarkerIndex,
+  isOverPace,
 } from "./provider-usage.js"
 import type { ProviderId, ProviderUsageResult, UsageDisplayMode } from "./provider-usage.js"
 import { t } from "./i18n.js"
@@ -34,6 +36,15 @@ import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore } from "./settings.js"
 
 const REFRESH_MS = 2 * 60 * 1000 // every 2 minutes
+
+/** Bar width in cells (also the pace-marker coordinate space). */
+const BAR_WIDTH = 12
+
+/** Split a bar into [before, marker, after] so the pace line can be colored. */
+function splitBar(bar: string, markerIndex: number | null): [string, string, string] {
+  if (markerIndex == null) return [bar, "", ""]
+  return [bar.slice(0, markerIndex), "│", bar.slice(markerIndex + 1)]
+}
 
 const PROVIDER_NAMES: Record<string, string> = Object.fromEntries(
   PROVIDERS.map(p => [p.id, p.name]),
@@ -229,9 +240,16 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                         if (win.percent != null) {
                           const shownPercent = () =>
                             displayMode() === "remaining" ? 100 - win.percent! : win.percent!
-                          // Dollar pools render "Monthly: [bar] N% left" plus a
-                          // second line "[credits]$/[allowance]$"; other windows
-                          // keep " · resets <duration>".
+                          // Bars carry an on-pace budget marker (│) whenever the
+                          // window start is known: red past the budget, green
+                          // within it. Dollar pools render "Monthly: [bar] N%
+                          // left" plus a second line "[credits]$/[allowance]$";
+                          // other windows keep " · resets <duration>".
+                          const markerIndex = () => paceMarkerIndex(win, displayMode(), BAR_WIDTH)
+                          const bar = () => splitBar(percentBar(shownPercent(), BAR_WIDTH), markerIndex())
+                          const paceColor = () => (isOverPace(win) ? redColor() : greenColor())
+                          const percentText = () =>
+                            `${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`
                           const poolCredits = isDollarPool
                             ? (displayMode() === "remaining"
                               ? dollarPoolRemaining(win.valueLabel)
@@ -243,10 +261,9 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                               <box flexDirection="column">
                                 <text fg={mutedColor()}>
                                   {label}
-                                  <span style={{ fg: color() } as any}>
-                                    {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                    {displayMode() === "remaining" ? ` ${t("left")}` : ""}
-                                  </span>
+                                  <span style={{ fg: color() } as any}>{bar()[0]}</span>
+                                  <span style={{ fg: paceColor() } as any}>{bar()[1]}</span>
+                                  <span style={{ fg: color() } as any}>{bar()[2]}{" "}{percentText()}</span>
                                 </text>
                                 <text>
                                   <span style={{ fg: color() } as any}>
@@ -257,10 +274,9 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                             }>
                               <text fg={mutedColor()}>
                                 {label}
-                                <span style={{ fg: color() } as any}>
-                                  {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                  {displayMode() === "remaining" ? ` ${t("left")}` : ""}
-                                </span>
+                                <span style={{ fg: color() } as any}>{bar()[0]}</span>
+                                <span style={{ fg: paceColor() } as any}>{bar()[1]}</span>
+                                <span style={{ fg: color() } as any}>{bar()[2]}{" "}{percentText()}</span>
                                 {win.resetsAt ? (
                                   <span style={{ fg: dimColor() } as any}>
                                     {` · ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`}

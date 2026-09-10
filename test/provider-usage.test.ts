@@ -16,6 +16,9 @@ import {
   parseXaiUsage,
   parseCommandCodeUsage,
   collapsedSummary,
+  windowPacePercent,
+  paceMarkerIndex,
+  isOverPace,
   fetchOpenCodeGoUsage,
   fetchDeepSeekBalance,
   fetchCodexUsage,
@@ -60,6 +63,57 @@ test("parseOpenCodeGoUsage returns [] for empty/malformed payload", () => {
   assert.deepEqual(parseOpenCodeGoUsage({ usage: null }), [])
 })
 
+test("parseOpenCodeGoUsage derives window starts for pace markers", () => {
+  const windows = parseOpenCodeGoUsage({
+    usage: {
+      rolling: { percent: 50, resetsAt: "2026-08-21T12:00:00.000Z" },
+      weekly: { percent: 50, resetsAt: "2026-08-24T00:00:00.000Z" },
+      monthly: { percent: 50, resetsAt: "2026-09-13T06:06:01.000Z" },
+    },
+  })
+  // rolling: 5h before reset, weekly: 7d before reset
+  assert.equal(windows[0].startsAt, "2026-08-21T07:00:00.000Z")
+  assert.equal(windows[1].startsAt, "2026-08-17T00:00:00.000Z")
+  // monthly: one calendar month before the billing reset
+  assert.equal(windows[2].startsAt, "2026-08-13T06:06:01.000Z")
+})
+
+test("parseOpenCodeGoUsage leaves startsAt unset without a reset time", () => {
+  const windows = parseOpenCodeGoUsage({ usage: { rolling: { percent: 10 } } })
+  assert.equal(windows.length, 1)
+  assert.equal(windows[0].startsAt, undefined)
+})
+
+test("windowPacePercent reports even-pace budget and clamps to the window", () => {
+  const win = { startsAt: "2026-08-01T00:00:00Z", resetsAt: "2026-08-31T00:00:00Z" }
+  assert.equal(windowPacePercent(win, Date.parse("2026-08-16T00:00:00Z")), 50)
+  assert.equal(windowPacePercent(win, Date.parse("2026-07-31T00:00:00Z")), 0)
+  assert.equal(windowPacePercent(win, Date.parse("2026-09-01T00:00:00Z")), 100)
+  assert.equal(windowPacePercent({ startsAt: null, resetsAt: win.resetsAt }, Date.now()), null)
+  assert.equal(windowPacePercent({ startsAt: win.resetsAt, resetsAt: win.resetsAt }, Date.now()), null)
+  assert.equal(windowPacePercent({ startsAt: "bad", resetsAt: win.resetsAt }, Date.now()), null)
+})
+
+test("paceMarkerIndex orients the marker for used and remaining modes", () => {
+  const win = { startsAt: "2026-08-01T00:00:00Z", resetsAt: "2026-08-31T00:00:00Z" }
+  const halfway = Date.parse("2026-08-16T00:00:00Z")
+  assert.equal(paceMarkerIndex(win, "used", 12, halfway), 6)
+  assert.equal(paceMarkerIndex(win, "remaining", 12, halfway), 6)
+  const early = Date.parse("2026-08-04T00:00:00Z") // 10% elapsed
+  assert.equal(paceMarkerIndex(win, "used", 12, early), 1)
+  assert.equal(paceMarkerIndex(win, "remaining", 12, early), 10)
+  assert.equal(paceMarkerIndex({ startsAt: null, resetsAt: win.resetsAt }, "used", 12, halfway), null)
+})
+
+test("isOverPace compares the used share against the even-pace budget", () => {
+  const win = { percent: 60, startsAt: "2026-08-01T00:00:00Z", resetsAt: "2026-08-31T00:00:00Z" }
+  const halfway = Date.parse("2026-08-16T00:00:00Z")
+  assert.equal(isOverPace(win, halfway), true)
+  assert.equal(isOverPace({ ...win, percent: 40 }, halfway), false)
+  assert.equal(isOverPace({ ...win, percent: 50 }, halfway), false)
+  assert.equal(isOverPace({ percent: 60, startsAt: null, resetsAt: win.resetsAt }, halfway), false)
+})
+
 test("parseDeepSeekBalance prefers USD over CNY", () => {
   const windows = parseDeepSeekBalance({
     is_available: true,
@@ -100,6 +154,9 @@ test("parseCodexUsage parses primary/secondary windows and credits", () => {
   assert.equal(windows[0].percent, 33.3)
   assert.equal(windows[1].label, "6h")
   assert.equal(windows[1].percent, 80)
+  // fixed-length windows expose starts for pace markers
+  assert.equal(windows[0].startsAt, "2026-08-21T11:00:00.000Z")
+  assert.equal(windows[1].startsAt, "2026-08-21T06:00:00.000Z")
   assert.equal(windows[2].label, "Credits")
   assert.equal(windows[2].valueLabel, "$1.50")
 })
@@ -211,6 +268,8 @@ test("parseCommandCodeUsage maps 5h, weekly, monthly, and plan data", () => {
   assert.deepEqual(parsed.windows.map(window => window.label), ["5h", "7d", "Monthly", "Credits"])
   assert.equal(parsed.windows[0].percent, 35)
   assert.equal(parsed.windows[1].percent, 31)
+  assert.equal(parsed.windows[0].startsAt, "2026-07-31T03:40:00.000Z")
+  assert.equal(parsed.windows[1].startsAt, "2026-07-25T16:00:00.000Z")
   assert.ok(Math.abs((parsed.windows[2].percent ?? 0) - (37.5 / 82.5) * 100) < 1e-9)
   assert.equal(parsed.windows[2].resetsAt, "2026-09-01T00:00:00.000Z")
   assert.equal(parsed.windows[3].valueLabel, "$45.00 left")
@@ -398,6 +457,8 @@ test("parseClaudeUsage extracts 5h/weekly windows and ignores monthly extras in 
   assert.equal(windows[0].label, "5h")
   assert.equal(windows[0].percent, 37.4)
   assert.equal(windows[1].label, "7d")
+  assert.equal(windows[0].startsAt, "2026-08-23T13:00:00.000Z")
+  assert.equal(windows[1].startsAt, "2026-08-18T00:00:00.000Z")
   assert.equal(collapsedSummary(windows, "used"), "37%/5h 13%/7d")
 })
 
@@ -421,6 +482,8 @@ test("parseKimiUsage derives weekly + rate-limit windows from used or remaining"
   })
   assert.equal(windows.find(w => w.label === "Weekly")?.percent, 25)
   assert.equal(windows.find(w => w.label === "Rate Limit (5h)")?.percent, 75)
+  assert.equal(windows.find(w => w.label === "Weekly")?.startsAt, "2026-08-17T00:00:00.000Z")
+  assert.equal(windows.find(w => w.label === "Rate Limit (5h)")?.startsAt, "2026-08-23T15:00:00.000Z")
 })
 
 test("parseZaiUsage maps credit limits and MCP tools with plan label", () => {
@@ -438,6 +501,8 @@ test("parseZaiUsage maps credit limits and MCP tools with plan label", () => {
   assert.equal(windows[0].percent, 40.2)
   assert.equal(windows[1].label, "MCP Tools")
   assert.ok(windows[0].valueLabel?.includes("400"))
+  assert.equal(windows[0].startsAt, "2025-08-17T01:46:40.000Z")
+  assert.equal(windows[1].startsAt, undefined)
 })
 
 test("parseZhipuaiUsage maps Tokens + MCP Tools", () => {
@@ -459,6 +524,7 @@ test("parseMiniMaxUsage honors remaining-field semantics for the CN endpoint", (
       current_interval_usage_count: 30,
       current_weekly_total_count: 700,
       current_weekly_usage_count: 140,
+      start_time: 1756000000000,
       end_time: 1756000000000,
       weekly_end_time: 1758000000000,
     }],
@@ -466,6 +532,8 @@ test("parseMiniMaxUsage honors remaining-field semantics for the CN endpoint", (
   const used = parseMiniMaxUsage(base, false)
   assert.equal(used.find(w => w.label === "5h")?.percent, 30)
   assert.equal(used.find(w => w.label === "weekly")?.percent, 20)
+  assert.equal(used.find(w => w.label === "5h")?.startsAt, "2025-08-24T01:46:40.000Z")
+  assert.equal(used.find(w => w.label === "weekly")?.startsAt, "2025-09-09T05:20:00.000Z")
 
   const remaining = parseMiniMaxUsage(base, true)
   assert.equal(remaining.find(w => w.label === "5h")?.percent, 70)
