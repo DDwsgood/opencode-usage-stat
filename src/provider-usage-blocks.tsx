@@ -26,6 +26,8 @@ import {
   dollarPoolRemaining,
   shortDollars,
   toNumber,
+  paceMarkerIndex,
+  isOverPace,
 } from "./provider-usage.js"
 import type { ProviderId, ProviderUsageResult, UsageDisplayMode } from "./provider-usage.js"
 import { t } from "./i18n.js"
@@ -34,6 +36,19 @@ import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore } from "./settings.js"
 
 const REFRESH_MS = 2 * 60 * 1000 // every 2 minutes
+/** Clock tick for time-derived display (pace marker + reset countdown). Cheap
+ * re-render only — no provider API calls. 30s keeps minute-level countdowns
+ * fresh between the 2-minute data polls. */
+const TICK_MS = 30 * 1000
+
+/** Bar width in cells (also the pace-marker coordinate space). */
+const BAR_WIDTH = 12
+
+/** Split a bar into [before, marker, after] so the pace line can be colored. */
+function splitBar(bar: string, markerIndex: number | null): [string, string, string] {
+  if (markerIndex == null) return [bar, "", ""]
+  return [bar.slice(0, markerIndex), "│", bar.slice(markerIndex + 1)]
+}
 
 const PROVIDER_NAMES: Record<string, string> = Object.fromEntries(
   PROVIDERS.map(p => [p.id, p.name]),
@@ -118,6 +133,10 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     enabledIds.map(id => ({ id, loading: false, result: null })),
   )
 
+  // Wall-clock for pace markers + reset countdowns. Re-renders time-derived
+  // display between provider polls without hitting provider APIs.
+  const [nowMs, setNowMs] = createSignal(Date.now())
+
   async function refreshOne(id: ProviderId): Promise<void> {
     setStates(prev => prev.map(s => (s.id === id ? { ...s, loading: true } : s)))
     const result = await checkProviderUsage(id)
@@ -135,6 +154,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     for (const id of enabledIds) {
       timers.push(setInterval(() => { void refreshOne(id) }, REFRESH_MS))
     }
+    timers.push(setInterval(() => { setNowMs(Date.now()) }, TICK_MS))
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer)
     })
@@ -229,9 +249,22 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                         if (win.percent != null) {
                           const shownPercent = () =>
                             displayMode() === "remaining" ? 100 - win.percent! : win.percent!
-                          // Dollar pools render "Monthly: [bar] N% left" plus a
-                          // second line "[credits]$/[allowance]$"; other windows
-                          // keep " · resets <duration>".
+                          // Bars carry an on-pace budget marker (│) whenever the
+                          // window start is known: red past the budget, green
+                          // within it. Dollar pools render "Monthly: [bar] N%
+                          // left" plus a second line "[credits]$/[allowance]$";
+                          // other windows keep " · resets <duration>".
+                          const markerIndex = () => paceMarkerIndex(win, displayMode(), BAR_WIDTH, nowMs())
+                          const bar = () => splitBar(percentBar(shownPercent(), BAR_WIDTH), markerIndex())
+                          const paceColor = () => (isOverPace(win, nowMs()) ? redColor() : greenColor())
+                          // Subscribe to the clock tick so the countdown
+                          // re-renders between provider polls.
+                          const resetText = () => {
+                            nowMs()
+                            return win.resetsAt ? formatResetDuration(win.resetsAt) : ""
+                          }
+                          const percentText = () =>
+                            `${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`
                           const poolCredits = isDollarPool
                             ? (displayMode() === "remaining"
                               ? dollarPoolRemaining(win.valueLabel)
@@ -243,10 +276,9 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                               <box flexDirection="column">
                                 <text fg={mutedColor()}>
                                   {label}
-                                  <span style={{ fg: color() } as any}>
-                                    {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                    {displayMode() === "remaining" ? ` ${t("left")}` : ""}
-                                  </span>
+                                  <span style={{ fg: color() } as any}>{bar()[0]}</span>
+                                  <span style={{ fg: paceColor() } as any}>{bar()[1]}</span>
+                                  <span style={{ fg: color() } as any}>{bar()[2]}{" "}{percentText()}</span>
                                 </text>
                                 <text>
                                   <span style={{ fg: color() } as any}>
@@ -257,13 +289,12 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                             }>
                               <text fg={mutedColor()}>
                                 {label}
-                                <span style={{ fg: color() } as any}>
-                                  {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                  {displayMode() === "remaining" ? ` ${t("left")}` : ""}
-                                </span>
+                                <span style={{ fg: color() } as any}>{bar()[0]}</span>
+                                <span style={{ fg: paceColor() } as any}>{bar()[1]}</span>
+                                <span style={{ fg: color() } as any}>{bar()[2]}{" "}{percentText()}</span>
                                 {win.resetsAt ? (
                                   <span style={{ fg: dimColor() } as any}>
-                                    {` · ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`}
+                                    {` · ${t("providerResets")} ${resetText()}`}
                                   </span>
                                 ) : null}
                               </text>

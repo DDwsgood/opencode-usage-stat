@@ -12,3 +12,4 @@ dist-test/
 
 # runtime session temp file
 :memory:.ses
+.codegraph/

@@ -208,7 +208,10 @@ export function formatResetDuration(iso: string): string {
   if (mins < 60) return `${mins}m`
   const hours = Math.floor(mins / 60)
   if (hours < 48) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
+  const days = Math.floor(hours / 24)
+  const remHours = hours % 24
+  if (remHours === 0) return `${days}d`
+  return `${days}d ${remHours}h`
 }
 
 /** Linear-interpolation percentile over a sorted-ascending array. */

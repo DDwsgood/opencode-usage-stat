@@ -44,6 +44,7 @@ Shortcut arguments:
   - **DeepSeek** — account balance (USD preferred, then CNY)
   - **Codex** — rate-limit windows (primary/secondary) and credits / spend limit
   - **Command Code** — 5-hour / weekly windows, billing-cycle credits, and plan
+  - Bars show an on-pace marker (`│`) at the elapsed fraction of a window: green while the used share is within budget, red once it passes. Providers that do not expose a window length keep their plain bars.
   - Each enabled provider appears collapsed immediately and refreshes independently every 2 minutes with a ~15 s timeout.
 
 ### Session / total dashboards

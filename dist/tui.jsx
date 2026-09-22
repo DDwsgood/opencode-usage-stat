@@ -1262,9 +1262,25 @@ function windowSeconds(duration, unit) {
   if (unit === "TIME_UNIT_DAY") return d * 86400;
   return null;
 }
-function percentWindow(label, percent, resetMs, valueLabel = null) {
+function percentWindow(label, percent, resetMs, valueLabel = null, startOffsetSeconds = null) {
   const pctValue = toNumber(percent);
-  return { label, percent: pctValue != null ? clampPct(pctValue) : null, resetsAt: toResetTimestamp(resetMs), valueLabel };
+  const resetsAt = toResetTimestamp(resetMs);
+  const window = { label, percent: pctValue != null ? clampPct(pctValue) : null, resetsAt, valueLabel };
+  if (resetsAt && startOffsetSeconds != null) window.startsAt = shiftIsoTimestamp(resetsAt, -startOffsetSeconds);
+  return window;
+}
+function shiftIsoTimestamp(iso, seconds) {
+  return new Date(new Date(iso).getTime() + seconds * 1e3).toISOString();
+}
+function monthBefore(iso) {
+  const end = new Date(iso);
+  const day = end.getUTCDate();
+  const start = new Date(end);
+  start.setUTCDate(1);
+  start.setUTCMonth(start.getUTCMonth() - 1);
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+  start.setUTCDate(Math.min(day, lastDay));
+  return start.toISOString();
 }
 var OPENCODE_GO_ALIASES = ["opencode-go", "opencode", "zen"];
 var OPENCODE_GO_ENV_KEYS = ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"];
@@ -1274,23 +1290,28 @@ function parseOpenCodeGoUsage(payload) {
   if (!usage) return [];
   const out = [];
   const order = [
-    ["rolling", "Rolling"],
-    ["weekly", "Weekly"],
-    ["monthly", "Monthly"]
+    ["rolling", "Rolling", 5 * 3600],
+    ["weekly", "Weekly", 7 * 86400],
+    ["monthly", "Monthly", null]
+    // billing month: one calendar month back from reset
   ];
-  for (const [key, label] of order) {
+  for (const [key, label, windowSeconds2] of order) {
     const entry = asObject(usage[key]);
     if (!entry) continue;
     const percent = entry.percent;
     if (typeof percent !== "number" || !Number.isFinite(percent)) continue;
     const resetsAt = typeof entry.resetsAt === "string" ? entry.resetsAt : null;
     if (resetsAt != null && !Number.isFinite(new Date(resetsAt).getTime())) continue;
-    out.push({
+    const window = {
       label,
       percent: clampPct(percent),
       resetsAt,
       valueLabel: `${percent.toFixed(1)}% used`
-    });
+    };
+    if (resetsAt) {
+      window.startsAt = windowSeconds2 != null ? shiftIsoTimestamp(resetsAt, -windowSeconds2) : monthBefore(resetsAt);
+    }
+    out.push(window);
   }
   return out;
 }
@@ -1371,7 +1392,8 @@ function parseCodexUsage(payload) {
       windowLabelFromSeconds(seconds),
       percent,
       primary.reset_at,
-      percent != null ? `${percent.toFixed(1)}% used` : null
+      percent != null ? `${percent.toFixed(1)}% used` : null,
+      seconds
     ));
   }
   const secondary = data.rate_limit?.secondary_window;
@@ -1382,7 +1404,8 @@ function parseCodexUsage(payload) {
       windowLabelFromSeconds(seconds),
       percent,
       secondary.reset_at,
-      percent != null ? `${percent.toFixed(1)}% used` : null
+      percent != null ? `${percent.toFixed(1)}% used` : null,
+      seconds
     ));
   }
   if (data.credits) {
@@ -1436,20 +1459,20 @@ function parseClaudeUsage(payload) {
     const percent = toNumber(item.percent);
     const resetAt = item.resets_at;
     if (item.kind === "session") {
-      out.push(percentWindow("5h", percent, resetAt));
+      out.push(percentWindow("5h", percent, resetAt, null, 5 * 3600));
     } else if (item.kind === "weekly_all") {
-      out.push(percentWindow("7d", percent, resetAt));
+      out.push(percentWindow("7d", percent, resetAt, null, 7 * 86400));
     } else if (item.kind === "weekly_scoped") {
       const scopeModel = asObject(asObject(item.scope)?.model);
       const model = nonEmptyString(scopeModel?.display_name ?? item.scope);
-      if (model) out.push(percentWindow(`7d \xB7 ${model}`, percent, resetAt));
+      if (model) out.push(percentWindow(`7d \xB7 ${model}`, percent, resetAt, null, 7 * 86400));
     }
   }
   if (!limits.length) {
     const fiveHour = asObject(data.five_hour);
     const sevenDay = asObject(data.seven_day);
-    if (fiveHour) out.push(percentWindow("5h", fiveHour.utilization, fiveHour.resets_at));
-    if (sevenDay) out.push(percentWindow("7d", sevenDay.utilization, sevenDay.resets_at));
+    if (fiveHour) out.push(percentWindow("5h", fiveHour.utilization, fiveHour.resets_at, null, 5 * 3600));
+    if (sevenDay) out.push(percentWindow("7d", sevenDay.utilization, sevenDay.resets_at, null, 7 * 86400));
   }
   const spend = asObject(data.spend);
   if (spend?.enabled === true) {
@@ -1506,7 +1529,7 @@ function parseKimiUsage(payload) {
   const out = [];
   const usage = asObject(data.usage);
   if (usage) {
-    out.push(percentWindow("Weekly", computeKimiUsedPercent(usage.limit, usage.used, usage.remaining), usage.resetTime));
+    out.push(percentWindow("Weekly", computeKimiUsedPercent(usage.limit, usage.used, usage.remaining), usage.resetTime, null, 7 * 86400));
   }
   const limits = Array.isArray(data.limits) ? data.limits : [];
   for (const raw of limits) {
@@ -1517,7 +1540,7 @@ function parseKimiUsage(payload) {
     const seconds = windowSeconds(win?.duration, win?.timeUnit);
     const rawLabel = windowLabel(win?.duration, win?.timeUnit);
     const label = seconds === 5 * 3600 ? `Rate Limit (${rawLabel})` : rawLabel;
-    out.push(percentWindow(label, computeKimiUsedPercent(detail?.limit, detail?.used, detail?.remaining), detail?.resetTime));
+    out.push(percentWindow(label, computeKimiUsedPercent(detail?.limit, detail?.used, detail?.remaining), detail?.resetTime, null, seconds));
   }
   return out.filter((w) => w.percent != null || w.resetsAt != null);
 }
@@ -1573,7 +1596,7 @@ function parseZaiStyleUsage(payload, options) {
     const type = limit?.type;
     if (type !== "TOKENS_LIMIT" && type !== "CREDIT_LIMIT") continue;
     const seconds = zaiWindowSeconds(limit);
-    windows.push(percentWindow(shortWindowLabel(seconds), limit.percentage, limit.nextResetTime, zaiCreditValueLabel(limit)));
+    windows.push(percentWindow(shortWindowLabel(seconds), limit.percentage, limit.nextResetTime, zaiCreditValueLabel(limit), seconds));
   }
   const mcp = limits.find((l) => l?.type === "TIME_LIMIT");
   if (mcp) {
@@ -1646,10 +1669,12 @@ function parseMiniMaxUsage(payload, usageFieldsAreRemaining) {
   const intervalPercent = pct(intervalValue, intervalTotal);
   const intervalStart = toNumber(model.start_time);
   const intervalEnd = toNumber(model.end_time);
-  out.push(percentWindow("5h", intervalPercent, intervalEnd, intervalPercent != null ? `${intervalPercent.toFixed(0)}% used` : null));
-  void intervalStart;
+  const intervalWindow = percentWindow("5h", intervalPercent, intervalEnd, intervalPercent != null ? `${intervalPercent.toFixed(0)}% used` : null);
+  const intervalStartIso = intervalStart != null ? toResetTimestamp(intervalStart) : null;
+  if (intervalStartIso) intervalWindow.startsAt = intervalStartIso;
+  out.push(intervalWindow);
   const weeklyPercent = pct(weeklyValue, weeklyTotal);
-  out.push(percentWindow("weekly", weeklyPercent, model.weekly_end_time, weeklyPercent != null ? `${weeklyPercent.toFixed(0)}% used` : null));
+  out.push(percentWindow("weekly", weeklyPercent, model.weekly_end_time, weeklyPercent != null ? `${weeklyPercent.toFixed(0)}% used` : null, 7 * 86400));
   void weeklyTotal;
   return out;
 }
@@ -2240,12 +2265,13 @@ function parseCommandCodeUsage(data) {
       const used = toNumber(limit?.used);
       const cap = toNumber(limit?.cap);
       if (used == null && cap == null) continue;
-      windows.push({
+      windows.push(percentWindow(
         label,
-        percent: used != null && cap != null && cap > 0 ? clampPct(used / cap * 100) : null,
-        resetsAt: toResetTimestamp(limit?.resetAt),
-        valueLabel: used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null
-      });
+        used != null && cap != null && cap > 0 ? used / cap * 100 : null,
+        limit?.resetAt,
+        used != null && cap != null ? `${commandCodeMoney(used)} / ${commandCodeMoney(cap)}` : null,
+        key === "fiveHour" ? 5 * 3600 : 7 * 86400
+      ));
     }
   }
   const creditParts = [balances?.monthlyCredits, balances?.purchasedCredits, balances?.freeCredits].map(toNumber).filter((value) => value !== null);
@@ -2366,6 +2392,23 @@ function collapsedSummary(windows, mode) {
   const firstPercent = windows.map(shown).find((v) => v != null);
   if (firstPercent != null) return `${firstPercent}%`;
   return windows.find((w) => w.valueLabel)?.valueLabel ?? null;
+}
+function windowPacePercent(win, nowMs = Date.now()) {
+  if (!win.startsAt || !win.resetsAt) return null;
+  const start = Date.parse(win.startsAt);
+  const end = Date.parse(win.resetsAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return clampPct((nowMs - start) / (end - start) * 100);
+}
+function paceMarkerIndex(win, mode, width, nowMs = Date.now()) {
+  const pace = windowPacePercent(win, nowMs);
+  if (pace == null || width <= 0) return null;
+  const shown = mode === "remaining" ? 100 - pace : pace;
+  return Math.max(0, Math.min(width - 1, Math.floor(shown / 100 * width)));
+}
+function isOverPace(win, nowMs = Date.now()) {
+  const pace = windowPacePercent(win, nowMs);
+  return win.percent != null && pace != null && win.percent > pace;
 }
 async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential = defaultCredentialResolver) {
   const spec = PROVIDERS.find((p) => p.id === providerId);
@@ -2577,6 +2620,11 @@ async function migrateLegacySettings(context) {
 
 // src/provider-usage-blocks.tsx
 var REFRESH_MS = 2 * 60 * 1e3;
+var BAR_WIDTH = 12;
+function splitBar(bar, markerIndex) {
+  if (markerIndex == null) return [bar, "", ""];
+  return [bar.slice(0, markerIndex), "\u2502", bar.slice(markerIndex + 1)];
+}
 var PROVIDER_NAMES = Object.fromEntries(PROVIDERS.map((p) => [p.id, p.name]));
 var FALLBACK_COLOR = RGBA2.fromInts(80, 190, 255, 255);
 var PROVIDER_COLORS = {
@@ -2819,79 +2867,97 @@ function ProviderUsageBlocks(props) {
                         const label = win.label ? win.label + ": " : "";
                         if (win.percent != null) {
                           const shownPercent = () => displayMode() === "remaining" ? 100 - win.percent : win.percent;
+                          const markerIndex = () => paceMarkerIndex(win, displayMode(), BAR_WIDTH);
+                          const bar = () => splitBar(percentBar(shownPercent(), BAR_WIDTH), markerIndex());
+                          const paceColor = () => isOverPace(win) ? redColor() : greenColor();
+                          const percentText = () => `${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`;
                           const poolCredits = isDollarPool ? displayMode() === "remaining" ? dollarPoolRemaining(win.valueLabel) : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)) : null;
                           const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null;
                           return _$createComponent(Show, {
                             when: !isDollarPool,
                             get fallback() {
                               return (() => {
-                                var _el$18 = _$createElement("box"), _el$19 = _$createElement("text"), _el$20 = _$createElement("span"), _el$21 = _$createTextNode(` `), _el$22 = _$createTextNode(`%`), _el$23 = _$createElement("text"), _el$24 = _$createElement("span");
-                                _$insertNode(_el$18, _el$19);
-                                _$insertNode(_el$18, _el$23);
-                                _$setProp(_el$18, "flexDirection", "column");
+                                var _el$19 = _$createElement("box"), _el$20 = _$createElement("text"), _el$21 = _$createElement("span"), _el$22 = _$createElement("span"), _el$23 = _$createElement("span"), _el$24 = _$createTextNode(` `), _el$25 = _$createElement("text"), _el$26 = _$createElement("span");
                                 _$insertNode(_el$19, _el$20);
-                                _$insert(_el$19, label, _el$20);
+                                _$insertNode(_el$19, _el$25);
+                                _$setProp(_el$19, "flexDirection", "column");
                                 _$insertNode(_el$20, _el$21);
                                 _$insertNode(_el$20, _el$22);
-                                _$insert(_el$20, () => percentBar(shownPercent(), 12), _el$21);
-                                _$insert(_el$20, () => Math.round(shownPercent()), _el$22);
-                                _$insert(_el$20, (() => {
-                                  var _c$4 = _$memo(() => displayMode() === "remaining");
-                                  return () => _c$4() ? ` ${t("left")}` : "";
-                                })(), null);
+                                _$insertNode(_el$20, _el$23);
+                                _$insert(_el$20, label, _el$21);
+                                _$insert(_el$21, () => bar()[0]);
+                                _$insert(_el$22, () => bar()[1]);
                                 _$insertNode(_el$23, _el$24);
-                                _$insert(_el$24, () => `${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`);
+                                _$insert(_el$23, () => bar()[2], _el$24);
+                                _$insert(_el$23, percentText, null);
+                                _$insertNode(_el$25, _el$26);
+                                _$insert(_el$26, () => `${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`);
                                 _$effect((_p$) => {
-                                  var _v$7 = mutedColor(), _v$8 = {
+                                  var _v$9 = mutedColor(), _v$0 = {
                                     fg: color()
-                                  }, _v$9 = {
+                                  }, _v$1 = {
+                                    fg: paceColor()
+                                  }, _v$10 = {
+                                    fg: color()
+                                  }, _v$11 = {
                                     fg: color()
                                   };
-                                  _v$7 !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$7, _p$.e));
-                                  _v$8 !== _p$.t && (_p$.t = _$setProp(_el$20, "style", _v$8, _p$.t));
-                                  _v$9 !== _p$.a && (_p$.a = _$setProp(_el$24, "style", _v$9, _p$.a));
+                                  _v$9 !== _p$.e && (_p$.e = _$setProp(_el$20, "fg", _v$9, _p$.e));
+                                  _v$0 !== _p$.t && (_p$.t = _$setProp(_el$21, "style", _v$0, _p$.t));
+                                  _v$1 !== _p$.a && (_p$.a = _$setProp(_el$22, "style", _v$1, _p$.a));
+                                  _v$10 !== _p$.o && (_p$.o = _$setProp(_el$23, "style", _v$10, _p$.o));
+                                  _v$11 !== _p$.i && (_p$.i = _$setProp(_el$26, "style", _v$11, _p$.i));
                                   return _p$;
                                 }, {
                                   e: void 0,
                                   t: void 0,
-                                  a: void 0
+                                  a: void 0,
+                                  o: void 0,
+                                  i: void 0
                                 });
-                                return _el$18;
+                                return _el$19;
                               })();
                             },
                             get children() {
-                              var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createTextNode(` `), _el$17 = _$createTextNode(`%`);
+                              var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createElement("span"), _el$17 = _$createElement("span"), _el$18 = _$createTextNode(` `);
                               _$insertNode(_el$14, _el$15);
+                              _$insertNode(_el$14, _el$16);
+                              _$insertNode(_el$14, _el$17);
                               _$insert(_el$14, label, _el$15);
-                              _$insertNode(_el$15, _el$16);
-                              _$insertNode(_el$15, _el$17);
-                              _$insert(_el$15, () => percentBar(shownPercent(), 12), _el$16);
-                              _$insert(_el$15, () => Math.round(shownPercent()), _el$17);
-                              _$insert(_el$15, (() => {
-                                var _c$2 = _$memo(() => displayMode() === "remaining");
-                                return () => _c$2() ? ` ${t("left")}` : "";
-                              })(), null);
+                              _$insert(_el$15, () => bar()[0]);
+                              _$insert(_el$16, () => bar()[1]);
+                              _$insertNode(_el$17, _el$18);
+                              _$insert(_el$17, () => bar()[2], _el$18);
+                              _$insert(_el$17, percentText, null);
                               _$insert(_el$14, (() => {
-                                var _c$3 = _$memo(() => !!win.resetsAt);
-                                return () => _c$3() ? (() => {
-                                  var _el$25 = _$createElement("span");
-                                  _$insert(_el$25, () => ` \xB7 ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`);
-                                  _$effect((_$p) => _$setProp(_el$25, "style", {
+                                var _c$2 = _$memo(() => !!win.resetsAt);
+                                return () => _c$2() ? (() => {
+                                  var _el$27 = _$createElement("span");
+                                  _$insert(_el$27, () => ` \xB7 ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`);
+                                  _$effect((_$p) => _$setProp(_el$27, "style", {
                                     fg: dimColor()
                                   }, _$p));
-                                  return _el$25;
+                                  return _el$27;
                                 })() : null;
                               })(), null);
                               _$effect((_p$) => {
                                 var _v$5 = mutedColor(), _v$6 = {
                                   fg: color()
+                                }, _v$7 = {
+                                  fg: paceColor()
+                                }, _v$8 = {
+                                  fg: color()
                                 };
                                 _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
                                 _v$6 !== _p$.t && (_p$.t = _$setProp(_el$15, "style", _v$6, _p$.t));
+                                _v$7 !== _p$.a && (_p$.a = _$setProp(_el$16, "style", _v$7, _p$.a));
+                                _v$8 !== _p$.o && (_p$.o = _$setProp(_el$17, "style", _v$8, _p$.o));
                                 return _p$;
                               }, {
                                 e: void 0,
-                                t: void 0
+                                t: void 0,
+                                a: void 0,
+                                o: void 0
                               });
                               return _el$14;
                             }
@@ -2899,30 +2965,30 @@ function ProviderUsageBlocks(props) {
                         }
                         if (win.valueLabel) {
                           return (() => {
-                            var _el$26 = _$createElement("text"), _el$27 = _$createElement("span");
-                            _$insertNode(_el$26, _el$27);
-                            _$insert(_el$26, label, _el$27);
-                            _$insert(_el$27, () => win.valueLabel);
+                            var _el$28 = _$createElement("text"), _el$29 = _$createElement("span");
+                            _$insertNode(_el$28, _el$29);
+                            _$insert(_el$28, label, _el$29);
+                            _$insert(_el$29, () => win.valueLabel);
                             _$effect((_p$) => {
-                              var _v$0 = mutedColor(), _v$1 = {
+                              var _v$12 = mutedColor(), _v$13 = {
                                 fg: greenColor()
                               };
-                              _v$0 !== _p$.e && (_p$.e = _$setProp(_el$26, "fg", _v$0, _p$.e));
-                              _v$1 !== _p$.t && (_p$.t = _$setProp(_el$27, "style", _v$1, _p$.t));
+                              _v$12 !== _p$.e && (_p$.e = _$setProp(_el$28, "fg", _v$12, _p$.e));
+                              _v$13 !== _p$.t && (_p$.t = _$setProp(_el$29, "style", _v$13, _p$.t));
                               return _p$;
                             }, {
                               e: void 0,
                               t: void 0
                             });
-                            return _el$26;
+                            return _el$28;
                           })();
                         }
                         return (() => {
-                          var _el$28 = _$createElement("text"), _el$29 = _$createTextNode(`\u2014`);
-                          _$insertNode(_el$28, _el$29);
-                          _$insert(_el$28, label, _el$29);
-                          _$effect((_$p) => _$setProp(_el$28, "fg", mutedColor(), _$p));
-                          return _el$28;
+                          var _el$30 = _$createElement("text"), _el$31 = _$createTextNode(`\u2014`);
+                          _$insertNode(_el$30, _el$31);
+                          _$insert(_el$30, label, _el$31);
+                          _$effect((_$p) => _$setProp(_el$30, "fg", mutedColor(), _$p));
+                          return _el$30;
                         })();
                       }
                     });
