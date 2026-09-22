@@ -36,6 +36,10 @@ import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore } from "./settings.js"
 
 const REFRESH_MS = 2 * 60 * 1000 // every 2 minutes
+/** Clock tick for time-derived display (pace marker + reset countdown). Cheap
+ * re-render only — no provider API calls. 30s keeps minute-level countdowns
+ * fresh between the 2-minute data polls. */
+const TICK_MS = 30 * 1000
 
 /** Bar width in cells (also the pace-marker coordinate space). */
 const BAR_WIDTH = 12
@@ -129,6 +133,10 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     enabledIds.map(id => ({ id, loading: false, result: null })),
   )
 
+  // Wall-clock for pace markers + reset countdowns. Re-renders time-derived
+  // display between provider polls without hitting provider APIs.
+  const [nowMs, setNowMs] = createSignal(Date.now())
+
   async function refreshOne(id: ProviderId): Promise<void> {
     setStates(prev => prev.map(s => (s.id === id ? { ...s, loading: true } : s)))
     const result = await checkProviderUsage(id)
@@ -146,6 +154,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     for (const id of enabledIds) {
       timers.push(setInterval(() => { void refreshOne(id) }, REFRESH_MS))
     }
+    timers.push(setInterval(() => { setNowMs(Date.now()) }, TICK_MS))
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer)
     })
@@ -245,9 +254,15 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                           // within it. Dollar pools render "Monthly: [bar] N%
                           // left" plus a second line "[credits]$/[allowance]$";
                           // other windows keep " · resets <duration>".
-                          const markerIndex = () => paceMarkerIndex(win, displayMode(), BAR_WIDTH)
+                          const markerIndex = () => paceMarkerIndex(win, displayMode(), BAR_WIDTH, nowMs())
                           const bar = () => splitBar(percentBar(shownPercent(), BAR_WIDTH), markerIndex())
-                          const paceColor = () => (isOverPace(win) ? redColor() : greenColor())
+                          const paceColor = () => (isOverPace(win, nowMs()) ? redColor() : greenColor())
+                          // Subscribe to the clock tick so the countdown
+                          // re-renders between provider polls.
+                          const resetText = () => {
+                            nowMs()
+                            return win.resetsAt ? formatResetDuration(win.resetsAt) : ""
+                          }
                           const percentText = () =>
                             `${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`
                           const poolCredits = isDollarPool
@@ -279,7 +294,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
                                 <span style={{ fg: color() } as any}>{bar()[2]}{" "}{percentText()}</span>
                                 {win.resetsAt ? (
                                   <span style={{ fg: dimColor() } as any}>
-                                    {` · ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`}
+                                    {` · ${t("providerResets")} ${resetText()}`}
                                   </span>
                                 ) : null}
                               </text>
