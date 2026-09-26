@@ -15,6 +15,15 @@ import {
   parseCursorUsage,
   parseXaiUsage,
   parseCommandCodeUsage,
+  parseDevinUsage,
+  fetchDevinUsage,
+  worstUsagePercent,
+  hasEnabledDevinModel,
+  isDevinUsageVisible,
+  devinLocationKey,
+  devinGatePlugins,
+  DEVIN_PLUGIN_ID,
+  DEVIN_API_FALLBACK_URL,
   collapsedSummary,
   fetchOpenCodeGoUsage,
   fetchDeepSeekBalance,
@@ -24,6 +33,14 @@ import {
   resolveProviderUsageConfig,
   USAGE_STAT_PROVIDER_IDS,
 } from "../src/provider-usage.js"
+import { readDevinCredentials } from "../src/credentials.js"
+// The default "solid-js" import resolves to the non-reactive server build in
+// node tests; the dist client build gives real memo/effect semantics here.
+// @ts-ignore -- no bundled types for the dist subpath
+import { createRoot, createSignal, createMemo, createComputed } from "solid-js/dist/solid.js"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 // ── Pure parsers ──
 
@@ -623,4 +640,361 @@ test("parseOllamaSettingsHtml monthly valueLabel carries remaining dollars", () 
   const html = `<span>Monthly usage</span><span>$18 of $60 used</span>`
   const windows = parseOllamaSettingsHtml(html)
   assert.equal(windows[0].valueLabel, "$42.00 / $60.00 left")
+})
+
+// ── worstUsagePercent (dot color uses the tightest window) ──
+
+test("worstUsagePercent returns the max used percent across windows", () => {
+  assert.equal(worstUsagePercent([
+    { label: "Daily", percent: 5, resetsAt: null, valueLabel: null },
+    { label: "Weekly", percent: 96, resetsAt: null, valueLabel: null },
+  ]), 96)
+  assert.equal(worstUsagePercent([
+    { label: "Weekly", percent: 96, resetsAt: null, valueLabel: null },
+    { label: "Daily", percent: 5, resetsAt: null, valueLabel: null },
+  ]), 96)
+})
+
+test("worstUsagePercent ignores null/NaN/Infinity and reports null when none", () => {
+  assert.equal(worstUsagePercent([
+    { label: "Credits", percent: null, resetsAt: null, valueLabel: "$5.00" },
+    { label: "Weird", percent: Number.NaN, resetsAt: null, valueLabel: null },
+    { label: "Inf", percent: Number.POSITIVE_INFINITY, resetsAt: null, valueLabel: null },
+  ]), null)
+  assert.equal(worstUsagePercent([]), null)
+  assert.equal(worstUsagePercent(undefined), null)
+  assert.equal(worstUsagePercent(null), null)
+})
+
+test("worstUsagePercent picks the exhausted window even when it is not first", () => {
+  // First window has no percent; a later one is fully used.
+  assert.equal(worstUsagePercent([
+    { label: "Credits", percent: null, resetsAt: null, valueLabel: "$0.00" },
+    { label: "Daily", percent: 100, resetsAt: null, valueLabel: null },
+    { label: "Weekly", percent: 10, resetsAt: null, valueLabel: null },
+  ]), 100)
+})
+
+// ── Devin gate predicate (AND of config + plugin + model) ──
+
+test("isDevinUsageVisible requires all three conditions", () => {
+  const all = { configEnabled: true, pluginIds: [DEVIN_PLUGIN_ID, "other"], hasDevinModel: true }
+  assert.equal(isDevinUsageVisible(all), true)
+  assert.equal(isDevinUsageVisible({ ...all, configEnabled: false }), false)
+  assert.equal(isDevinUsageVisible({ ...all, pluginIds: [] }), false)
+  assert.equal(isDevinUsageVisible({ ...all, pluginIds: ["other"] }), false)
+  assert.equal(isDevinUsageVisible({ ...all, hasDevinModel: false }), false)
+  // Plugin presence + model without opt-in is not enough (no OR semantics).
+  assert.equal(isDevinUsageVisible({ configEnabled: false, pluginIds: [DEVIN_PLUGIN_ID], hasDevinModel: true }), false)
+})
+
+test("hasEnabledDevinModel only counts enabled devin-provider models", () => {
+  assert.equal(hasEnabledDevinModel([{ providerID: "devin", enabled: true }]), true)
+  assert.equal(hasEnabledDevinModel([{ providerID: "devin", enabled: false }]), false)
+  assert.equal(hasEnabledDevinModel([{ providerID: "openai", enabled: true }]), false)
+  assert.equal(hasEnabledDevinModel([{ providerID: "devin" }]), false)
+  assert.equal(hasEnabledDevinModel([]), false)
+  assert.equal(hasEnabledDevinModel(undefined), false)
+  assert.equal(hasEnabledDevinModel(null), false)
+})
+
+// Gate state is scoped to the location that produced it (strict AND per location)
+test("devinGatePlugins scopes plugin ids to their location and drops stale results", () => {
+  const locA = devinLocationKey({ directory: "/a" })
+  const locB = devinLocationKey({ directory: "/b" })
+  assert.notEqual(locA, locB)
+  assert.equal(devinLocationKey({ directory: "/a", workspaceID: "w1" }), "/a|w1")
+  assert.equal(devinLocationKey(undefined), "|")
+
+  const empty = { key: locB, seq: 1, pluginIds: [] as readonly string[] }
+  // A result fetched for /a must not qualify /b.
+  const rejected = devinGatePlugins(empty, locB, locA, 2, [DEVIN_PLUGIN_ID])
+  assert.equal(rejected, empty) // same state object, ids never applied
+
+  // Current-location result applies.
+  const accepted = devinGatePlugins(empty, locB, locB, 2, [DEVIN_PLUGIN_ID])
+  assert.equal(accepted.key, locB)
+  assert.deepEqual(accepted.pluginIds, [DEVIN_PLUGIN_ID])
+
+  // Older sequence numbers never overwrite a newer gate state.
+  const stale = devinGatePlugins(accepted, locB, locB, 1, [])
+  assert.equal(stale, accepted)
+})
+
+// A memoized boolean eligibility flips downstream effects only on real changes,
+// so the 2-minute poll cannot retrigger fetches while the answer stays the same.
+test("memoized devin eligibility does not re-fire downstream effects on equal polls", () => {
+  createRoot((dispose: () => void) => {
+    const [pluginIds, setPluginIds] = createSignal<readonly string[]>([DEVIN_PLUGIN_ID])
+    const [hasModel, setHasModel] = createSignal(true)
+    const eligible = createMemo(() => isDevinUsageVisible({
+      configEnabled: true,
+      pluginIds: pluginIds(),
+      hasDevinModel: hasModel(),
+    }))
+    let runs = 0
+    createComputed(() => { eligible(); runs++ })
+    assert.equal(runs, 1)
+    // Poll returns an equal-but-fresh plugin list: eligibility unchanged, no rerun.
+    setPluginIds([DEVIN_PLUGIN_ID, "other-plugin"])
+    assert.equal(runs, 1)
+    // Losing the devin plugin flips the boolean: downstream fires once.
+    setPluginIds(["other-plugin"])
+    assert.equal(runs, 2)
+    // Regaining it flips back.
+    setPluginIds([DEVIN_PLUGIN_ID])
+    assert.equal(runs, 3)
+    dispose()
+  })
+})
+
+// ── Devin credential file (temp XDG dir, offline) ──
+
+test("readDevinCredentials reads apiKey/apiServerUrl from the devin plugin store", () => {
+  const previous = process.env.XDG_CONFIG_HOME
+  const dir = mkdtempSync(join(tmpdir(), "devin-creds-"))
+  mkdirSync(join(dir, "opencode-devin-v2"), { recursive: true })
+  writeFileSync(
+    join(dir, "opencode-devin-v2", "credentials.json"),
+    JSON.stringify({ apiKey: "k-123", apiServerUrl: "https://example.dev" }),
+  )
+  try {
+    process.env.XDG_CONFIG_HOME = dir
+    assert.deepEqual(readDevinCredentials(), { apiKey: "k-123", apiServerUrl: "https://example.dev" })
+    writeFileSync(join(dir, "opencode-devin-v2", "credentials.json"), "not-json")
+    assert.equal(readDevinCredentials(), null)
+    writeFileSync(join(dir, "opencode-devin-v2", "credentials.json"), "{}")
+    assert.deepEqual(readDevinCredentials(), { apiKey: null, apiServerUrl: null })
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+  }
+})
+
+test("readDevinCredentials returns null when the file is absent", () => {
+  const previous = process.env.XDG_CONFIG_HOME
+  const dir = mkdtempSync(join(tmpdir(), "devin-empty-"))
+  try {
+    process.env.XDG_CONFIG_HOME = dir
+    assert.equal(readDevinCredentials(), null)
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+  }
+})
+
+// ── Devin quota parser ──
+
+test("parseDevinUsage maps remaining percent to used percent with resets", () => {
+  const parsed = parseDevinUsage({
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro", isDevin: true },
+        dailyQuotaRemainingPercent: 75,
+        weeklyQuotaRemainingPercent: 40,
+        dailyQuotaResetAtUnix: "1790496000",
+        weeklyQuotaResetAtUnix: 1790496000,
+      },
+    },
+    planInfo: { planName: "Different" },
+  })
+  assert.ok(parsed)
+  assert.equal(parsed.planLabel, "Pro") // nested planStatus.planInfo wins
+  assert.deepEqual(parsed.windows.map(w => w.label), ["Daily", "Weekly"])
+  assert.equal(parsed.windows[0].percent, 25)
+  assert.equal(parsed.windows[1].percent, 60)
+  assert.equal(parsed.windows[0].resetsAt, new Date(1790496000 * 1000).toISOString())
+})
+
+test("parseDevinUsage treats omitted weekly percent as fully exhausted (proto3)", () => {
+  const parsed = parseDevinUsage({
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro", isDevin: true },
+        dailyQuotaRemainingPercent: 100,
+        dailyQuotaResetAtUnix: "1790496000",
+        weeklyQuotaResetAtUnix: "1790496000",
+      },
+    },
+  })
+  assert.ok(parsed)
+  assert.equal(parsed.windows[0].percent, 0)
+  assert.equal(parsed.windows[1].label, "Weekly")
+  assert.equal(parsed.windows[1].percent, 100) // omitted == 0 remaining
+})
+
+test("parseDevinUsage honors hideDailyQuota / hideWeeklyQuota", () => {
+  const parsed = parseDevinUsage({
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro", hideWeeklyQuota: true },
+        dailyQuotaRemainingPercent: 50,
+        dailyQuotaResetAtUnix: "1790496000",
+        weeklyQuotaRemainingPercent: 50,
+        weeklyQuotaResetAtUnix: "1790496000",
+      },
+    },
+  })
+  assert.ok(parsed)
+  assert.deepEqual(parsed.windows.map(w => w.label), ["Daily"])
+})
+
+test("parseDevinUsage returns null for missing or malformed planStatus", () => {
+  assert.equal(parseDevinUsage(null), null)
+  assert.equal(parseDevinUsage({}), null)
+  assert.equal(parseDevinUsage({ userStatus: {} }), null)
+  assert.equal(parseDevinUsage({ userStatus: { planStatus: {} } }), null)
+  // planStatus without any quota fields is not a valid quota structure —
+  // never fabricate 100% exhaustion.
+  assert.equal(parseDevinUsage({ userStatus: { planStatus: { planInfo: { planName: "Free" } } } }), null)
+})
+
+test("parseDevinUsage rejects explicit invalid percent instead of fabricating 100% used", () => {
+  const base = () => ({
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro" },
+        dailyQuotaRemainingPercent: 60,
+        dailyQuotaResetAtUnix: "1790496000",
+        weeklyQuotaResetAtUnix: "1790496000",
+      },
+    },
+  })
+  for (const bad of ["garbage", {}, NaN, -5, 150, Infinity]) {
+    const payload = base()
+    ;(payload.userStatus.planStatus as Record<string, unknown>).dailyQuotaRemainingPercent = bad
+    assert.equal(parseDevinUsage(payload), null, `expected null for ${String(bad)}`)
+  }
+  // Null / omitted weekly percent still means proto3 zero (fully used).
+  const omitted = parseDevinUsage(base())
+  assert.ok(omitted)
+  assert.equal(omitted.windows[1].percent, 100)
+})
+
+test("parseDevinUsage never throws on extreme reset timestamps", () => {
+  const parsed = parseDevinUsage({
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro" },
+        dailyQuotaRemainingPercent: 60,
+        dailyQuotaResetAtUnix: 1e30,
+        weeklyQuotaRemainingPercent: 60,
+        weeklyQuotaResetAtUnix: "not-a-date",
+      },
+    },
+  })
+  assert.ok(parsed)
+  assert.equal(parsed.windows[0].percent, 40)
+  assert.equal(parsed.windows[0].resetsAt, null)
+  assert.equal(parsed.windows[1].resetsAt, null)
+})
+
+// ── Devin fetcher (mocked fetch, offline) ──
+
+function devinOkPayload() {
+  return {
+    userStatus: {
+      planStatus: {
+        planInfo: { planName: "Pro", isDevin: true },
+        dailyQuotaRemainingPercent: 60,
+        dailyQuotaResetAtUnix: "1790496000",
+        weeklyQuotaRemainingPercent: 20,
+        weeklyQuotaResetAtUnix: "1790496000",
+      },
+    },
+  }
+}
+
+test("fetchDevinUsage posts api_key metadata with connect headers, no redirects", async () => {
+  let seen: { url: string; init?: RequestInit } | null = null
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    seen = { url, init }
+    return { ok: true, status: 200, json: async () => devinOkPayload(), text: async () => "{}" } as Response
+  }) as unknown as typeof fetch
+  const parsed = await fetchDevinUsage({ apiKey: "devin-key-1", apiServerUrl: "https://api.devin.test" }, fetchImpl)
+  assert.equal(seen!.url, `https://api.devin.test/exa.seat_management_pb.SeatManagementService/GetUserStatus`)
+  const headers = seen!.init!.headers as Record<string, string>
+  assert.equal(headers["Connect-Protocol-Version"], "1")
+  assert.equal(headers["Content-Type"], "application/json")
+  assert.equal((seen!.init as { redirect?: string }).redirect, "manual")
+  assert.equal(headers.Authorization, undefined) // key travels in the body only
+  const body = JSON.parse(String(seen!.init!.body))
+  assert.equal(body.metadata.api_key, "devin-key-1")
+  assert.equal(parsed.windows.length, 2)
+  assert.equal(parsed.planLabel, "Pro")
+})
+
+test("fetchDevinUsage falls back to the default host and rejects non-https/base urls", async () => {
+  const urls: string[] = []
+  const fetchImpl = (async (url: string) => {
+    urls.push(url)
+    return { ok: true, status: 200, json: async () => devinOkPayload(), text: async () => "{}" } as Response
+  }) as unknown as typeof fetch
+  await fetchDevinUsage({ apiKey: "k", apiServerUrl: null }, fetchImpl)
+  await fetchDevinUsage({ apiKey: "k", apiServerUrl: "http://insecure.example" }, fetchImpl)
+  await fetchDevinUsage({ apiKey: "k", apiServerUrl: "https://user:pass@evil.example/?x=1" }, fetchImpl)
+  await fetchDevinUsage({ apiKey: "k", apiServerUrl: "not a url" }, fetchImpl)
+  assert.ok(urls.every(u => u.startsWith(`${DEVIN_API_FALLBACK_URL}/`)))
+})
+
+test("fetchDevinUsage does not leak key or raw error body", async () => {
+  const fetchImpl = (async () => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ detail: "account devin-key-2 suspended, user: bob@corp.io" }),
+    text: async () => "account devin-key-2 suspended, user: bob@corp.io",
+  }) as Response) as unknown as typeof fetch
+  await assert.rejects(fetchDevinUsage({ apiKey: "devin-key-2", apiServerUrl: null }, fetchImpl), (err: unknown) => {
+    const msg = String(err)
+    assert.match(msg, /session expired/i)
+    assert.doesNotMatch(msg, /devin-key-2/)
+    assert.doesNotMatch(msg, /bob@corp\.io/)
+    return true
+  })
+  const fetch500 = (async () => ({
+    ok: false, status: 500,
+    json: async () => ({}), text: async () => "PII devin-key-2",
+  }) as Response) as unknown as typeof fetch
+  await assert.rejects(fetchDevinUsage({ apiKey: "devin-key-2", apiServerUrl: null }, fetch500), (err: unknown) => {
+    assert.doesNotMatch(String(err), /PII|devin-key-2/)
+    return true
+  })
+})
+
+test("fetchDevinUsage throws when the payload has no quota structure", async () => {
+  const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" }) as Response) as unknown as typeof fetch
+  await assert.rejects(fetchDevinUsage({ apiKey: "k", apiServerUrl: null }, fetchImpl), /could not be parsed/)
+})
+
+test("checkProviderUsage devin reports not-configured without a credentials file", async () => {
+  const previous = process.env.XDG_CONFIG_HOME
+  const dir = mkdtempSync(join(tmpdir(), "devin-none-"))
+  try {
+    process.env.XDG_CONFIG_HOME = dir
+    const result = await checkProviderUsage("devin", mockFetch(200, {}), fakeCredential("ignored"))
+    assert.equal(result.configured, false)
+    assert.equal(result.ok, false)
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+  }
+})
+
+test("checkProviderUsage devin end-to-end with temp credentials file (offline)", async () => {
+  const previous = process.env.XDG_CONFIG_HOME
+  const dir = mkdtempSync(join(tmpdir(), "devin-e2e-"))
+  mkdirSync(join(dir, "opencode-devin-v2"), { recursive: true })
+  writeFileSync(join(dir, "opencode-devin-v2", "credentials.json"), JSON.stringify({ apiKey: "e2e-key", apiServerUrl: "https://devin.test" }))
+  try {
+    process.env.XDG_CONFIG_HOME = dir
+    const result = await checkProviderUsage("devin", mockFetch(200, devinOkPayload()), fakeCredential(null))
+    assert.equal(result.configured, true)
+    assert.equal(result.ok, true)
+    assert.equal(result.planLabel, "Pro")
+    assert.deepEqual(result.windows?.map(w => w.label), ["Daily", "Weekly"])
+    assert.equal(result.windows?.[0]?.percent, 40)
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+  }
 })

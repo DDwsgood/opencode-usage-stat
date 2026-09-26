@@ -19,14 +19,18 @@
 //   - xai           grok.com gRPC-web billing RPC (hand-rolled protobuf scan)
 //   - cursor        POST api2.cursor.sh GetCurrentPeriodUsage (access token file)
 //   - command-code  Command Code CLI alpha usage endpoints (API key)
+//   - devin         opencode-devin-v2 seat quota via Codeium GetUserStatus RPC
+//                   (key from that plugin's credentials.json; shown only when
+//                   the devin plugin is installed and a devin model exists)
 //
 // Credentials resolve via the OpenCode V2 credential DB, ~/.local/share/opencode/auth.json,
 // env vars and .env files; ollama-cloud/cursor use secure JSON files. Secrets are
 // never logged or returned — results carry status only.
 
-import { resolveCredential, readSecureProviderJson, authJsonEntry } from "./credentials.js"
+import { resolveCredential, readSecureProviderJson, readDevinCredentials, authJsonEntry } from "./credentials.js"
 import type { ResolvedCredential } from "./credentials.js"
 import { existsSync, readFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { formatResetDuration } from "./formatter.js"
@@ -125,7 +129,10 @@ function nonEmptyString(value: unknown): string | null {
 function toResetTimestamp(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     const milliseconds = value < 10_000_000_000 ? value * 1000 : value
-    return new Date(milliseconds).toISOString()
+    // Unrepresentable or absurd timestamps must not throw on toISOString().
+    if (!Number.isFinite(milliseconds) || milliseconds <= 0) return null
+    const date = new Date(milliseconds)
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null
   }
   if (typeof value === "string" && value.trim()) {
     const numeric = Number(value)
@@ -1414,13 +1421,171 @@ export async function fetchCommandCodeUsage(apiKey: string, fetchImpl: FetchLike
   return parsed
 }
 
+// ── Devin (opencode-devin-v2 plugin seat quota) ──
+
+export const DEVIN_ALIASES = ["devin"]
+export const DEVIN_ENV_KEYS: string[] = [] // key comes from the devin plugin's own credentials.json
+export const DEVIN_API_FALLBACK_URL = "https://server.codeium.com"
+export const DEVIN_USER_STATUS_PATH = "/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+
+function devinApiBase(raw: unknown): string {
+  const value = nonEmptyString(raw)
+  if (!value) return DEVIN_API_FALLBACK_URL
+  try {
+    const url = new URL(value)
+    // The API key rides in the request body; only plain HTTPS origins are safe.
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      return DEVIN_API_FALLBACK_URL
+    }
+    return url.origin
+  } catch {
+    return DEVIN_API_FALLBACK_URL
+  }
+}
+
+/**
+ * Parse the Devin GetUserStatus payload into daily/weekly quota windows.
+ *
+ * Response shape:
+ *   { userStatus: { planStatus: { planInfo: { planName, isDevin,
+ *     hideDailyQuota?, hideWeeklyQuota? }, dailyQuotaRemainingPercent?,
+ *     weeklyQuotaRemainingPercent?, dailyQuotaResetAtUnix?,
+ *     weeklyQuotaResetAtUnix? } }, planInfo: {...} }
+ *
+ * proto3 omits zero-valued scalar fields, so an omitted remaining percent
+ * means 0% left (100% used) — but only when the response carries a real
+ * quota structure. A missing/malformed planStatus returns null instead of
+ * fabricating exhaustion. The nested planStatus.planInfo is authoritative
+ * for the plan name; the top-level planInfo may disagree.
+ */
+export function parseDevinUsage(payload: unknown): { windows: UsageWindow[]; planLabel: string | null } | null {
+  const userStatus = asObject(asObject(payload)?.userStatus)
+  const planStatus = asObject(userStatus?.planStatus)
+  if (!planStatus) return null
+  const planInfo = asObject(planStatus.planInfo)
+  const planLabel = nonEmptyString(planInfo?.planName)
+
+  const quotaKeys = [
+    "dailyQuotaRemainingPercent",
+    "weeklyQuotaRemainingPercent",
+    "dailyQuotaResetAtUnix",
+    "weeklyQuotaResetAtUnix",
+  ]
+  const hasQuotaStructure = quotaKeys.some(key => key in planStatus)
+    || planInfo?.hideDailyQuota === true
+    || planInfo?.hideWeeklyQuota === true
+  if (!hasQuotaStructure) return null
+
+  const windows: UsageWindow[] = []
+  // Returns false when a present field is malformed — the whole payload is
+  // then rejected rather than fabricating a fully-exhausted window.
+  const push = (label: "Daily" | "Weekly", hidden: unknown): boolean => {
+    if (hidden === true) return true
+    const field = label === "Daily" ? "dailyQuota" : "weeklyQuota"
+    const remainingRaw = planStatus[`${field}RemainingPercent`]
+    const resetRaw = planStatus[`${field}ResetAtUnix`]
+    // A window with neither percent nor reset info tells the user nothing.
+    if (remainingRaw === undefined && resetRaw === undefined) return true
+    if (remainingRaw !== undefined) {
+      const parsed = toNumber(remainingRaw)
+      // Only proto3 omission defaults to 0 remaining; an explicit non-number
+      // or out-of-range value invalidates the payload.
+      if (parsed === null || parsed < 0 || parsed > 100) return false
+      windows.push(percentWindow(label, clampPct(100 - parsed), resetRaw))
+    } else {
+      windows.push(percentWindow(label, 100, resetRaw)) // omitted == 0 remaining
+    }
+    return true
+  }
+  if (!push("Daily", planInfo?.hideDailyQuota)) return null
+  if (!push("Weekly", planInfo?.hideWeeklyQuota)) return null
+  return { windows, planLabel }
+}
+
+export async function fetchDevinUsage(credentials: { apiKey: string; apiServerUrl: string | null }, fetchImpl: FetchLike = fetch): Promise<{ windows: UsageWindow[]; planLabel: string | null }> {
+  const response = await fetchWithTimeout(`${devinApiBase(credentials.apiServerUrl)}${DEVIN_USER_STATUS_PATH}`, {
+    method: "POST",
+    redirect: "manual", // never follow redirects carrying the api_key body
+    headers: {
+      "Content-Type": "application/json",
+      "Connect-Protocol-Version": "1",
+    },
+    body: JSON.stringify({
+      metadata: {
+        api_key: credentials.apiKey,
+        ide_name: "windsurf",
+        extension_version: "2.0.0",
+        ide_version: "2.0.0",
+        extension_name: "windsurf",
+        ide_type: "windsurf",
+        locale: "en",
+        os: "linux",
+        request_id: String(Date.now()),
+        session_id: randomUUID(),
+        trigger_id: randomUUID(),
+        plan_name: "Unset",
+      },
+    }),
+  }, fetchImpl)
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Devin session expired — re-authenticate the Devin provider")
+  }
+  if (!response.ok) {
+    // Never echo the body: error payloads may contain account data.
+    throw new Error(`Devin API error: ${response.status}`)
+  }
+  const parsed = parseDevinUsage(await response.json().catch(() => null))
+  if (!parsed) throw new Error("Devin usage data could not be parsed")
+  return parsed
+}
+
+// Devin usage is shown only when ALL three hold (AND, not OR):
+//   1. plugin option providerUsage.devin === true,
+//   2. the opencode-devin-v2 plugin is installed at the current location,
+//   3. the location exposes at least one enabled devin-provider model.
+export const DEVIN_PLUGIN_ID = "opencode-devin-v2"
+
+export function hasEnabledDevinModel(models: ReadonlyArray<{ providerID?: string; enabled?: boolean }> | undefined | null): boolean {
+  return Array.isArray(models) && models.some(m => m?.providerID === "devin" && m?.enabled === true)
+}
+
+export function isDevinUsageVisible(opts: { configEnabled: boolean; pluginIds: readonly string[]; hasDevinModel: boolean }): boolean {
+  return opts.configEnabled === true && opts.pluginIds.includes(DEVIN_PLUGIN_ID) && opts.hasDevinModel === true
+}
+
+/**
+ * Stable key identifying the location a gate check belongs to, so an async
+ * plugin-list response can be scoped to (and rejected for) the location that
+ * was current when it was issued.
+ */
+export function devinLocationKey(location: { directory?: string; workspaceID?: string } | undefined | null): string {
+  return `${location?.directory ?? ""}|${location?.workspaceID ?? ""}`
+}
+
+/**
+ * Apply an async plugin-list result to the gate only when it still belongs to
+ * the current location and is not superseded by a newer request. Otherwise
+ * the previous state stands — a stale list must never qualify another
+ * location (strict AND applies per location).
+ */
+export function devinGatePlugins(
+  state: { key: string; seq: number; pluginIds: readonly string[] },
+  currentKey: string,
+  requestKey: string,
+  seq: number,
+  pluginIds: readonly string[],
+): { key: string; seq: number; pluginIds: readonly string[] } {
+  if (requestKey !== currentKey || seq <= state.seq) return state
+  return { key: requestKey, seq, pluginIds }
+}
+
 // ── Registry & orchestration ──
 
 export type ProviderId =
   | "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding"
   | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan"
   | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon"
-  | "google" | "xai" | "cursor" | "command-code"
+  | "google" | "xai" | "cursor" | "command-code" | "devin"
 
 interface ProviderSpec {
   id: ProviderId
@@ -1447,6 +1612,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
   { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
   { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS },
+  { id: "devin", name: "Devin", aliases: DEVIN_ALIASES, envKeys: DEVIN_ENV_KEYS },
 ]
 
 export const USAGE_STAT_PROVIDER_IDS: readonly ProviderId[] = PROVIDERS.map(p => p.id)
@@ -1470,6 +1636,22 @@ export function dollarPoolRemaining(valueLabel: string | null): number | null {
 /** Compact dollar amount without symbol: "60" / "47.5" / "12.34". */
 export function shortDollars(value: number): string {
   return value.toFixed(2).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
+}
+
+/**
+ * Highest used percent across all windows (== tightest remaining headroom),
+ * ignoring null/NaN/Infinity. Returns null when no window reports a percent.
+ * Display-mode independent: percent is always "used" in UsageWindow.
+ */
+export function worstUsagePercent(windows: UsageWindow[] | undefined | null): number | null {
+  if (!windows) return null
+  let worst: number | null = null
+  for (const w of windows) {
+    const p = w?.percent
+    if (typeof p !== "number" || !Number.isFinite(p)) continue
+    if (worst === null || p > worst) worst = p
+  }
+  return worst
 }
 
 /**
@@ -1551,6 +1733,16 @@ export async function checkProviderUsage(
     } catch (err) {
       const message = err instanceof Error ? err.message : "Request failed"
       return finishError(message !== "Not configured", message)
+    }
+  }
+  if (spec.id === "devin") {
+    const credentials = readDevinCredentials()
+    if (!credentials?.apiKey) return finishError(false, `${spec.name} — not configured (no Devin credentials)`)
+    try {
+      const { windows, planLabel } = await fetchDevinUsage({ apiKey: credentials.apiKey, apiServerUrl: credentials.apiServerUrl }, fetchImpl)
+      return { providerId: spec.id, providerName: spec.name, configured: true, ok: true, status: summarize(spec.name, windows), windows, planLabel }
+    } catch (err) {
+      return finishError(true, err instanceof Error ? err.message : "Request failed")
     }
   }
 

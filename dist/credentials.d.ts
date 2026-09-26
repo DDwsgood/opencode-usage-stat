@@ -21,6 +21,16 @@ export declare function authJsonEntry(aliases: string[]): AuthEntry | null;
  *   2. ~/.config/opencode/usage-stat/<id>.json (this plugin's own store, 0600)
  */
 export declare function readSecureProviderJson(providerId: string): Record<string, unknown> | null;
+export interface DevinCredentials {
+    apiKey: string | null;
+    apiServerUrl: string | null;
+}
+/**
+ * Devin (opencode-devin-v2 plugin) credentials, read only from that plugin's
+ * own store: <XDG_CONFIG_HOME>/opencode-devin-v2/credentials.json with
+ * `{ "apiKey": "...", "apiServerUrl": "https://..." }`. Never logged.
+ */
+export declare function readDevinCredentials(): DevinCredentials | null;
 export declare function parseEnvFile(content: string): Record<string, string>;
 /** True when running under WSL (Microsoft kernel). */
 export declare function isWsl(): boolean;

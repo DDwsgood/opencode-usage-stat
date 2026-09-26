@@ -3,7 +3,7 @@
 // src/tui.tsx
 import { memo as _$memo3 } from "@opentui/solid";
 import { createComponent as _$createComponent3 } from "@opentui/solid";
-import { createSignal as createSignal3, createEffect as createEffect2 } from "solid-js";
+import { createSignal as createSignal3, createEffect as createEffect3 } from "solid-js";
 
 // node_modules/@opencode-ai/plugin/dist/tui/plugin.js
 function define(plugin2) {
@@ -698,7 +698,7 @@ import { memo as _$memo2 } from "@opentui/solid";
 import { setProp as _$setProp2 } from "@opentui/solid";
 import { use as _$use } from "@opentui/solid";
 import { createElement as _$createElement2 } from "@opentui/solid";
-import { createSignal as createSignal2, createMemo, createEffect, For as For2, Show as Show2, onCleanup as onCleanup2 } from "solid-js";
+import { createSignal as createSignal2, createMemo as createMemo2, createEffect as createEffect2, For as For2, Show as Show2, onCleanup as onCleanup2 } from "solid-js";
 import { RGBA as RGBA3 } from "@opentui/core";
 
 // src/i18n.ts
@@ -914,7 +914,7 @@ import { insert as _$insert } from "@opentui/solid";
 import { createComponent as _$createComponent } from "@opentui/solid";
 import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
-import { createSignal, onCleanup, For, Show } from "solid-js";
+import { createSignal, createEffect, createMemo, onCleanup, For, Show } from "solid-js";
 import { RGBA as RGBA2 } from "@opentui/core";
 
 // src/credentials.ts
@@ -1022,6 +1022,21 @@ function readSecureProviderJson(providerId) {
     }
   }
   return null;
+}
+function readDevinCredentials() {
+  try {
+    const file = join3(getConfigHome(), "opencode-devin-v2", "credentials.json");
+    if (!existsSync3(file)) return null;
+    const content = readFileSync3(file, "utf8").trim();
+    if (!content) return null;
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object") return null;
+    const data = parsed;
+    const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+    return { apiKey: text(data.apiKey), apiServerUrl: text(data.apiServerUrl) };
+  } catch {
+    return null;
+  }
 }
 function sqliteCredential(aliases) {
   if (aliases.length === 0) return null;
@@ -1172,6 +1187,7 @@ function resolveCredential(opts) {
 
 // src/provider-usage.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join as join4 } from "node:path";
 import { homedir as homedir4 } from "node:os";
 var PROVIDER_TIMEOUT_MS = 15e3;
@@ -1229,7 +1245,9 @@ function nonEmptyString(value) {
 function toResetTimestamp(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
     const milliseconds = value < 1e10 ? value * 1e3 : value;
-    return new Date(milliseconds).toISOString();
+    if (!Number.isFinite(milliseconds) || milliseconds <= 0) return null;
+    const date = new Date(milliseconds);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
   }
   if (typeof value === "string" && value.trim()) {
     const numeric = Number(value);
@@ -2309,6 +2327,107 @@ async function fetchCommandCodeUsage(apiKey, fetchImpl = fetch) {
   if (parsed.windows.length === 0) throw new Error("Command Code usage data could not be parsed");
   return parsed;
 }
+var DEVIN_ALIASES = ["devin"];
+var DEVIN_ENV_KEYS = [];
+var DEVIN_API_FALLBACK_URL = "https://server.codeium.com";
+var DEVIN_USER_STATUS_PATH = "/exa.seat_management_pb.SeatManagementService/GetUserStatus";
+function devinApiBase(raw) {
+  const value = nonEmptyString(raw);
+  if (!value) return DEVIN_API_FALLBACK_URL;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      return DEVIN_API_FALLBACK_URL;
+    }
+    return url.origin;
+  } catch {
+    return DEVIN_API_FALLBACK_URL;
+  }
+}
+function parseDevinUsage(payload) {
+  const userStatus = asObject(asObject(payload)?.userStatus);
+  const planStatus = asObject(userStatus?.planStatus);
+  if (!planStatus) return null;
+  const planInfo = asObject(planStatus.planInfo);
+  const planLabel = nonEmptyString(planInfo?.planName);
+  const quotaKeys = [
+    "dailyQuotaRemainingPercent",
+    "weeklyQuotaRemainingPercent",
+    "dailyQuotaResetAtUnix",
+    "weeklyQuotaResetAtUnix"
+  ];
+  const hasQuotaStructure = quotaKeys.some((key) => key in planStatus) || planInfo?.hideDailyQuota === true || planInfo?.hideWeeklyQuota === true;
+  if (!hasQuotaStructure) return null;
+  const windows = [];
+  const push = (label, hidden) => {
+    if (hidden === true) return true;
+    const field = label === "Daily" ? "dailyQuota" : "weeklyQuota";
+    const remainingRaw = planStatus[`${field}RemainingPercent`];
+    const resetRaw = planStatus[`${field}ResetAtUnix`];
+    if (remainingRaw === void 0 && resetRaw === void 0) return true;
+    if (remainingRaw !== void 0) {
+      const parsed = toNumber(remainingRaw);
+      if (parsed === null || parsed < 0 || parsed > 100) return false;
+      windows.push(percentWindow(label, clampPct(100 - parsed), resetRaw));
+    } else {
+      windows.push(percentWindow(label, 100, resetRaw));
+    }
+    return true;
+  };
+  if (!push("Daily", planInfo?.hideDailyQuota)) return null;
+  if (!push("Weekly", planInfo?.hideWeeklyQuota)) return null;
+  return { windows, planLabel };
+}
+async function fetchDevinUsage(credentials, fetchImpl = fetch) {
+  const response = await fetchWithTimeout(`${devinApiBase(credentials.apiServerUrl)}${DEVIN_USER_STATUS_PATH}`, {
+    method: "POST",
+    redirect: "manual",
+    // never follow redirects carrying the api_key body
+    headers: {
+      "Content-Type": "application/json",
+      "Connect-Protocol-Version": "1"
+    },
+    body: JSON.stringify({
+      metadata: {
+        api_key: credentials.apiKey,
+        ide_name: "windsurf",
+        extension_version: "2.0.0",
+        ide_version: "2.0.0",
+        extension_name: "windsurf",
+        ide_type: "windsurf",
+        locale: "en",
+        os: "linux",
+        request_id: String(Date.now()),
+        session_id: randomUUID(),
+        trigger_id: randomUUID(),
+        plan_name: "Unset"
+      }
+    })
+  }, fetchImpl);
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Devin session expired \u2014 re-authenticate the Devin provider");
+  }
+  if (!response.ok) {
+    throw new Error(`Devin API error: ${response.status}`);
+  }
+  const parsed = parseDevinUsage(await response.json().catch(() => null));
+  if (!parsed) throw new Error("Devin usage data could not be parsed");
+  return parsed;
+}
+var DEVIN_PLUGIN_ID = "opencode-devin-v2";
+function hasEnabledDevinModel(models) {
+  return Array.isArray(models) && models.some((m) => m?.providerID === "devin" && m?.enabled === true);
+}
+function isDevinUsageVisible(opts) {
+  return opts.configEnabled === true && opts.pluginIds.includes(DEVIN_PLUGIN_ID) && opts.hasDevinModel === true;
+}
+function devinLocationKey(location) {
+  return `${location?.directory ?? ""}|${location?.workspaceID ?? ""}`;
+}
+function devinGatePlugins(state, currentKey, requestKey, seq, pluginIds) {
+  if (requestKey !== currentKey || seq <= state.seq) return state;
+  return { key: requestKey, seq, pluginIds };
+}
 var PROVIDERS = [
   { id: "opencode-go", name: "OpenCode Go", aliases: OPENCODE_GO_ALIASES, envKeys: OPENCODE_GO_ENV_KEYS },
   { id: "deepseek", name: "DeepSeek", aliases: DEEPSEEK_ALIASES, envKeys: DEEPSEEK_ENV_KEYS },
@@ -2326,7 +2445,8 @@ var PROVIDERS = [
   { id: "google", name: "Google Gemini", aliases: GOOGLE_ALIASES, envKeys: GOOGLE_ENV_KEYS },
   { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
   { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
-  { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS }
+  { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS },
+  { id: "devin", name: "Devin", aliases: DEVIN_ALIASES, envKeys: DEVIN_ENV_KEYS }
 ];
 var USAGE_STAT_PROVIDER_IDS = PROVIDERS.map((p) => p.id);
 var defaultCredentialResolver = (spec) => resolveCredential(spec);
@@ -2337,6 +2457,16 @@ function dollarPoolRemaining(valueLabel) {
 }
 function shortDollars(value) {
   return value.toFixed(2).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+function worstUsagePercent(windows) {
+  if (!windows) return null;
+  let worst = null;
+  for (const w of windows) {
+    const p = w?.percent;
+    if (typeof p !== "number" || !Number.isFinite(p)) continue;
+    if (worst === null || p > worst) worst = p;
+  }
+  return worst;
 }
 function collapsedSummary(windows, mode) {
   if (!windows || windows.length === 0) return null;
@@ -2395,6 +2525,16 @@ async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential =
     } catch (err) {
       const message = err instanceof Error ? err.message : "Request failed";
       return finishError(message !== "Not configured", message);
+    }
+  }
+  if (spec.id === "devin") {
+    const credentials = readDevinCredentials();
+    if (!credentials?.apiKey) return finishError(false, `${spec.name} \u2014 not configured (no Devin credentials)`);
+    try {
+      const { windows, planLabel } = await fetchDevinUsage({ apiKey: credentials.apiKey, apiServerUrl: credentials.apiServerUrl }, fetchImpl);
+      return { providerId: spec.id, providerName: spec.name, configured: true, ok: true, status: summarize(spec.name, windows), windows, planLabel };
+    } catch (err) {
+      return finishError(true, err instanceof Error ? err.message : "Request failed");
     }
   }
   const resolved = getCredential({ aliases: spec.aliases, envKeys: spec.envKeys });
@@ -2596,7 +2736,8 @@ var PROVIDER_COLORS = {
   google: RGBA2.fromInts(120, 185, 95, 255),
   xai: RGBA2.fromInts(225, 225, 235, 255),
   cursor: RGBA2.fromInts(200, 200, 210, 255),
-  "command-code": RGBA2.fromInts(235, 190, 90, 255)
+  "command-code": RGBA2.fromInts(235, 190, 90, 255),
+  devin: RGBA2.fromInts(9, 180, 150, 255)
 };
 function ProviderUsageBlocks(props) {
   const {
@@ -2634,17 +2775,75 @@ function ProviderUsageBlocks(props) {
     if (override !== void 0) return override;
     return storedCollapse?.[id] !== false;
   };
+  const devinEnabled = enabledIds.includes("devin");
+  let disposed = false;
+  let devinGateSeq = 0;
+  onCleanup(() => {
+    disposed = true;
+  });
+  const devinLocKey = () => {
+    const location = context.location ?? context.data.location.default();
+    return devinLocationKey(location);
+  };
+  const [devinGate, setDevinGate] = createSignal({
+    key: "",
+    seq: 0,
+    pluginIds: []
+  });
+  async function refreshDevinGate() {
+    if (!devinEnabled || disposed) return;
+    const location = context.location ?? context.data.location.default();
+    const key = devinLocationKey(location);
+    setDevinGate((prev) => prev.key === key ? prev : {
+      key,
+      seq: prev.seq,
+      pluginIds: []
+    });
+    const seq = ++devinGateSeq;
+    try {
+      const listed = await context.client.plugin.list({
+        location
+      });
+      if (disposed || seq !== devinGateSeq || key !== devinLocKey()) return;
+      const ids = Array.isArray(listed?.data) ? listed.data.map((p) => p.id) : [];
+      setDevinGate((prev) => devinGatePlugins(prev, devinLocKey(), key, seq, ids));
+    } catch {
+    }
+    if (!disposed && seq === devinGateSeq && key === devinLocKey()) {
+      void context.data.location.model.sync(location).catch(() => {
+      });
+    }
+  }
+  createEffect(() => {
+    devinLocKey();
+    void refreshDevinGate();
+  });
+  const devinModels = () => {
+    const location = context.location ?? context.data.location.default();
+    try {
+      return context.data.location.model.list(location);
+    } catch {
+      return void 0;
+    }
+  };
+  const devinEligible = createMemo(() => isDevinUsageVisible({
+    configEnabled: devinEnabled,
+    pluginIds: devinGate().key === devinLocKey() ? devinGate().pluginIds : [],
+    hasDevinModel: hasEnabledDevinModel(devinModels())
+  }));
   const [states, setStates] = createSignal(enabledIds.map((id) => ({
     id,
     loading: false,
     result: null
   })));
   async function refreshOne(id) {
+    if (id === "devin" && !devinEligible()) return;
     setStates((prev) => prev.map((s) => s.id === id ? {
       ...s,
       loading: true
     } : s));
     const result = await checkProviderUsage(id);
+    if (disposed) return;
     setStates((prev) => prev.map((state) => {
       if (state.id !== id) return state;
       return {
@@ -2654,6 +2853,9 @@ function ProviderUsageBlocks(props) {
       };
     }));
   }
+  createEffect(() => {
+    if (devinEnabled && devinEligible()) void refreshOne("devin");
+  });
   if (enabledIds.length > 0) {
     for (const id of enabledIds) {
       void refreshOne(id);
@@ -2664,10 +2866,16 @@ function ProviderUsageBlocks(props) {
         void refreshOne(id);
       }, REFRESH_MS));
     }
+    if (devinEnabled) {
+      timers.push(setInterval(() => {
+        void refreshDevinGate();
+      }, REFRESH_MS));
+    }
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer);
     });
   }
+  const visibleStates = () => states().filter((s) => s.id !== "devin" || devinEligible());
   function toggle(id) {
     const next = !isCollapsed(id);
     setLocalCollapse((prev) => ({
@@ -2683,11 +2891,10 @@ function ProviderUsageBlocks(props) {
     if (s.loading) return mutedColor();
     if (!s.result) return dimColor();
     if (!s.result.ok) return redColor();
-    const first = s.result.windows?.find((w) => w.percent != null);
-    if (first?.percent != null) {
-      if (first.percent >= 90) return redColor();
-      if (first.percent >= 70) return amberColor();
-      return greenColor();
+    const worst = worstUsagePercent(s.result.windows);
+    if (worst != null) {
+      if (worst >= 90) return redColor();
+      if (worst >= 70) return amberColor();
     }
     return greenColor();
   }
@@ -2700,7 +2907,7 @@ function ProviderUsageBlocks(props) {
   }
   return _$createComponent(Show, {
     get when() {
-      return states().length > 0;
+      return visibleStates().length > 0;
     },
     get children() {
       var _el$ = _$createElement("box");
@@ -2709,7 +2916,7 @@ function ProviderUsageBlocks(props) {
       _$setProp(_el$, "paddingX", 1);
       _$insert(_el$, _$createComponent(For, {
         get each() {
-          return states();
+          return visibleStates();
         },
         children: (state) => {
           const isOpen = () => !isCollapsed(state.id);
@@ -2718,7 +2925,7 @@ function ProviderUsageBlocks(props) {
             if (state.loading && !state.result) return "\u25CC";
             if (!state.result) return "\u25CB";
             if (!state.result.ok) return "\u25CF";
-            if (state.result.windows?.[0]?.percent == null) return "\u25C6";
+            if (worstUsagePercent(state.result.windows) == null) return "\u25C6";
             return "\u25CF";
           };
           const headerText = () => {
@@ -3037,7 +3244,7 @@ function UsageStatPanel(props) {
   const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
   const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
   setLanguage(settings ? settings.language : optionConfig.language);
-  createEffect(() => setLanguage(settings ? settings.language : optionConfig.language));
+  createEffect2(() => setLanguage(settings ? settings.language : optionConfig.language));
   const t2 = (key) => {
     void settings?.language;
     return t(key);
@@ -3092,7 +3299,7 @@ function UsageStatPanel(props) {
   const greenColor = () => colors.green;
   const borderColor = () => colors.border;
   const missingColor = () => colors.purple;
-  const modelStats = createMemo(() => {
+  const modelStats = createMemo2(() => {
     const map = /* @__PURE__ */ new Map();
     const msgs = props.allTokenMessages();
     for (let i = 0; i < msgs.length; i++) {
@@ -3125,7 +3332,7 @@ function UsageStatPanel(props) {
     }
     return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
   });
-  const messageTotals = createMemo(() => {
+  const messageTotals = createMemo2(() => {
     let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
     for (const [, s] of modelStats()) {
       i += s.totalInput;
@@ -3147,7 +3354,7 @@ function UsageStatPanel(props) {
       totalTokens: i + o + ir + cr + cw
     };
   });
-  const sessionTotals = createMemo(() => {
+  const sessionTotals = createMemo2(() => {
     void props.revision();
     const selected = context.data.session.get(props.sessionID);
     if (!selected) return messageTotals();
@@ -3174,7 +3381,7 @@ function UsageStatPanel(props) {
       totalTokens: i + o + ir + cr + cw
     };
   });
-  const globalHitRate = createMemo(() => {
+  const globalHitRate = createMemo2(() => {
     let i = 0, cr = 0;
     for (const [, s] of modelStats()) {
       if (isMissingCache(s.requestCount, s.cacheRead)) continue;
@@ -3184,7 +3391,7 @@ function UsageStatPanel(props) {
     const denom = i + cr;
     return denom > 0 ? cr / denom * 100 : -1;
   });
-  const modelHitRate = createMemo(() => {
+  const modelHitRate = createMemo2(() => {
     return modelStats().map(([key, stat]) => {
       const denom = stat.totalInput + stat.cacheRead;
       if (denom === 0) return {
@@ -3204,7 +3411,7 @@ function UsageStatPanel(props) {
       };
     });
   });
-  const modelTrend = createMemo(() => {
+  const modelTrend = createMemo2(() => {
     return modelHitRate().map(({
       key,
       msgs
@@ -3236,7 +3443,7 @@ function UsageStatPanel(props) {
     });
   });
   const [partVersion, setPartVersion] = createSignal2(0);
-  const perfStats = createMemo(() => {
+  const perfStats = createMemo2(() => {
     void props.allTokenMessages();
     void partVersion();
     void props.revision();
@@ -7823,7 +8030,7 @@ var plugin = define({
     const disposeSlot = context.ui.slot({
       append: "sidebar.content",
       render: (slotProps) => {
-        createEffect2(() => {
+        createEffect3(() => {
           const sessionID = slotProps.sessionID;
           sidebarRevision();
           if (sessionID && sessionID !== currentSessionID) {

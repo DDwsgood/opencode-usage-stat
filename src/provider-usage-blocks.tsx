@@ -12,7 +12,7 @@
  *
  * V2 API: Context from @opencode-ai/plugin/tui.
  */
-import { createSignal, onCleanup, For, Show } from "solid-js"
+import { createSignal, createEffect, createMemo, onCleanup, For, Show } from "solid-js"
 import type { JSX } from "solid-js"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { RGBA } from "@opentui/core"
@@ -22,6 +22,11 @@ import {
   PROVIDERS,
   USAGE_STAT_PROVIDER_IDS,
   collapsedSummary,
+  worstUsagePercent,
+  hasEnabledDevinModel,
+  isDevinUsageVisible,
+  devinLocationKey,
+  devinGatePlugins,
   DOLLAR_POOL_LABEL,
   dollarPoolRemaining,
   shortDollars,
@@ -58,6 +63,7 @@ const PROVIDER_COLORS: Record<string, RGBA> = {
   xai: RGBA.fromInts(225, 225, 235, 255),
   cursor: RGBA.fromInts(200, 200, 210, 255),
   "command-code": RGBA.fromInts(235, 190, 90, 255),
+  devin: RGBA.fromInts(9, 180, 150, 255),
 }
 
 export interface ProviderUsageBlocksProps {
@@ -114,18 +120,84 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     return storedCollapse?.[id] !== false
   }
 
+  // ── Devin gate: plugin list + enabled model, scoped to the live location ──
+  const devinEnabled = enabledIds.includes("devin")
+  let disposed = false
+  let devinGateSeq = 0
+  onCleanup(() => { disposed = true })
+
+  const devinLocKey = () => {
+    const location = context.location ?? context.data.location.default()
+    return devinLocationKey(location)
+  }
+  // Gate state keyed by the location it was fetched for. `seq` drops async
+  // results that resolve after a newer request was issued.
+  const [devinGate, setDevinGate] = createSignal<{ key: string; seq: number; pluginIds: readonly string[] }>(
+    { key: "", seq: 0, pluginIds: [] },
+  )
+
+  async function refreshDevinGate(): Promise<void> {
+    if (!devinEnabled || disposed) return
+    const location = context.location ?? context.data.location.default()
+    const key = devinLocationKey(location)
+    // Immediately clear qualifications earned under another location.
+    setDevinGate(prev => (prev.key === key ? prev : { key, seq: prev.seq, pluginIds: [] }))
+    const seq = ++devinGateSeq
+    try {
+      const listed = await context.client.plugin.list({ location })
+      if (disposed || seq !== devinGateSeq || key !== devinLocKey()) return
+      const ids = Array.isArray(listed?.data) ? listed.data.map(p => p.id) : []
+      setDevinGate(prev => devinGatePlugins(prev, devinLocKey(), key, seq, ids))
+    } catch {
+      // Keep the previous list on transient failures.
+    }
+    // Prime the reactive model cache; the render path reads list() below.
+    if (!disposed && seq === devinGateSeq && key === devinLocKey()) {
+      void context.data.location.model.sync(location).catch(() => { /* cached list stays */ })
+    }
+  }
+
+  // Re-check whenever the effective location changes (reactive on default()).
+  createEffect(() => {
+    devinLocKey()
+    void refreshDevinGate()
+  })
+
+  const devinModels = () => {
+    const location = context.location ?? context.data.location.default()
+    try {
+      return context.data.location.model.list(location)
+    } catch {
+      return undefined
+    }
+  }
+  // Memoized boolean: downstream effects only re-run when eligibility
+  // actually flips, not on every poll producing a fresh pluginIds array.
+  const devinEligible = createMemo(() => isDevinUsageVisible({
+    configEnabled: devinEnabled,
+    pluginIds: devinGate().key === devinLocKey() ? devinGate().pluginIds : [],
+    hasDevinModel: hasEnabledDevinModel(devinModels()),
+  }))
+
   const [states, setStates] = createSignal<ProviderState[]>(
     enabledIds.map(id => ({ id, loading: false, result: null })),
   )
 
   async function refreshOne(id: ProviderId): Promise<void> {
+    if (id === "devin" && !devinEligible()) return
     setStates(prev => prev.map(s => (s.id === id ? { ...s, loading: true } : s)))
     const result = await checkProviderUsage(id)
+    if (disposed) return
     setStates(prev => prev.map(state => {
       if (state.id !== id) return state
       return { ...state, loading: false, result }
     }))
   }
+
+  // Fetch Devin usage only when eligibility flips to true.
+  createEffect(() => {
+    if (devinEnabled && devinEligible()) void refreshOne("devin")
+  })
 
   if (enabledIds.length > 0) {
     for (const id of enabledIds) {
@@ -135,10 +207,15 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     for (const id of enabledIds) {
       timers.push(setInterval(() => { void refreshOne(id) }, REFRESH_MS))
     }
+    if (devinEnabled) {
+      timers.push(setInterval(() => { void refreshDevinGate() }, REFRESH_MS))
+    }
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer)
     })
   }
+
+  const visibleStates = () => states().filter(s => s.id !== "devin" || devinEligible())
 
   function toggle(id: ProviderId): void {
     const next = !isCollapsed(id)
@@ -150,11 +227,11 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     if (s.loading) return mutedColor()
     if (!s.result) return dimColor()
     if (!s.result.ok) return redColor()
-    const first = s.result.windows?.find(w => w.percent != null)
-    if (first?.percent != null) {
-      if (first.percent >= 90) return redColor()
-      if (first.percent >= 70) return amberColor()
-      return greenColor()
+    // Tightest window decides the dot color, independent of display mode.
+    const worst = worstUsagePercent(s.result.windows)
+    if (worst != null) {
+      if (worst >= 90) return redColor()
+      if (worst >= 70) return amberColor()
     }
     return greenColor()
   }
@@ -170,9 +247,9 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
   }
 
   return (
-    <Show when={states().length > 0}>
+    <Show when={visibleStates().length > 0}>
       <box flexDirection="column" marginTop={1} paddingX={1}>
-      <For each={states()}>
+      <For each={visibleStates()}>
         {state => {
           const isOpen = () => !isCollapsed(state.id)
           const color = () => statusColor(state)
@@ -180,7 +257,7 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
             if (state.loading && !state.result) return "◌"
             if (!state.result) return "○"
             if (!state.result.ok) return "●"
-            if (state.result.windows?.[0]?.percent == null) return "◆"
+            if (worstUsagePercent(state.result.windows) == null) return "◆"
             return "●"
           }
           const headerText = () => {

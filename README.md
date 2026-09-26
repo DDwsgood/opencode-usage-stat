@@ -7,7 +7,7 @@ Token usage statistics and polished offline HTML dashboards for **OpenCode V2** 
 - the real-time **TUI sidebar** (token / cache / performance stats for the current session) from the tokenwatch lineage, and
 - the **polished self-contained session & cumulative HTML dashboards** (model logos, ECharts, interactive background) from the original usage-stat.
 
-It also adds an opt-in **Provider Usage** sidebar block with 17 quota/balance integrations, including **OpenCode Go**, **Codex**, **Claude**, **Ollama Cloud**, and **Command Code** (~15 s timeout, auto-refresh every 2 minutes). Each enabled provider appears collapsed immediately.
+It also adds an opt-in **Provider Usage** sidebar block with 18 quota/balance integrations, including **OpenCode Go**, **Codex**, **Claude**, **Ollama Cloud**, and **Command Code** (~15 s timeout, auto-refresh every 2 minutes). Each enabled provider appears collapsed immediately.
 
 Everything runs locally. V2 has no `opencode db` CLI, so all aggregation uses the V2 client (`@opencode-ai/client` OpenCodeClient, exposed as `context.client`) — sessions and messages are fetched through the V2 API (cursor-paginated `session.list` / `message.list`) and folded into the same report contract the dashboards expect.
 
@@ -119,7 +119,8 @@ Provider usage checks are disabled by default. Enable them explicitly in the TUI
           "google": false,
           "xai": false,
           "cursor": false,
-          "command-code": false
+          "command-code": false,
+          "devin": false
         },
         "providerUsageDisplay": "used"
       }
@@ -150,6 +151,7 @@ Only providers set to `true` are queried. The plugin reads credentials **at runt
 | `xai` | xAI / Grok | OAuth access + refresh token (auth.json) |
 | `cursor` | Cursor | access token (secure JSON file) |
 | `command-code` | Command Code | API key (`COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json`) |
+| `devin` | Devin | `opencode-devin-v2` plugin credentials (shown only when that plugin is installed and a devin model is enabled) |
 
 While collapsed, each provider row shows the labeled short-form usage
 `n%/5h m%/7d`. Monthly or billing-cycle totals are only shown when expanded.
@@ -157,6 +159,11 @@ Expanding a row lists every
 quota window with reset times. The display mode — used vs remaining percentage —
 can be switched via `/usage ▸ Settings ▸ Provider Usage Display Mode`, or set
 with the `providerUsageDisplay: "used" | "remaining"` plugin option.
+
+The status dot reflects the most-used quota window (equivalently, the least
+remaining): red at 90% used, amber at 70%, otherwise green. This includes
+weekly/monthly windows even when their values are not shown in the collapsed
+summary, and is independent of the display mode.
 
 Resolution order (per provider):
 
@@ -172,6 +179,7 @@ Resolution order (per provider):
    - Command Code: `COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY`
 4. **Provider CLI auth files**:
    - Command Code: `~/.commandcode/auth.json` (`{"apiKey": "..."}`)
+   - Devin: `~/.config/opencode-devin-v2/credentials.json` (`{"apiKey", "apiServerUrl"}` — respects `XDG_CONFIG_HOME`; read-only)
 5. **Secure per-provider JSON files** (0600-style local secrets):
    - Ollama Cloud cookie: `~/.config/openchamber/quota/ollama-cloud.json` (`{"cookie": "..."}`) or `~/.config/opencode/usage-stat/ollama-cloud.json`
    - Cursor access token: `~/.config/openchamber/quota/cursor.json` (`{"accessToken": "..."}`) or `~/.config/opencode/usage-stat/cursor.json`
@@ -182,6 +190,8 @@ Resolution order (per provider):
 **Claude note:** Claude subscription quota uses the same Anthropic OAuth endpoint as Claude Code (`api.anthropic.com/api/oauth/usage`). It requires an OAuth token from `auth.json`; plain API keys will not work.
 
 **Google note:** refreshing the Gemini/Antigravity access token needs a Google **installed-application** OAuth client supplied via `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (e.g. the Gemini CLI's public client credentials). Without them the `google` provider reports a configuration error instead of querying quotas.
+
+**Devin note:** the `devin` row appears only when *all three* hold: `providerUsage.devin` is `true`, the `opencode-devin-v2` plugin is installed at the current location, and an enabled `devin` provider model exists there. Quota comes from the Devin seat-management `GetUserStatus` RPC using the API key stored by that plugin; nothing is written.
 
 ## Usage
 

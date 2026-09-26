@@ -183,7 +183,71 @@ export declare function fetchCommandCodeUsage(apiKey: string, fetchImpl?: FetchL
     windows: UsageWindow[];
     planLabel: string | null;
 }>;
-export type ProviderId = "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding" | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan" | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon" | "google" | "xai" | "cursor" | "command-code";
+export declare const DEVIN_ALIASES: string[];
+export declare const DEVIN_ENV_KEYS: string[];
+export declare const DEVIN_API_FALLBACK_URL = "https://server.codeium.com";
+export declare const DEVIN_USER_STATUS_PATH = "/exa.seat_management_pb.SeatManagementService/GetUserStatus";
+/**
+ * Parse the Devin GetUserStatus payload into daily/weekly quota windows.
+ *
+ * Response shape:
+ *   { userStatus: { planStatus: { planInfo: { planName, isDevin,
+ *     hideDailyQuota?, hideWeeklyQuota? }, dailyQuotaRemainingPercent?,
+ *     weeklyQuotaRemainingPercent?, dailyQuotaResetAtUnix?,
+ *     weeklyQuotaResetAtUnix? } }, planInfo: {...} }
+ *
+ * proto3 omits zero-valued scalar fields, so an omitted remaining percent
+ * means 0% left (100% used) — but only when the response carries a real
+ * quota structure. A missing/malformed planStatus returns null instead of
+ * fabricating exhaustion. The nested planStatus.planInfo is authoritative
+ * for the plan name; the top-level planInfo may disagree.
+ */
+export declare function parseDevinUsage(payload: unknown): {
+    windows: UsageWindow[];
+    planLabel: string | null;
+} | null;
+export declare function fetchDevinUsage(credentials: {
+    apiKey: string;
+    apiServerUrl: string | null;
+}, fetchImpl?: FetchLike): Promise<{
+    windows: UsageWindow[];
+    planLabel: string | null;
+}>;
+export declare const DEVIN_PLUGIN_ID = "opencode-devin-v2";
+export declare function hasEnabledDevinModel(models: ReadonlyArray<{
+    providerID?: string;
+    enabled?: boolean;
+}> | undefined | null): boolean;
+export declare function isDevinUsageVisible(opts: {
+    configEnabled: boolean;
+    pluginIds: readonly string[];
+    hasDevinModel: boolean;
+}): boolean;
+/**
+ * Stable key identifying the location a gate check belongs to, so an async
+ * plugin-list response can be scoped to (and rejected for) the location that
+ * was current when it was issued.
+ */
+export declare function devinLocationKey(location: {
+    directory?: string;
+    workspaceID?: string;
+} | undefined | null): string;
+/**
+ * Apply an async plugin-list result to the gate only when it still belongs to
+ * the current location and is not superseded by a newer request. Otherwise
+ * the previous state stands — a stale list must never qualify another
+ * location (strict AND applies per location).
+ */
+export declare function devinGatePlugins(state: {
+    key: string;
+    seq: number;
+    pluginIds: readonly string[];
+}, currentKey: string, requestKey: string, seq: number, pluginIds: readonly string[]): {
+    key: string;
+    seq: number;
+    pluginIds: readonly string[];
+};
+export type ProviderId = "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding" | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan" | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon" | "google" | "xai" | "cursor" | "command-code" | "devin";
 interface ProviderSpec {
     id: ProviderId;
     name: string;
@@ -206,6 +270,12 @@ export declare const DOLLAR_POOL_LABEL: RegExp;
 export declare function dollarPoolRemaining(valueLabel: string | null): number | null;
 /** Compact dollar amount without symbol: "60" / "47.5" / "12.34". */
 export declare function shortDollars(value: number): string;
+/**
+ * Highest used percent across all windows (== tightest remaining headroom),
+ * ignoring null/NaN/Infinity. Returns null when no window reports a percent.
+ * Display-mode independent: percent is always "used" in UsageWindow.
+ */
+export declare function worstUsagePercent(windows: UsageWindow[] | undefined | null): number | null;
 /**
  * Collapsed-row summary: "n%/5h m%/7d" for the session and weekly windows.
  * Monthly/billing-cycle totals are intentionally

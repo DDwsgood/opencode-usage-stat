@@ -163,6 +163,32 @@ export function readSecureProviderJson(providerId: string): Record<string, unkno
   return null
 }
 
+export interface DevinCredentials {
+  apiKey: string | null
+  apiServerUrl: string | null
+}
+
+/**
+ * Devin (opencode-devin-v2 plugin) credentials, read only from that plugin's
+ * own store: <XDG_CONFIG_HOME>/opencode-devin-v2/credentials.json with
+ * `{ "apiKey": "...", "apiServerUrl": "https://..." }`. Never logged.
+ */
+export function readDevinCredentials(): DevinCredentials | null {
+  try {
+    const file = join(getConfigHome(), "opencode-devin-v2", "credentials.json")
+    if (!existsSync(file)) return null
+    const content = readFileSync(file, "utf8").trim()
+    if (!content) return null
+    const parsed = JSON.parse(content)
+    if (!parsed || typeof parsed !== "object") return null
+    const data = parsed as Record<string, unknown>
+    const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
+    return { apiKey: text(data.apiKey), apiServerUrl: text(data.apiServerUrl) }
+  } catch {
+    return null
+  }
+}
+
 interface CredentialRow {
   integration_id: string
   value: string
