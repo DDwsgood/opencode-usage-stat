@@ -7,7 +7,7 @@ Token usage statistics and polished offline HTML dashboards for **OpenCode V2** 
 - the real-time **TUI sidebar** (token / cache / performance stats for the current session) from the tokenwatch lineage, and
 - the **polished self-contained session & cumulative HTML dashboards** (model logos, ECharts, interactive background) from the original usage-stat.
 
-It also adds an opt-in **Provider Usage** sidebar block with 18 quota/balance integrations, including **OpenCode Go**, **Codex**, **Claude**, **Ollama Cloud**, and **Command Code** (~15 s timeout, auto-refresh every 2 minutes). Each enabled provider appears collapsed immediately.
+It also adds an opt-in **Provider Usage** sidebar block with 19 integrations, including **OpenCode Go**, **Codex**, **Claude**, **Ollama Cloud**, **Command Code**, and tracked **Droid / Factory** consumption (~15 s timeout, auto-refresh every 2 minutes). Plugin-backed Devin and Droid rows additionally require their provider plugin and an enabled model at the current location.
 
 Everything runs locally. V2 has no `opencode db` CLI, so all aggregation uses the V2 client (`@opencode-ai/client` OpenCodeClient, exposed as `context.client`) — sessions and messages are fetched through the V2 API (cursor-paginated `session.list` / `message.list`) and folded into the same report contract the dashboards expect.
 
@@ -32,6 +32,7 @@ Shortcut arguments:
 ### TUI sidebar (current session, real-time)
 
 - Per-model token totals, cache hits / MISSING, cost, trend
+- `INPUT` includes uncached input **and cache writes**; cache reads remain a separate bucket. Cache hit rate is `cacheRead / (uncachedInput + cacheRead + cacheWrite)`. `TOTAL` counts every bucket once, including reasoning. The same cache denominator is used by the sidebar, trends, performance statistics, and HTML reports.
 - Cursor-paginated history restore, so pre-compaction usage remains counted after service or TUI restarts
 - Performance: TTFT, TPS, latency (per model, avg/min/max/percentiles)
   - TTFT means **local OpenCode prompt enqueue → first text/reasoning/tool-input event**. V2 does not expose a transport-neutral “provider request sent” timestamp, so this is an upper bound that includes local queueing and request preparation. It is recorded only when a user prompt can be associated with the first step.
@@ -43,7 +44,8 @@ Shortcut arguments:
   - **OpenCode Go** — rolling / weekly / monthly windows with percent + reset time
   - **DeepSeek** — account balance (USD preferred, then CNY)
   - **Codex** — rate-limit windows (primary/secondary) and credits / spend limit
-  - **Command Code** — 5-hour / weekly windows, billing-cycle credits, and plan
+   - **Command Code** — 5-hour / weekly windows, billing-cycle credits, and plan
+   - **Droid (Factory)** — current-session/subagent consumption from `opencode-droid-v2`'s public usage RPC, in Factory Service Credits (FSC), not dollars; plus real account quota windows (standard/core 5h · weekly · monthly used % + resets, extra-usage cash balance) when a saved Factory web credential exists
   - Each enabled provider appears collapsed immediately and refreshes independently every 2 minutes with a ~15 s timeout.
 
 ### Session / total dashboards
@@ -67,7 +69,7 @@ Single self-contained HTML files (ECharts, background, icons, styles embedded). 
 After the package is published, install and configure both entrypoints globally:
 
 ```bash
-opencode2 plugin add opencode-usage-stat@2.4.3
+opencode2 plugin add opencode-usage-stat@2.6.0
 ```
 
 Or clone and build from source:
@@ -120,7 +122,8 @@ Provider usage checks are disabled by default. Enable them explicitly in the TUI
           "xai": false,
           "cursor": false,
           "command-code": false,
-          "devin": false
+          "devin": false,
+          "droid": false
         },
         "providerUsageDisplay": "used"
       }
@@ -152,6 +155,7 @@ Only providers set to `true` are queried. The plugin reads credentials **at runt
 | `cursor` | Cursor | access token (secure JSON file) |
 | `command-code` | Command Code | API key (`COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json`) |
 | `devin` | Devin | `opencode-devin-v2` plugin credentials (shown only when that plugin is installed and a devin model is enabled) |
+| `droid` | Droid (Factory) | Public `opencode-droid-v2` usage RPC; account quota optionally via saved Factory web credential (secure JSON file) |
 
 While collapsed, each provider row shows the labeled short-form usage
 `n%/5h m%/7d`. Monthly or billing-cycle totals are only shown when expanded.
@@ -192,6 +196,19 @@ Resolution order (per provider):
 **Google note:** refreshing the Gemini/Antigravity access token needs a Google **installed-application** OAuth client supplied via `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (e.g. the Gemini CLI's public client credentials). Without them the `google` provider reports a configuration error instead of querying quotas.
 
 **Devin note:** the `devin` row appears only when *all three* hold: `providerUsage.devin` is `true`, the `opencode-devin-v2` plugin is installed at the current location, and an enabled `devin` provider model exists there. Quota comes from the Devin seat-management `GetUserStatus` RPC using the API key stored by that plugin; nothing is written.
+
+**Droid note:** the `droid` row uses the same three-way AND gate: `providerUsage.droid` must be `true`, `opencode-droid-v2` must be installed at the current location, and at least one `droid` model must be enabled. It combines two independent sources, each degrading on its own:
+
+- *Session FSC* — tracked consumption for the current session and its subagents via the plugin's public RPC `usage` method over the connected OpenCode client. FSC is a credit unit, not dollars. The bridge's live counters are process-local; reloading it does not reconstruct historical FSC. Missing credits stay unknown, and totals covering only part of the session family are marked `≥` (lower bound, partial).
+- *Account quota* — the official Factory billing-limits endpoint (`GET https://api.factory.ai/api/billing/limits`), the same one the web frontend calls for the 5h · weekly · monthly bars. A real account request was verified with a Bearer access token alone; Cookie and organization ID were not needed for that account. Save `{ "accessToken": "..." }` in `~/.config/openchamber/quota/droid.json` or `~/.config/opencode/usage-stat/droid.json`; optional `cookie` and `organizationId` fields are also supported (cookie-only authentication remains unverified). Keep the file owner-only (`0600`). The CLI's encrypted `~/.factory/auth.v2.keyring` is never read. When saved, the row shows real standard/core windows with used-percent and reset times, plus the extra-usage cash balance (USD, not FSC). The legacy `/api/organization/subscription/usage` endpoint is not the source of these rate-limit bars. Without a credential, account quota is reported as unavailable rather than fabricated; a failed fetch is shown as unknown. Access tokens can expire; this plugin does not refresh or persist them.
+
+No Factory credentials are ever written, refreshed, or logged; requests use `redirect: "manual"` and never echo error bodies. An old host without plugin RPC support reports that limitation.
+
+### Changes in 2.6.0
+
+- Include cache writes in INPUT and in all cache-read hit-rate denominators; write-only requests are valid cache statistics, not MISSING.
+- Add the gated Droid / Factory row: session-tracked FSC via the existing public bridge RPC, plus account quota windows from the official app.factory.ai subscription endpoint when a saved web credential exists.
+- Preserve original persisted token buckets and pricing calculations; no token history is rewritten.
 
 ## Usage
 

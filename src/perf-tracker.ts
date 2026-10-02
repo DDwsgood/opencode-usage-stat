@@ -386,10 +386,10 @@ class PerfTracker {
       s.p95Latency = this.percentile(latArr, 95)
       s.p99Latency = this.percentile(latArr, 99)
 
-      const denom = s.totalInput + s.totalCacheRead
+      const denom = s.totalInput + s.totalCacheRead + s.totalCacheWrite
       s.cacheHitRate = denom > 0 ? (s.totalCacheRead / denom) * 100 : null
 
-      if (s.cacheHitRate !== null && !isMissingCache(s.requestCount, s.totalCacheRead)) {
+      if (s.cacheHitRate !== null && !isMissingCache(s.requestCount, s.totalCacheRead, s.totalCacheWrite)) {
         weightedHitSum += s.cacheHitRate * s.requestCount
         totalReqForHit += s.requestCount
       }

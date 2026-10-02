@@ -72,3 +72,38 @@ test("v2 rebuild excludes legacy TPS spikes and uses token-weighted body TPS", (
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("persisted cache hit rate includes cacheWrite in the denominator", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-stat-store-cache-test-"))
+  const statsPath = join(dir, "stats.json")
+  const logPath = join(dir, "usage-stat.jsonl")
+  try {
+    const base = {
+      schema: 2 as const,
+      ts: "2026-08-30T00:00:00.000Z",
+      model: "anthropic/claude",
+      providerID: "anthropic",
+      modelID: "claude",
+      sessionID: "sess-1",
+      ttft_ms: null,
+      latency_ms: null,
+      reasoningTokens: 0,
+      cost: 0,
+    }
+    writeFileSync(logPath, [
+      JSON.stringify({ ...base, messageID: "msg-read", inputTokens: 100, outputTokens: 0, cacheReadTokens: 100, cacheWriteTokens: 0 }),
+      JSON.stringify({ ...base, messageID: "msg-write", inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 100 }),
+    ].join("\n") + "\n")
+    setUsageStatStorePaths(statsPath, logPath)
+
+    const rows = readPersistedStats()
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].totalInput, 200)
+    assert.equal(rows[0].totalCacheRead, 100)
+    assert.equal(rows[0].totalCacheWrite, 100)
+    // 100 / (200 + 100 + 100) * 100
+    assert.equal(rows[0].cacheHitRate, 25)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

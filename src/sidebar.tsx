@@ -5,7 +5,7 @@ import { createSignal, createMemo, createEffect, For, Show, onCleanup } from "so
 import type { JSX } from "solid-js"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { RGBA } from "@opentui/core"
-import { formatTokens, formatCost, formatDuration, isMissingCache } from "./formatter.js"
+import { formatTokens, formatCost, formatDuration, isMissingCache, totalInputTokens, cacheHitRate } from "./formatter.js"
 import { t as baseT, setLanguage } from "./i18n.js"
 import type { PerfTracker } from "./perf-tracker.js"
 import type { TokenMessage } from "./token-messages.js"
@@ -254,8 +254,8 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
   const globalHitRate = createMemo(() => {
     let i = 0, cr = 0
     for (const [, s] of modelStats()) {
-      if (isMissingCache(s.requestCount, s.cacheRead)) continue
-      i += s.totalInput
+      if (isMissingCache(s.requestCount, s.cacheRead, s.cacheWrite)) continue
+      i += totalInputTokens(s.totalInput, s.cacheWrite)
       cr += s.cacheRead
     }
     const denom = i + cr
@@ -264,14 +264,14 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
 
   const modelHitRate = createMemo(() => {
     return modelStats().map(([key, stat]) => {
-      const denom = stat.totalInput + stat.cacheRead
+      const denom = totalInputTokens(stat.totalInput, stat.cacheWrite) + stat.cacheRead
       if (denom === 0) return { key, rate: 0, msgs: [] as TokenMessage[] }
       const msgs: TokenMessage[] = []
       for (const msg of props.allTokenMessages()) {
         if (`${msg.providerID}/${msg.modelID}` !== key) continue
         msgs.push(msg)
       }
-      return { key, rate: (stat.cacheRead / denom) * 100, msgs }
+      return { key, rate: cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100, msgs }
     })
   })
 
@@ -282,7 +282,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
         let sumCache = 0, sumTotal = 0
         for (let i = start; i < end && i < msgs.length; i++) {
           sumCache += msgs[i].cacheRead
-          sumTotal += msgs[i].inputTokens + msgs[i].cacheRead
+          sumTotal += totalInputTokens(msgs[i].inputTokens, msgs[i].cacheWrite) + msgs[i].cacheRead
         }
         return { sumCache, sumTotal }
       }
@@ -344,7 +344,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
       </box>
 
       {/* Provider Usage reveals collapsed after quota changes in this TUI session. */}
-      <ProviderUsageBlocks context={context} />
+      <ProviderUsageBlocks context={context} sessionID={props.sessionID} />
 
       <Show when={!isPanelCollapsed()}>
         <text fg={borderColor()}>{divider()}</text>
@@ -354,7 +354,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
           <For each={[
             { val: formatTokens(sessionTotals().totalTokens), lbl: t("total") },
             { val: sessionTotals().totalRequests.toString(), lbl: t("requests") },
-            { val: formatTokens(sessionTotals().totalInput), lbl: t("input") },
+            { val: formatTokens(totalInputTokens(sessionTotals().totalInput, sessionTotals().totalCacheWrite)), lbl: t("input") },
             { val: formatTokens(sessionTotals().totalOutput), lbl: t("output") },
           ]}>
             {(item, idx) => {
@@ -383,9 +383,8 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
         <For each={modelStats()}>
           {([key, stat]) => {
             const isExpanded = () => !isModelCollapsed(key)
-            const hitDenom = stat.totalInput + stat.cacheRead
-            const hitRate = hitDenom > 0 ? (stat.cacheRead / hitDenom) * 100 : 0
-            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead)
+            const hitRate = cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100
+            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead, stat.cacheWrite)
             const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite
 
             const trendStr = () => {
@@ -440,7 +439,7 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
                       <box flexDirection="row">
                         <For each={[
                           { val: formatTokens(modelTotalTokens), lbl: t("total") },
-                          { val: formatTokens(stat.totalInput), lbl: t("input") },
+                          { val: formatTokens(totalInputTokens(stat.totalInput, stat.cacheWrite)), lbl: t("input") },
                           { val: formatTokens(stat.totalOutput), lbl: t("output") },
                         ]}>
                           {(item, idx) => {

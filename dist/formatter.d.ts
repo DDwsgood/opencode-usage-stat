@@ -156,9 +156,11 @@ export interface MessageRow {
 }
 /**
  * 判定某模型的缓存数据是否属于"上游不回传"（MISSING）。
- * 判定标准：请求数 >= 2 且 cacheRead 严格为 0。
+ * 判定标准：请求数 >= 2 且 cacheRead 与 cacheWrite 均为 0。
+ * 只要有 cacheWrite 就说明上游确实回传了缓存统计，只是本窗口尚未命中读取，
+ * 此时应显示 0% 命中率而不是 MISSING。
  */
-export declare function isMissingCache(requestCount: number, totalCacheRead: number): boolean;
+export declare function isMissingCache(requestCount: number, totalCacheRead: number, totalCacheWrite?: number): boolean;
 export declare function formatTokens(n: number): string;
 export declare function formatCost(n: number): string;
 export declare function formatDuration(ms: number | null): string;
@@ -170,7 +172,20 @@ export declare function formatDuration(ms: number | null): string;
 export declare function formatResetDuration(iso: string): string;
 /** Linear-interpolation percentile over a sorted-ascending array. */
 export declare function percentileSorted(sortedAsc: number[], p: number): number;
-export declare function cacheHitRate(input: number, cacheRead: number): number;
+/**
+ * 界面展示用的 INPUT 口径：raw uncached input + cacheWrite。
+ * 缓存读取（cacheRead）仍作为独立桶展示；TOKEN TOTAL 不受影响，不会重复加 write。
+ * 纯展示计算，不修改任何持久化的 input/cache 字段。
+ */
+export declare function totalInputTokens(input: number, cacheWrite: number): number;
+/**
+ * 缓存读取命中率（统一口径）：
+ *   cacheRead / (raw uncached input + cacheRead + cacheWrite)
+ *
+ * 传入 cacheWrite 后，分母与界面展示的 INPUT（已含 cacheWrite）一致，
+ * 避免「展示口径含 write、命中率分母不含 write」造成的不一致。
+ */
+export declare function cacheHitRate(input: number, cacheRead: number, cacheWrite?: number): number;
 export declare function getPresetRange(preset: "all" | "7d" | "30d" | "month"): Pick<UsageFilters, "startDate" | "endDate">;
 /**
  * Parse `/total-usage [days]` raw slash input into a date-range filter.
@@ -227,7 +242,7 @@ export interface ModelPerfStats {
     p50Latency: number | null;
     p95Latency: number | null;
     p99Latency: number | null;
-    /** 该模型加权缓存命中率：cacheRead / (cacheRead + input) */
+    /** 该模型加权缓存命中率：cacheRead / (cacheRead + raw input + cacheWrite) */
     cacheHitRate: number | null;
 }
 export interface TokenDistribution {

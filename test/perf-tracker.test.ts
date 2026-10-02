@@ -50,7 +50,7 @@ function stepStreamed(tracker: PerfTracker, messageID: string, created: number):
 function stepDone(
   tracker: PerfTracker,
   messageID: string,
-  over: { output?: number; reasoning?: number; input?: number; cacheRead?: number } = {},
+  over: { output?: number; reasoning?: number; input?: number; cacheRead?: number; cacheWrite?: number } = {},
 ): void {
   tracker.handleStepTerminal({
     data: {
@@ -60,7 +60,7 @@ function stepDone(
         input: over.input ?? 10,
         output: over.output ?? 100,
         reasoning: over.reasoning ?? 20,
-        cache: { read: over.cacheRead ?? 5, write: 0 },
+        cache: { read: over.cacheRead ?? 5, write: over.cacheWrite ?? 0 },
       },
       cost: 0.1,
     },
@@ -221,4 +221,32 @@ test("duplicate terminal events do not double-count a step", () => {
   stepDone(tracker, "once")
 
   assert.equal(tracker.getSessionStats().models["anthropic/claude"].requestCount, 1)
+})
+
+test("cache hit rate divides by read + raw input + cacheWrite", () => {
+  const tracker = createPerfTracker()
+  stepStart(tracker, "read-step", 1000)
+  stepDone(tracker, "read-step", { input: 100, output: 0, reasoning: 0, cacheRead: 100, cacheWrite: 0 })
+  stepStart(tracker, "write-step", 2000)
+  stepDone(tracker, "write-step", { input: 100, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 100 })
+
+  const model = tracker.getSessionStats().models["anthropic/claude"]
+  assert.equal(model.totalInput, 200)
+  assert.equal(model.totalCacheRead, 100)
+  assert.equal(model.totalCacheWrite, 100)
+  // 100 / (200 + 100 + 100) * 100
+  assert.equal(model.cacheHitRate, 25)
+})
+
+test("write-only cache stats are counted as 0% instead of MISSING", () => {
+  const tracker = createPerfTracker()
+  stepStart(tracker, "w1", 1000)
+  stepDone(tracker, "w1", { input: 100, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 50 })
+  stepStart(tracker, "w2", 2000)
+  stepDone(tracker, "w2", { input: 100, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 50 })
+
+  const stats = tracker.getSessionStats()
+  assert.equal(stats.models["anthropic/claude"].cacheHitRate, 0)
+  // A genuinely MISSING model would be excluded, leaving weightedCacheHitRate null.
+  assert.equal(stats.totals.weightedCacheHitRate, 0)
 })

@@ -3,7 +3,7 @@
 // hourly activity heatmap, cost trend, and animated background.
 
 import type { CombinedReportData, ModelBreakdownItem } from "./formatter.js"
-import { isMissingCache, cacheHitRate } from "./formatter.js"
+import { isMissingCache, cacheHitRate, totalInputTokens } from "./formatter.js"
 import {
   fmtTokens, fmtCost, fmtPercent, escapeHtml, jsonForScript,
   HTML_HEAD_SHARED, BG_ANIMATION_HTML, BG_ANIMATION_CSS, BG_PARTICLE_JS, SHARED_CSS, SHARED_JS,
@@ -48,8 +48,8 @@ function renderKpiCards(data: CombinedReportData): string {
   const s = data.summary
   let kpiInputSum = 0, kpiCacheSum = 0
   for (const m of data.models) {
-    if (isMissingCache(m.requests, m.cacheRead)) continue
-    kpiInputSum += m.inputTokens
+    if (isMissingCache(m.requests, m.cacheRead, m.cacheWrite)) continue
+    kpiInputSum += totalInputTokens(m.inputTokens, m.cacheWrite)
     kpiCacheSum += m.cacheRead
   }
   const kpiHitRate = (kpiInputSum + kpiCacheSum) > 0
@@ -382,7 +382,7 @@ function renderApiCostSection(data: CombinedReportData): string {
     const costPer1M = costPer1MRaw != null ? `$${costPer1MRaw.toFixed(4)}` : '-'
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td><td data-sort="${costPer1MRaw ?? -1}">${costPer1M}</td>
     </tr>`
   }).join("\n")
@@ -445,8 +445,8 @@ function renderProviderCards(data: CombinedReportData): string {
 
 function renderModelAnalyticsSection(data: CombinedReportData): string {
   const usageRows = sortModelsByUsage(data.models).map(m => {
-    const isMissing = isMissingCache(m.requests, m.cacheRead)
-    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead)
+    const isMissing = isMissingCache(m.requests, m.cacheRead, m.cacheWrite)
+    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite)
     const hitColor = isMissing ? 'var(--missing)' : hitRate >= 0.85 ? 'var(--cache)' : hitRate >= 0.70 ? 'var(--tps)' : 'var(--danger)'
     const hitDisplay = isMissing ? 'MISSING' : fmtPercent(hitRate)
     const apiItem = data.apiCost?.byModel.find(a => a.provider === m.provider && a.model === m.model)
@@ -461,7 +461,7 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
       <td data-sort="${m.requests}">${m.requests}</td>
       <td data-sort="${m.sessions}">${m.sessions}</td>
       <td data-sort="${m.totalTokens}">${fmtTokens(m.totalTokens)}</td>
-      <td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td>
+      <td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td>
       <td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reasoningTokens}">${fmtTokens(m.reasoningTokens)}</td>
       <td data-sort="${m.cacheRead}">${fmtTokens(m.cacheRead)}</td>
@@ -535,7 +535,7 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
         <thead><tr>
           <th>Model</th><th>Provider</th><th class="sortable">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
           <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th><th class="sortable">Cache R</th><th class="sortable">Cache W</th>
-          <th class="sortable" title="Cache Read / (Input + Cache Read)">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing × token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
+          <th class="sortable" title="Cache Read / (Input + Cache Read); Input includes cache write">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing × token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
         </tr></thead>
         <tbody>${usageRows}</tbody>
       </table>

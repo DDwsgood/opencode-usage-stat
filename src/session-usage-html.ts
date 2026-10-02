@@ -3,7 +3,7 @@
 // auto-generated insights, and animated background.
 
 import type { ModelBreakdownItem, MessageRow, SessionTokenData, ApiCostAnalysis, ApiCostModelItem, ErrorStats } from "./formatter.js"
-import { isMissingCache, cacheHitRate } from "./formatter.js"
+import { isMissingCache, cacheHitRate, totalInputTokens } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
 import {
   fmtTokens, fmtCost, fmtPercent, fmtTime, fmtDateTime, fmtDuration, escapeHtml, nowString, percentile, jsonForScript,
@@ -41,8 +41,8 @@ function renderKpiCards(data: SessionReportData): string {
   // Global cache hit rate (excluding MISSING models)
   let kpiInputSum = 0, kpiCacheSum = 0
   for (const m of data.models) {
-    if (isMissingCache(m.requests, m.cacheRead)) continue
-    kpiInputSum += m.inputTokens
+    if (isMissingCache(m.requests, m.cacheRead, m.cacheWrite)) continue
+    kpiInputSum += totalInputTokens(m.inputTokens, m.cacheWrite)
     kpiCacheSum += m.cacheRead
   }
   const kpiHitRate = (kpiInputSum + kpiCacheSum) > 0
@@ -116,8 +116,8 @@ function renderModelCards(data: SessionReportData): string {
   const sorted = [...data.models].sort((a, b) => b.totalTokens - a.totalTokens)
 
   const cards = sorted.map(m => {
-    const isMissing = isMissingCache(m.requests, m.cacheRead)
-    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead)
+    const isMissing = isMissingCache(m.requests, m.cacheRead, m.cacheWrite)
+    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite)
     const hitColor = isMissing ? 'var(--missing)' : hitRate >= 0.85 ? 'var(--cache)' : hitRate >= 0.70 ? 'var(--tps)' : 'var(--danger)'
     const hitDisplay = isMissing ? 'MISSING' : fmtPercent(hitRate)
 
@@ -147,7 +147,7 @@ function renderModelCards(data: SessionReportData): string {
         <div class="stat-grid">
           <div class="stat-item"><span class="stat-label">Requests</span><span class="stat-value">${m.requests}</span></div>
           <div class="stat-item"><span class="stat-label">Total Tokens</span><span class="stat-value">${fmtTokens(m.totalTokens)}</span></div>
-          <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(m.inputTokens)}</span></div>
+          <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</span></div>
           <div class="stat-item"><span class="stat-label">Output</span><span class="stat-value" style="color:var(--output)">${fmtTokens(m.outputTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#c4a982">${fmtTokens(m.reasoningTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Cache Read</span><span class="stat-value" style="color:var(--cache)">${fmtTokens(m.cacheRead)}</span></div>
@@ -158,7 +158,7 @@ function renderModelCards(data: SessionReportData): string {
         </div>
       </div>
       <div class="token-bar">
-        <div class="token-seg input" style="width:${inputPct}%" title="Input: ${fmtTokens(m.inputTokens)} (${inputPct}%)"></div>
+        <div class="token-seg input" style="width:${inputPct}%" title="Input (uncached): ${fmtTokens(m.inputTokens)} (${inputPct}%)"></div>
         <div class="token-seg cache-read" style="width:${cacheReadPct}%" title="Cache Read: ${fmtTokens(m.cacheRead)} (${cacheReadPct}%)"></div>
         <div class="token-seg reasoning" style="width:${reasoningPct}%" title="Reasoning: ${fmtTokens(m.reasoningTokens)} (${reasoningPct}%)"></div>
         <div class="token-seg output" style="width:${outputPct}%" title="Output: ${fmtTokens(m.outputTokens)} (${outputPct}%)"></div>
@@ -180,8 +180,8 @@ function renderModelCards(data: SessionReportData): string {
 
 function renderMessageTable(data: SessionReportData): string {
   const rows = data.messages.map((msg, i) => {
-    const isMissing = isMissingCache(1, msg.cacheRead)
-    const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead)
+    const isMissing = isMissingCache(1, msg.cacheRead, msg.cacheWrite)
+    const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead, msg.cacheWrite)
     const hitColor = isMissing ? 'var(--missing)' : hitRate >= 0.85 ? 'var(--cache)' : hitRate >= 0.70 ? 'var(--tps)' : 'var(--danger)'
     const hitDisplay = isMissing ? 'MISSING' : fmtPercent(hitRate)
 
@@ -193,7 +193,7 @@ function renderMessageTable(data: SessionReportData): string {
       <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
       <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
-      <td data-sort="${msg.inputTokens}">${fmtTokens(msg.inputTokens)}</td>
+      <td data-sort="${totalInputTokens(msg.inputTokens, msg.cacheWrite)}">${fmtTokens(totalInputTokens(msg.inputTokens, msg.cacheWrite))}</td>
       <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
       <td data-sort="${msg.reasoningTokens}">${fmtTokens(msg.reasoningTokens)}</td>
       <td data-sort="${msg.cacheRead}">${fmtTokens(msg.cacheRead)}</td>
@@ -333,8 +333,8 @@ function initDurationChart() {
 function renderCacheTrendInit(data: SessionReportData): string {
   const labels = data.messages.map((_, i) => `#${i + 1}`)
   const hitRates = data.messages.map(m => {
-    if (isMissingCache(1, m.cacheRead)) return null
-    return cacheHitRate(m.inputTokens, m.cacheRead) * 100
+    if (isMissingCache(1, m.cacheRead, m.cacheWrite)) return null
+    return cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite) * 100
   })
 
   return `
@@ -393,7 +393,7 @@ function renderApiCostSection(data: SessionReportData): string {
     const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : '-'
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`
   }).join("\n")
@@ -456,7 +456,7 @@ function renderInsights(data: SessionReportData): string {
   let bestStreak = 0, streakStart = -1, bestStart = 0
   for (let i = 0; i < data.messages.length; i++) {
     const m = data.messages[i]
-    if (!isMissingCache(1, m.cacheRead) && cacheHitRate(m.inputTokens, m.cacheRead) >= 0.85) {
+    if (!isMissingCache(1, m.cacheRead, m.cacheWrite) && cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite) >= 0.85) {
       if (streakStart === -1) streakStart = i
       const len = i - streakStart + 1
       if (len > bestStreak) { bestStreak = len; bestStart = streakStart }

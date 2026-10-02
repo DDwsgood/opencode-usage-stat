@@ -33,6 +33,14 @@ import {
   toNumber,
 } from "./provider-usage.js"
 import type { ProviderId, ProviderUsageResult, UsageDisplayMode } from "./provider-usage.js"
+import {
+  DROID_USAGE_RPC,
+  checkDroidUsage,
+  hasEnabledDroidModel,
+  isDroidUsageVisible,
+  makeFactoryAccountQuotaSource,
+} from "./droid-usage.js"
+import type { DroidUsageQuery } from "./droid-usage.js"
 import { t } from "./i18n.js"
 import { formatResetDuration } from "./formatter.js"
 import { resolveThemeColors } from "./theme-map.js"
@@ -64,10 +72,13 @@ const PROVIDER_COLORS: Record<string, RGBA> = {
   cursor: RGBA.fromInts(200, 200, 210, 255),
   "command-code": RGBA.fromInts(235, 190, 90, 255),
   devin: RGBA.fromInts(9, 180, 150, 255),
+  droid: RGBA.fromInts(255, 150, 60, 255),
 }
 
 export interface ProviderUsageBlocksProps {
   context: Context
+  /** Current session (slot input); required for Droid session-tracked FSC. */
+  sessionID?: string
 }
 
 interface ProviderState {
@@ -120,50 +131,53 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     return storedCollapse?.[id] !== false
   }
 
-  // ── Devin gate: plugin list + enabled model, scoped to the live location ──
+  // ── Plugin gate (Devin + Droid): plugin list + enabled model, scoped to
+  // the live location. Both providers share one plugin.list poll.
   const devinEnabled = enabledIds.includes("devin")
+  const droidEnabled = enabledIds.includes("droid")
+  const gateEnabled = devinEnabled || droidEnabled
   let disposed = false
-  let devinGateSeq = 0
+  let pluginGateSeq = 0
   onCleanup(() => { disposed = true })
 
-  const devinLocKey = () => {
+  const locationKey = () => {
     const location = context.location ?? context.data.location.default()
     return devinLocationKey(location)
   }
   // Gate state keyed by the location it was fetched for. `seq` drops async
   // results that resolve after a newer request was issued.
-  const [devinGate, setDevinGate] = createSignal<{ key: string; seq: number; pluginIds: readonly string[] }>(
+  const [pluginGate, setPluginGate] = createSignal<{ key: string; seq: number; pluginIds: readonly string[] }>(
     { key: "", seq: 0, pluginIds: [] },
   )
 
-  async function refreshDevinGate(): Promise<void> {
-    if (!devinEnabled || disposed) return
+  async function refreshPluginGate(): Promise<void> {
+    if (!gateEnabled || disposed) return
     const location = context.location ?? context.data.location.default()
     const key = devinLocationKey(location)
     // Immediately clear qualifications earned under another location.
-    setDevinGate(prev => (prev.key === key ? prev : { key, seq: prev.seq, pluginIds: [] }))
-    const seq = ++devinGateSeq
+    setPluginGate(prev => (prev.key === key ? prev : { key, seq: prev.seq, pluginIds: [] }))
+    const seq = ++pluginGateSeq
     try {
       const listed = await context.client.plugin.list({ location })
-      if (disposed || seq !== devinGateSeq || key !== devinLocKey()) return
+      if (disposed || seq !== pluginGateSeq || key !== locationKey()) return
       const ids = Array.isArray(listed?.data) ? listed.data.map(p => p.id) : []
-      setDevinGate(prev => devinGatePlugins(prev, devinLocKey(), key, seq, ids))
+      setPluginGate(prev => devinGatePlugins(prev, locationKey(), key, seq, ids))
     } catch {
       // Keep the previous list on transient failures.
     }
     // Prime the reactive model cache; the render path reads list() below.
-    if (!disposed && seq === devinGateSeq && key === devinLocKey()) {
+    if (!disposed && seq === pluginGateSeq && key === locationKey()) {
       void context.data.location.model.sync(location).catch(() => { /* cached list stays */ })
     }
   }
 
   // Re-check whenever the effective location changes (reactive on default()).
   createEffect(() => {
-    devinLocKey()
-    void refreshDevinGate()
+    locationKey()
+    void refreshPluginGate()
   })
 
-  const devinModels = () => {
+  const locationModels = () => {
     const location = context.location ?? context.data.location.default()
     try {
       return context.data.location.model.list(location)
@@ -171,19 +185,109 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
       return undefined
     }
   }
-  // Memoized boolean: downstream effects only re-run when eligibility
+  // Memoized booleans: downstream effects only re-run when eligibility
   // actually flips, not on every poll producing a fresh pluginIds array.
   const devinEligible = createMemo(() => isDevinUsageVisible({
     configEnabled: devinEnabled,
-    pluginIds: devinGate().key === devinLocKey() ? devinGate().pluginIds : [],
-    hasDevinModel: hasEnabledDevinModel(devinModels()),
+    pluginIds: pluginGate().key === locationKey() ? pluginGate().pluginIds : [],
+    hasDevinModel: hasEnabledDevinModel(locationModels()),
+  }))
+  const droidEligible = createMemo(() => isDroidUsageVisible({
+    configEnabled: droidEnabled,
+    pluginIds: pluginGate().key === locationKey() ? pluginGate().pluginIds : [],
+    hasDroidModel: hasEnabledDroidModel(locationModels()),
   }))
 
   const [states, setStates] = createSignal<ProviderState[]>(
     enabledIds.map(id => ({ id, loading: false, result: null })),
   )
 
+  // ── Droid: session-family tracked FSC via the opencode-droid-v2 RPC ──
+
+  /** Family scope: child sessions stand alone; root sessions include subagent children. */
+  const droidFamily = (): string[] => {
+    const sessionID = props.sessionID ?? ""
+    if (!sessionID) return []
+    const selected = context.data.session.get(sessionID)
+    if (selected?.parentID) return [sessionID]
+    try {
+      const family = context.data.session.family(sessionID)
+      return family.length > 0 ? [...family] : [sessionID]
+    } catch {
+      return [sessionID]
+    }
+  }
+
+  function droidQuery(): DroidUsageQuery | null {
+    // Capability boundary: the installed client typings predate client.rpc,
+    // but OpenCode >= 2.0.18 exposes it at runtime. No HTTP fallback exists —
+    // there is no unauthenticated usage endpoint and credentials are never read.
+    const client = context.client as unknown as { rpc?: (definition: unknown) => unknown }
+    if (typeof client.rpc !== "function") return null
+    try {
+      const rpc = client.rpc(DROID_USAGE_RPC) as { usage?: unknown } | null
+      return rpc && typeof rpc.usage === "function" ? rpc as DroidUsageQuery : null
+    } catch {
+      return null
+    }
+  }
+
+  // Real account-quota source (saved Factory web credential; re-read per call).
+  const factoryQuotaSource = droidEnabled ? makeFactoryAccountQuotaSource() : undefined
+
+  let droidSeq = 0
+  let droidInflight = false
+  let droidPending = false
+
+  async function refreshDroid(): Promise<void> {
+    if (!droidEnabled || !droidEligible()) return
+    const sessionID = props.sessionID ?? ""
+    // Merge overlapping triggers: one in-flight RPC, at most one queued rerun.
+    if (droidInflight) {
+      droidPending = true
+      return
+    }
+    droidInflight = true
+    const location = context.location ?? context.data.location.default()
+    const key = devinLocationKey(location)
+    const family = sessionID ? droidFamily() : []
+    const seq = ++droidSeq
+    setStates(prev => prev.map(s => (s.id === "droid" ? { ...s, loading: true } : s)))
+    try {
+      const result = await checkDroidUsage(droidQuery(), family, { location, accountQuota: factoryQuotaSource })
+      // A stale response must never overwrite state belonging to a newer
+      // location/session or a superseding request.
+      const stale = disposed
+        || seq !== droidSeq
+        || key !== devinLocationKey(context.location ?? context.data.location.default())
+        || sessionID !== (props.sessionID ?? "")
+      setStates(prev => prev.map(s => (s.id === "droid" ? { ...s, loading: false, result: stale ? s.result : result } : s)))
+    } finally {
+      droidInflight = false
+      if (droidPending && !disposed) {
+        droidPending = false
+        void refreshDroid()
+      }
+    }
+  }
+
+  // Session switch: drop the previous session's tracked numbers immediately
+  // and invalidate any in-flight RPC that belonged to it.
+  let lastDroidSession: string | null = null
+  createEffect(() => {
+    const sessionID = props.sessionID ?? ""
+    if (!droidEnabled) return
+    if (sessionID !== lastDroidSession) {
+      lastDroidSession = sessionID
+      droidSeq++
+      setStates(prev => prev.map(s => (s.id === "droid" && (s.result || s.loading) ? { ...s, result: null, loading: false } : s)))
+    }
+    // Account quota is session-independent; refresh even without a session.
+    if (droidEligible()) void refreshDroid()
+  })
+
   async function refreshOne(id: ProviderId): Promise<void> {
+    if (id === "droid") return refreshDroid()
     if (id === "devin" && !devinEligible()) return
     setStates(prev => prev.map(s => (s.id === id ? { ...s, loading: true } : s)))
     const result = await checkProviderUsage(id)
@@ -207,15 +311,34 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     for (const id of enabledIds) {
       timers.push(setInterval(() => { void refreshOne(id) }, REFRESH_MS))
     }
-    if (devinEnabled) {
-      timers.push(setInterval(() => { void refreshDevinGate() }, REFRESH_MS))
+    if (gateEnabled) {
+      timers.push(setInterval(() => { void refreshPluginGate() }, REFRESH_MS))
     }
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer)
     })
   }
 
-  const visibleStates = () => states().filter(s => s.id !== "devin" || devinEligible())
+  // Refresh tracked FSC when the host reports usage/step events for a session
+  // in the current family. The inflight merge in refreshDroid keeps bursts
+  // from overlapping.
+  if (droidEnabled) {
+    const onTrackedEvent = (event: { data?: { sessionID?: string } }) => {
+      const sid = event?.data?.sessionID
+      if (!sid || !droidEligible() || !droidFamily().includes(sid)) return
+      void refreshDroid()
+    }
+    const unsubs = [
+      context.data.on("session.usage.updated", onTrackedEvent),
+      context.data.on("session.step.ended", onTrackedEvent),
+    ]
+    onCleanup(() => {
+      for (const unsub of unsubs) unsub()
+    })
+  }
+
+  const visibleStates = () => states().filter(s =>
+    (s.id !== "devin" || devinEligible()) && (s.id !== "droid" || droidEligible()))
 
   function toggle(id: ProviderId): void {
     const next = !isCollapsed(id)

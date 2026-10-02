@@ -6,6 +6,8 @@
  * using official model pricing (from models.dev) x token usage.
  *
  * MISSING models (upstream doesn't return cache data) estimated at 94% hit rate.
+ * A model with cacheWrite > 0 is NOT missing: the upstream does report cache
+ * stats, so real token counts (including cache write) are used instead.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
@@ -231,6 +233,11 @@ function getPricing(): PricingCache {
   return pricingCache
 }
 
+/** Test-only: inject a fixed pricing table so cost regressions stay offline/deterministic. */
+export function setPricingCacheForTest(models: Record<string, ModelPricing>, fetchedAt = new Date().toISOString()): void {
+  pricingCache = { fetchedAt, models }
+}
+
 export function lookupPricing(providerID: string, modelID: string): ModelPricing | null {
   const pricing = getPricing()
 
@@ -286,7 +293,7 @@ export interface ApiCostEstimate {
  *   input * input_rate + output * output_rate + reasoning * reasoning_rate
  *   + cacheRead * cache_read_rate + cacheWrite * cache_write_rate
  *
- * MISSING model (upstream doesn't return cache, cacheRead=0):
+ * MISSING model (upstream doesn't return cache at all, cacheRead=0 AND cacheWrite=0):
  *   Estimated at 94% hit rate: input * (1-0.94) * input_rate + input * 0.94 * cache_read_rate + output * output_rate
  *
  * Pricing unit: USD per million tokens
@@ -317,8 +324,10 @@ export function estimateApiCost(
   const cacheWriteRate = pricing.cache_write ?? 0
 
   // Model is flagged MISSING when the upstream reports no cache data at all
-  // (requestCount>1, cacheRead=0); estimated at the 94% hit-rate heuristic.
-  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead)
+  // (requestCount>1, cacheRead=0, cacheWrite=0); estimated at the 94% hit-rate
+  // heuristic. A write-only window has real cache stats, so it uses real token
+  // counts instead of guessing the read-cache hit rate.
+  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead, cacheWrite)
 
   let cost: number
   if (isMissing) {

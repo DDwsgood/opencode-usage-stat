@@ -292,7 +292,7 @@ export function readPersistedStats(): ModelPerfStats[] {
       const ttftArr = [...s.ttftReservoir].sort((a, b) => a - b)
       const tpsArr = [...s.tpsReservoir].sort((a, b) => a - b)
       const latArr = [...s.latencyReservoir].sort((a, b) => a - b)
-      const denom = s.totalInput + s.totalCacheRead
+      const denom = s.totalInput + s.totalCacheRead + s.totalCacheWrite
       return {
         model: s.model,
         providerID: s.providerID,

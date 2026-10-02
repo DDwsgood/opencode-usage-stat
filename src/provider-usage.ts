@@ -22,6 +22,9 @@
 //   - devin         opencode-devin-v2 seat quota via Codeium GetUserStatus RPC
 //                   (key from that plugin's credentials.json; shown only when
 //                   the devin plugin is installed and a devin model exists)
+//   - droid         opencode-droid-v2 tracked per-session FSC via the plugin's
+//                   own usage RPC (no account quota exists; shown only when
+//                   the droid plugin is installed and a droid model exists)
 //
 // Credentials resolve via the OpenCode V2 credential DB, ~/.local/share/opencode/auth.json,
 // env vars and .env files; ollama-cloud/cursor use secure JSON files. Secrets are
@@ -1585,7 +1588,7 @@ export type ProviderId =
   | "opencode-go" | "deepseek" | "codex" | "claude" | "kimi-for-coding"
   | "zai-coding-plan" | "zhipuai-coding-plan" | "minimax-coding-plan" | "minimax-cn-coding-plan"
   | "openrouter" | "ollama-cloud" | "github-copilot" | "github-copilot-addon"
-  | "google" | "xai" | "cursor" | "command-code" | "devin"
+  | "google" | "xai" | "cursor" | "command-code" | "devin" | "droid"
 
 interface ProviderSpec {
   id: ProviderId
@@ -1613,6 +1616,8 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
   { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS },
   { id: "devin", name: "Devin", aliases: DEVIN_ALIASES, envKeys: DEVIN_ENV_KEYS },
+  // No credential/env: data comes from the opencode-droid-v2 plugin RPC.
+  { id: "droid", name: "Droid (Factory)", aliases: ["droid", "factory"], envKeys: [] },
 ]
 
 export const USAGE_STAT_PROVIDER_IDS: readonly ProviderId[] = PROVIDERS.map(p => p.id)
@@ -1744,6 +1749,13 @@ export async function checkProviderUsage(
     } catch (err) {
       return finishError(true, err instanceof Error ? err.message : "Request failed")
     }
+  }
+
+  // Droid has no credential or HTTP endpoint: session-tracked FSC is read via
+  // the opencode-droid-v2 plugin RPC in the TUI (checkDroidUsage in
+  // droid-usage.ts). Never route it through the generic credential resolver.
+  if (spec.id === "droid") {
+    return finishError(false, `${spec.name} — session-tracked usage requires the opencode-droid-v2 plugin RPC`)
   }
 
   const resolved = getCredential({ aliases: spec.aliases, envKeys: spec.envKeys })

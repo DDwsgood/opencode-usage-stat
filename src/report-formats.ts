@@ -30,7 +30,7 @@ import type {
   ErrorStats,
   HourlyHeatmapItem,
 } from "./formatter.js"
-import { formatTokens, formatCost, formatFilters, getPresetRange, parseDaysFilter } from "./formatter.js"
+import { formatTokens, formatCost, formatFilters, getPresetRange, parseDaysFilter, totalInputTokens } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
 import { readLogs } from "./perf-tracker.js"
 import { readPersistedStats } from "./stats-store.js"
@@ -578,7 +578,9 @@ export function renderPeriodTextReport(data: CombinedReportData): string {
   lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)))
   lines.push(kpiLine("Requests", String(s.requestCount)))
   lines.push(kpiLine("Sessions", String(data.totalSessions ?? s.modelsUsed.length)))
-  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)))
+  // INPUT is displayed as raw uncached input + cacheWrite; cache read stays its own line.
+  // JSON/data fields and the total below keep the original raw values.
+  lines.push(kpiLine("Input Tokens", formatTokens(totalInputTokens(s.inputTokens, s.cacheWrite))))
   lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)))
   lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)))
   lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)))
@@ -642,7 +644,8 @@ export function renderSessionTextReport(data: SessionReportView): string {
   lines.push("KPI")
   lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)))
   lines.push(kpiLine("Requests", String(s.requestCount)))
-  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)))
+  // INPUT display = raw uncached input + cacheWrite; Cache Read/Cache Write stay separate lines.
+  lines.push(kpiLine("Input Tokens", formatTokens(totalInputTokens(s.inputTokens, s.cacheWrite))))
   lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)))
   lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)))
   lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)))

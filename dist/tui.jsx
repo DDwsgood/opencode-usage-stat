@@ -11,8 +11,8 @@ function define(plugin2) {
 }
 
 // src/formatter.ts
-function isMissingCache(requestCount, totalCacheRead) {
-  return requestCount >= 2 && totalCacheRead === 0;
+function isMissingCache(requestCount, totalCacheRead, totalCacheWrite = 0) {
+  return requestCount >= 2 && totalCacheRead === 0 && totalCacheWrite === 0;
 }
 function formatTokens(n) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
@@ -54,9 +54,13 @@ function percentileSorted(sortedAsc, p) {
   if (lo === hi) return sortedAsc[lo];
   return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo);
 }
-function cacheHitRate(input, cacheRead) {
-  if (input + cacheRead === 0) return 0;
-  return cacheRead / (input + cacheRead);
+function totalInputTokens(input, cacheWrite) {
+  return input + cacheWrite;
+}
+function cacheHitRate(input, cacheRead, cacheWrite = 0) {
+  const denom = input + cacheRead + cacheWrite;
+  if (denom === 0) return 0;
+  return cacheRead / denom;
 }
 function getPresetRange(preset) {
   if (preset === "all") return {};
@@ -279,7 +283,7 @@ function readPersistedStats() {
       const ttftArr = [...s.ttftReservoir].sort((a, b) => a - b);
       const tpsArr = [...s.tpsReservoir].sort((a, b) => a - b);
       const latArr = [...s.latencyReservoir].sort((a, b) => a - b);
-      const denom = s.totalInput + s.totalCacheRead;
+      const denom = s.totalInput + s.totalCacheRead + s.totalCacheWrite;
       return {
         model: s.model,
         providerID: s.providerID,
@@ -588,9 +592,9 @@ var PerfTracker = class {
       s.p50Latency = this.percentile(latArr, 50);
       s.p95Latency = this.percentile(latArr, 95);
       s.p99Latency = this.percentile(latArr, 99);
-      const denom = s.totalInput + s.totalCacheRead;
+      const denom = s.totalInput + s.totalCacheRead + s.totalCacheWrite;
       s.cacheHitRate = denom > 0 ? s.totalCacheRead / denom * 100 : null;
-      if (s.cacheHitRate !== null && !isMissingCache(s.requestCount, s.totalCacheRead)) {
+      if (s.cacheHitRate !== null && !isMissingCache(s.requestCount, s.totalCacheRead, s.totalCacheWrite)) {
         weightedHitSum += s.cacheHitRate * s.requestCount;
         totalReqForHit += s.requestCount;
       }
@@ -2446,7 +2450,9 @@ var PROVIDERS = [
   { id: "xai", name: "xAI", aliases: XAI_ALIASES, envKeys: XAI_ENV_KEYS },
   { id: "cursor", name: "Cursor", aliases: CURSOR_ALIASES, envKeys: CURSOR_ENV_KEYS },
   { id: "command-code", name: "Command Code", aliases: COMMAND_CODE_ALIASES, envKeys: COMMAND_CODE_ENV_KEYS },
-  { id: "devin", name: "Devin", aliases: DEVIN_ALIASES, envKeys: DEVIN_ENV_KEYS }
+  { id: "devin", name: "Devin", aliases: DEVIN_ALIASES, envKeys: DEVIN_ENV_KEYS },
+  // No credential/env: data comes from the opencode-droid-v2 plugin RPC.
+  { id: "droid", name: "Droid (Factory)", aliases: ["droid", "factory"], envKeys: [] }
 ];
 var USAGE_STAT_PROVIDER_IDS = PROVIDERS.map((p) => p.id);
 var defaultCredentialResolver = (spec) => resolveCredential(spec);
@@ -2536,6 +2542,9 @@ async function checkProviderUsage(providerId, fetchImpl = fetch, getCredential =
     } catch (err) {
       return finishError(true, err instanceof Error ? err.message : "Request failed");
     }
+  }
+  if (spec.id === "droid") {
+    return finishError(false, `${spec.name} \u2014 session-tracked usage requires the opencode-droid-v2 plugin RPC`);
   }
   const resolved = getCredential({ aliases: spec.aliases, envKeys: spec.envKeys });
   if (spec.id === "xai") {
@@ -2647,6 +2656,338 @@ function resolveProviderUsageConfig(options) {
   return out;
 }
 
+// src/droid-usage.ts
+var DROID_PLUGIN_ID = "opencode-droid-v2";
+var DROID_PROVIDER_NAME = "Droid (Factory)";
+var DROID_USAGE_RPC = {
+  id: DROID_PLUGIN_ID,
+  events: {},
+  methods: {
+    usage: {
+      input: { type: "object", properties: { sessionID: { type: "string" } }, additionalProperties: false },
+      output: {
+        type: "object",
+        properties: { version: { const: 1 }, records: { type: "array", items: { type: "object" } } },
+        required: ["version", "records"],
+        additionalProperties: false
+      }
+    }
+  }
+};
+var FACTORY_USAGE_URL = "https://api.factory.ai/api/billing/limits";
+function resolveFactoryUsageCredential() {
+  const data = readSecureProviderJson("droid");
+  if (!data) return null;
+  const cookie = nonEmptyString2(data.cookie ?? data.session);
+  const accessToken = nonEmptyString2(data.accessToken ?? data.access_token ?? data.token);
+  const organizationId = nonEmptyString2(data.organizationId ?? data.organization_id ?? data.orgId);
+  if (!cookie && !accessToken) return null;
+  return { cookie, accessToken, organizationId };
+}
+var FACTORY_LIMIT_BUCKETS = [
+  ["standard", "fiveHour", "Standard \xB7 5h"],
+  ["standard", "weekly", "Standard \xB7 weekly"],
+  ["standard", "monthly", "Standard \xB7 monthly"],
+  ["core", "fiveHour", "Core \xB7 5h"],
+  ["core", "weekly", "Core \xB7 weekly"],
+  ["core", "monthly", "Core \xB7 monthly"]
+];
+function clampPct2(n) {
+  return Math.min(100, Math.max(0, n));
+}
+function factoryWindowEnd(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    const ms2 = value < 1e10 ? value * 1e3 : value;
+    return new Date(ms2).toISOString();
+  }
+  const text = nonEmptyString2(value);
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+function factoryBucketWindow(label, raw) {
+  const obj = asObject2(raw);
+  if (!obj) return null;
+  const end = factoryWindowEnd(obj.windowEnd);
+  const seconds = toNumber(obj.secondsRemaining);
+  const expired = end == null || seconds != null && seconds <= 0;
+  if (expired) return { label, percent: 0, resetsAt: null, valueLabel: null };
+  const percent = toNumber(obj.usedPercent);
+  return {
+    label,
+    percent: percent == null ? null : clampPct2(percent),
+    resetsAt: end,
+    valueLabel: percent == null ? "unknown" : null
+  };
+}
+function parseFactorySubscriptionUsage(payload) {
+  const root = asObject2(payload);
+  if (!root) return null;
+  const data = asObject2(root.data) ?? root;
+  const windows = [];
+  const limits = asObject2(data.limits);
+  if (limits) {
+    for (const [section, key, label] of FACTORY_LIMIT_BUCKETS) {
+      const window = factoryBucketWindow(label, asObject2(limits[section])?.[key]);
+      if (window) windows.push(window);
+    }
+  }
+  if (data.extraUsageAllowed === false) {
+    windows.push({ label: "Extra usage", percent: null, resetsAt: null, valueLabel: "disabled" });
+  } else {
+    const cents = toNumber(data.extraUsageBalanceCents);
+    if (cents != null) {
+      windows.push({ label: "Extra usage", percent: null, resetsAt: null, valueLabel: `$${(cents / 100).toFixed(2)} cash balance` });
+    }
+  }
+  if (windows.length === 0) return null;
+  return { windows, planLabel: null };
+}
+function timedFetch(url, init, fetchImpl, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetchImpl(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+async function fetchFactorySubscriptionUsage(credential, fetchImpl = fetch) {
+  const headers = { Accept: "application/json", "User-Agent": "opencode-usage-stat" };
+  if (credential.accessToken) headers.Authorization = `Bearer ${credential.accessToken}`;
+  if (credential.cookie) headers.Cookie = credential.cookie;
+  if (credential.organizationId) headers["X-Factory-Org-Id"] = credential.organizationId;
+  const response = await timedFetch(FACTORY_USAGE_URL, { method: "GET", headers, redirect: "manual" }, fetchImpl);
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Factory session expired \u2014 update the saved web credential");
+  }
+  if (!response.ok) {
+    throw new Error(`Factory usage API error: ${response.status}`);
+  }
+  const quota = parseFactorySubscriptionUsage(await response.json().catch(() => null));
+  if (!quota) throw new Error("Factory usage data could not be parsed");
+  return quota;
+}
+function makeFactoryAccountQuotaSource(fetchImpl = fetch) {
+  return async () => {
+    const credential = resolveFactoryUsageCredential();
+    if (!credential) return null;
+    return fetchFactorySubscriptionUsage(credential, fetchImpl);
+  };
+}
+function hasEnabledDroidModel(models) {
+  return Array.isArray(models) && models.some((m) => m?.providerID === "droid" && m?.enabled === true);
+}
+function isDroidUsageVisible(opts) {
+  return opts.configEnabled === true && opts.pluginIds.includes(DROID_PLUGIN_ID) && opts.hasDroidModel === true;
+}
+function asObject2(value) {
+  return value && typeof value === "object" ? value : null;
+}
+function nonEmptyString2(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+function tokenField(raw, key) {
+  const n = toNumber(raw[key]);
+  return n != null && n >= 0 ? n : void 0;
+}
+function parseTokenUsage(raw) {
+  const obj = asObject2(raw);
+  if (!obj) return null;
+  return {
+    inputTokens: tokenField(obj, "inputTokens") ?? 0,
+    outputTokens: tokenField(obj, "outputTokens") ?? 0,
+    cacheCreationTokens: tokenField(obj, "cacheCreationTokens") ?? 0,
+    cacheReadTokens: tokenField(obj, "cacheReadTokens") ?? 0,
+    thinkingTokens: tokenField(obj, "thinkingTokens") ?? 0,
+    ...obj.factoryCredits === void 0 ? {} : { factoryCredits: tokenField(obj, "factoryCredits") }
+  };
+}
+function parseDroidRecord(raw) {
+  const obj = asObject2(raw);
+  if (!obj || obj.providerID !== "droid") return null;
+  const sessionID = nonEmptyString2(obj.sessionID);
+  const usage = parseTokenUsage(obj.usage);
+  const total = parseTokenUsage(obj.total);
+  if (!sessionID || !usage || !total) return null;
+  return {
+    version: 1,
+    providerID: "droid",
+    sessionID,
+    droidSessionID: nonEmptyString2(obj.droidSessionID) ?? "",
+    requestID: nonEmptyString2(obj.requestID) ?? "",
+    modelID: nonEmptyString2(obj.modelID) ?? "",
+    time: toNumber(obj.time) ?? 0,
+    usage,
+    total
+  };
+}
+function parseDroidUsagePayload(payload) {
+  const obj = asObject2(payload);
+  if (!obj || obj.version !== 1 || !Array.isArray(obj.records)) return null;
+  const out = [];
+  for (const raw of obj.records) {
+    const record = parseDroidRecord(raw);
+    if (record) out.push(record);
+  }
+  return out;
+}
+function filterDroidRecords(records, family) {
+  const wanted = new Set(family);
+  const bySession = /* @__PURE__ */ new Map();
+  for (const record of records ?? []) {
+    if (!wanted.has(record.sessionID)) continue;
+    const existing = bySession.get(record.sessionID);
+    if (!existing || record.time >= existing.time) bySession.set(record.sessionID, record);
+  }
+  return [...bySession.values()];
+}
+function summarizeDroidRecords(records) {
+  let fsc = 0;
+  let known = 0;
+  let missing = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const record of records) {
+    const credits = record.total.factoryCredits;
+    if (typeof credits === "number" && Number.isFinite(credits)) {
+      fsc += credits;
+      known++;
+    } else {
+      missing++;
+    }
+    inputTokens += (record.total.inputTokens ?? 0) + (record.total.cacheReadTokens ?? 0) + (record.total.cacheCreationTokens ?? 0);
+    outputTokens += (record.total.outputTokens ?? 0) + (record.total.thinkingTokens ?? 0);
+  }
+  return {
+    sessions: records.length,
+    fsc: known > 0 ? fsc : null,
+    partial: known > 0 && missing > 0,
+    inputTokens,
+    outputTokens
+  };
+}
+function formatFsc(value) {
+  if (!Number.isFinite(value)) return "0";
+  if (value >= 1e3) return Math.round(value).toLocaleString("en-US");
+  return value.toFixed(3).replace(/\.?0+$/, "");
+}
+function droidUsageWindows(summary, hasRecords) {
+  const windows = [{
+    label: "Session FSC",
+    percent: null,
+    resetsAt: null,
+    valueLabel: summary.fsc == null ? hasRecords ? "unknown" : "waiting" : `${summary.partial ? "\u2265" : ""}${formatFsc(summary.fsc)} FSC`
+  }];
+  if (summary.inputTokens > 0 || summary.outputTokens > 0) {
+    windows.push({
+      label: "Session tokens",
+      percent: null,
+      resetsAt: null,
+      valueLabel: `${formatTokens(summary.inputTokens)} in / ${formatTokens(summary.outputTokens)} out`
+    });
+  }
+  return windows;
+}
+function droidRpcErrorMessage(error) {
+  const type = typeof error?.type === "string" ? error.type : null;
+  switch (type) {
+    case "rpc.unavailable":
+      return "usage RPC unavailable \u2014 is opencode-droid-v2 enabled at this location?";
+    case "rpc.method_not_found":
+      return "opencode-droid-v2 does not expose the usage RPC \u2014 update the plugin";
+    case "rpc.invalid_input":
+      return "usage RPC rejected the request";
+    case "rpc.invalid_output":
+      return "usage RPC returned an unexpected payload";
+    case "rpc.internal":
+      return "usage RPC failed";
+  }
+  if (type !== null) return "usage RPC failed";
+  if (error instanceof Error && error.message) return error.message.slice(0, 160);
+  return "usage request failed";
+}
+async function checkDroidUsage(query, family, options = {}) {
+  const name = DROID_PROVIDER_NAME;
+  const fail = (configured, message) => ({
+    providerId: "droid",
+    providerName: name,
+    configured,
+    ok: false,
+    status: `${name} \u2014 ${message}`,
+    error: message
+  });
+  let summary = null;
+  let scopedCount = 0;
+  let trackedError = null;
+  if (query) {
+    try {
+      const payload = await query.usage({}, { location: options.location });
+      const records = parseDroidUsagePayload(payload);
+      if (!records) {
+        trackedError = "usage RPC returned an unexpected payload";
+      } else {
+        const scoped = filterDroidRecords(records, family);
+        scopedCount = scoped.length;
+        summary = summarizeDroidRecords(scoped);
+        if (summary.fsc != null && scopedCount < family.length) {
+          summary = { ...summary, partial: true };
+        }
+      }
+    } catch (error) {
+      trackedError = droidRpcErrorMessage(error);
+    }
+  }
+  let quota = null;
+  let quotaState = "none";
+  if (options.accountQuota) {
+    quotaState = "missing";
+    try {
+      const result = await options.accountQuota();
+      if (result && Array.isArray(result.windows) && result.windows.length > 0) {
+        quota = result;
+        quotaState = "ok";
+      }
+    } catch {
+      quotaState = "failed";
+    }
+  }
+  if (!summary && !quota) {
+    if (!query && quotaState === "none") return fail(false, "usage RPC unavailable on this OpenCode host");
+    const reasons = [];
+    if (trackedError) reasons.push(trackedError);
+    else if (!query) reasons.push("usage RPC unavailable on this host");
+    if (quotaState === "failed") reasons.push("account usage request failed");
+    else if (quotaState === "missing") reasons.push("no saved Factory web credential");
+    return fail(query != null || quotaState !== "none", reasons.join(" \xB7 ") || "no usage data available");
+  }
+  const windows = [];
+  if (summary) {
+    windows.push(...droidUsageWindows(summary, scopedCount > 0));
+  } else {
+    windows.push({ label: "Session FSC", percent: null, resetsAt: null, valueLabel: "unknown" });
+  }
+  if (quota) {
+    windows.push(...quota.windows);
+  } else {
+    windows.push({
+      label: "Account quota",
+      percent: null,
+      resetsAt: null,
+      valueLabel: quotaState === "failed" ? "unknown (request failed)" : quotaState === "missing" ? "unavailable \u2014 no saved web credential" : "unavailable \u2014 session-tracked"
+    });
+  }
+  const trackedPart = summary ? summary.fsc == null ? scopedCount > 0 ? "FSC unknown (session-tracked)" : "waiting for tracked usage" : `${summary.partial ? "\u2265" : ""}${formatFsc(summary.fsc)} FSC tracked` : "session tracking unavailable";
+  const quotaPart = quotaState === "failed" ? " \xB7 account quota unknown" : "";
+  return {
+    providerId: "droid",
+    providerName: name,
+    configured: true,
+    ok: true,
+    status: `${name} \u2014 ${trackedPart}${quotaPart}`,
+    windows,
+    planLabel: quota?.planLabel ?? null
+  };
+}
+
 // src/theme-map.ts
 import { RGBA } from "@opentui/core";
 function resolveThemeColors(theme) {
@@ -2737,7 +3078,8 @@ var PROVIDER_COLORS = {
   xai: RGBA2.fromInts(225, 225, 235, 255),
   cursor: RGBA2.fromInts(200, 200, 210, 255),
   "command-code": RGBA2.fromInts(235, 190, 90, 255),
-  devin: RGBA2.fromInts(9, 180, 150, 255)
+  devin: RGBA2.fromInts(9, 180, 150, 255),
+  droid: RGBA2.fromInts(255, 150, 60, 255)
 };
 function ProviderUsageBlocks(props) {
   const {
@@ -2776,49 +3118,51 @@ function ProviderUsageBlocks(props) {
     return storedCollapse?.[id] !== false;
   };
   const devinEnabled = enabledIds.includes("devin");
+  const droidEnabled = enabledIds.includes("droid");
+  const gateEnabled = devinEnabled || droidEnabled;
   let disposed = false;
-  let devinGateSeq = 0;
+  let pluginGateSeq = 0;
   onCleanup(() => {
     disposed = true;
   });
-  const devinLocKey = () => {
+  const locationKey = () => {
     const location = context.location ?? context.data.location.default();
     return devinLocationKey(location);
   };
-  const [devinGate, setDevinGate] = createSignal({
+  const [pluginGate, setPluginGate] = createSignal({
     key: "",
     seq: 0,
     pluginIds: []
   });
-  async function refreshDevinGate() {
-    if (!devinEnabled || disposed) return;
+  async function refreshPluginGate() {
+    if (!gateEnabled || disposed) return;
     const location = context.location ?? context.data.location.default();
     const key = devinLocationKey(location);
-    setDevinGate((prev) => prev.key === key ? prev : {
+    setPluginGate((prev) => prev.key === key ? prev : {
       key,
       seq: prev.seq,
       pluginIds: []
     });
-    const seq = ++devinGateSeq;
+    const seq = ++pluginGateSeq;
     try {
       const listed = await context.client.plugin.list({
         location
       });
-      if (disposed || seq !== devinGateSeq || key !== devinLocKey()) return;
+      if (disposed || seq !== pluginGateSeq || key !== locationKey()) return;
       const ids = Array.isArray(listed?.data) ? listed.data.map((p) => p.id) : [];
-      setDevinGate((prev) => devinGatePlugins(prev, devinLocKey(), key, seq, ids));
+      setPluginGate((prev) => devinGatePlugins(prev, locationKey(), key, seq, ids));
     } catch {
     }
-    if (!disposed && seq === devinGateSeq && key === devinLocKey()) {
+    if (!disposed && seq === pluginGateSeq && key === locationKey()) {
       void context.data.location.model.sync(location).catch(() => {
       });
     }
   }
   createEffect(() => {
-    devinLocKey();
-    void refreshDevinGate();
+    locationKey();
+    void refreshPluginGate();
   });
-  const devinModels = () => {
+  const locationModels = () => {
     const location = context.location ?? context.data.location.default();
     try {
       return context.data.location.model.list(location);
@@ -2828,15 +3172,97 @@ function ProviderUsageBlocks(props) {
   };
   const devinEligible = createMemo(() => isDevinUsageVisible({
     configEnabled: devinEnabled,
-    pluginIds: devinGate().key === devinLocKey() ? devinGate().pluginIds : [],
-    hasDevinModel: hasEnabledDevinModel(devinModels())
+    pluginIds: pluginGate().key === locationKey() ? pluginGate().pluginIds : [],
+    hasDevinModel: hasEnabledDevinModel(locationModels())
+  }));
+  const droidEligible = createMemo(() => isDroidUsageVisible({
+    configEnabled: droidEnabled,
+    pluginIds: pluginGate().key === locationKey() ? pluginGate().pluginIds : [],
+    hasDroidModel: hasEnabledDroidModel(locationModels())
   }));
   const [states, setStates] = createSignal(enabledIds.map((id) => ({
     id,
     loading: false,
     result: null
   })));
+  const droidFamily = () => {
+    const sessionID = props.sessionID ?? "";
+    if (!sessionID) return [];
+    const selected = context.data.session.get(sessionID);
+    if (selected?.parentID) return [sessionID];
+    try {
+      const family = context.data.session.family(sessionID);
+      return family.length > 0 ? [...family] : [sessionID];
+    } catch {
+      return [sessionID];
+    }
+  };
+  function droidQuery() {
+    const client2 = context.client;
+    if (typeof client2.rpc !== "function") return null;
+    try {
+      const rpc = client2.rpc(DROID_USAGE_RPC);
+      return rpc && typeof rpc.usage === "function" ? rpc : null;
+    } catch {
+      return null;
+    }
+  }
+  const factoryQuotaSource = droidEnabled ? makeFactoryAccountQuotaSource() : void 0;
+  let droidSeq = 0;
+  let droidInflight = false;
+  let droidPending = false;
+  async function refreshDroid() {
+    if (!droidEnabled || !droidEligible()) return;
+    const sessionID = props.sessionID ?? "";
+    if (droidInflight) {
+      droidPending = true;
+      return;
+    }
+    droidInflight = true;
+    const location = context.location ?? context.data.location.default();
+    const key = devinLocationKey(location);
+    const family = sessionID ? droidFamily() : [];
+    const seq = ++droidSeq;
+    setStates((prev) => prev.map((s) => s.id === "droid" ? {
+      ...s,
+      loading: true
+    } : s));
+    try {
+      const result = await checkDroidUsage(droidQuery(), family, {
+        location,
+        accountQuota: factoryQuotaSource
+      });
+      const stale = disposed || seq !== droidSeq || key !== devinLocationKey(context.location ?? context.data.location.default()) || sessionID !== (props.sessionID ?? "");
+      setStates((prev) => prev.map((s) => s.id === "droid" ? {
+        ...s,
+        loading: false,
+        result: stale ? s.result : result
+      } : s));
+    } finally {
+      droidInflight = false;
+      if (droidPending && !disposed) {
+        droidPending = false;
+        void refreshDroid();
+      }
+    }
+  }
+  let lastDroidSession = null;
+  createEffect(() => {
+    const sessionID = props.sessionID ?? "";
+    if (!droidEnabled) return;
+    if (sessionID !== lastDroidSession) {
+      lastDroidSession = sessionID;
+      droidSeq++;
+      setStates((prev) => prev.map((s) => s.id === "droid" && (s.result || s.loading) ? {
+        ...s,
+        result: null,
+        loading: false
+      } : s));
+    }
+    if (droidEligible()) void refreshDroid();
+  });
   async function refreshOne(id) {
+    if (id === "droid") return refreshDroid();
     if (id === "devin" && !devinEligible()) return;
     setStates((prev) => prev.map((s) => s.id === id ? {
       ...s,
@@ -2866,16 +3292,27 @@ function ProviderUsageBlocks(props) {
         void refreshOne(id);
       }, REFRESH_MS));
     }
-    if (devinEnabled) {
+    if (gateEnabled) {
       timers.push(setInterval(() => {
-        void refreshDevinGate();
+        void refreshPluginGate();
       }, REFRESH_MS));
     }
     onCleanup(() => {
       for (const timer of timers) clearInterval(timer);
     });
   }
-  const visibleStates = () => states().filter((s) => s.id !== "devin" || devinEligible());
+  if (droidEnabled) {
+    const onTrackedEvent = (event) => {
+      const sid = event?.data?.sessionID;
+      if (!sid || !droidEligible() || !droidFamily().includes(sid)) return;
+      void refreshDroid();
+    };
+    const unsubs = [context.data.on("session.usage.updated", onTrackedEvent), context.data.on("session.step.ended", onTrackedEvent)];
+    onCleanup(() => {
+      for (const unsub of unsubs) unsub();
+    });
+  }
+  const visibleStates = () => states().filter((s) => (s.id !== "devin" || devinEligible()) && (s.id !== "droid" || droidEligible()));
   function toggle(id) {
     const next = !isCollapsed(id);
     setLocalCollapse((prev) => ({
@@ -3384,8 +3821,8 @@ function UsageStatPanel(props) {
   const globalHitRate = createMemo2(() => {
     let i = 0, cr = 0;
     for (const [, s] of modelStats()) {
-      if (isMissingCache(s.requestCount, s.cacheRead)) continue;
-      i += s.totalInput;
+      if (isMissingCache(s.requestCount, s.cacheRead, s.cacheWrite)) continue;
+      i += totalInputTokens(s.totalInput, s.cacheWrite);
       cr += s.cacheRead;
     }
     const denom = i + cr;
@@ -3393,7 +3830,7 @@ function UsageStatPanel(props) {
   });
   const modelHitRate = createMemo2(() => {
     return modelStats().map(([key, stat]) => {
-      const denom = stat.totalInput + stat.cacheRead;
+      const denom = totalInputTokens(stat.totalInput, stat.cacheWrite) + stat.cacheRead;
       if (denom === 0) return {
         key,
         rate: 0,
@@ -3406,7 +3843,7 @@ function UsageStatPanel(props) {
       }
       return {
         key,
-        rate: stat.cacheRead / denom * 100,
+        rate: cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100,
         msgs
       };
     });
@@ -3424,7 +3861,7 @@ function UsageStatPanel(props) {
         let sumCache = 0, sumTotal = 0;
         for (let i = start; i < end && i < msgs.length; i++) {
           sumCache += msgs[i].cacheRead;
-          sumTotal += msgs[i].inputTokens + msgs[i].cacheRead;
+          sumTotal += totalInputTokens(msgs[i].inputTokens, msgs[i].cacheWrite) + msgs[i].cacheRead;
         }
         return {
           sumCache,
@@ -3501,7 +3938,10 @@ function UsageStatPanel(props) {
       })() : "";
     })(), null);
     _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
-      context
+      context,
+      get sessionID() {
+        return props.sessionID;
+      }
     }), null);
     _$insert2(_el$, _$createComponent2(Show2, {
       get when() {
@@ -3526,7 +3966,7 @@ function UsageStatPanel(props) {
                 val: sessionTotals().totalRequests.toString(),
                 lbl: t2("requests")
               }, {
-                val: formatTokens(sessionTotals().totalInput),
+                val: formatTokens(totalInputTokens(sessionTotals().totalInput, sessionTotals().totalCacheWrite)),
                 lbl: t2("input")
               }, {
                 val: formatTokens(sessionTotals().totalOutput),
@@ -3595,9 +4035,8 @@ function UsageStatPanel(props) {
           },
           children: ([key, stat]) => {
             const isExpanded = () => !isModelCollapsed(key);
-            const hitDenom = stat.totalInput + stat.cacheRead;
-            const hitRate = hitDenom > 0 ? stat.cacheRead / hitDenom * 100 : 0;
-            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead);
+            const hitRate = cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100;
+            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead, stat.cacheWrite);
             const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
             const trendStr = () => {
               if (!showTrend()) return "";
@@ -3666,7 +4105,7 @@ function UsageStatPanel(props) {
                         val: formatTokens(modelTotalTokens),
                         lbl: t2("total")
                       }, {
-                        val: formatTokens(stat.totalInput),
+                        val: formatTokens(totalInputTokens(stat.totalInput, stat.cacheWrite)),
                         lbl: t2("input")
                       }, {
                         val: formatTokens(stat.totalOutput),
@@ -4506,7 +4945,7 @@ function estimateApiCost(providerID, modelID, requestCount, inputTokens, outputT
   const reasoningRate = pricing.reasoning ?? pricing.output ?? 0;
   const cacheReadRate = pricing.cache_read ?? 0;
   const cacheWriteRate = pricing.cache_write ?? 0;
-  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead);
+  const isMissing = !NON_CACHE_PROVIDERS.has(providerID.toLowerCase()) && isMissingCache(requestCount, cacheRead, cacheWrite);
   let cost;
   if (isMissing) {
     const nonCacheInput = inputTokens * (1 - MISSING_HIT_RATE);
@@ -5228,8 +5667,8 @@ function renderKpiCards(data) {
   const s = data.summary;
   let kpiInputSum = 0, kpiCacheSum = 0;
   for (const m of data.models) {
-    if (isMissingCache(m.requests, m.cacheRead)) continue;
-    kpiInputSum += m.inputTokens;
+    if (isMissingCache(m.requests, m.cacheRead, m.cacheWrite)) continue;
+    kpiInputSum += totalInputTokens(m.inputTokens, m.cacheWrite);
     kpiCacheSum += m.cacheRead;
   }
   const kpiHitRate = kpiInputSum + kpiCacheSum > 0 ? kpiCacheSum / (kpiInputSum + kpiCacheSum) : 0;
@@ -5295,8 +5734,8 @@ function renderKpiCards(data) {
 function renderModelCards(data) {
   const sorted = [...data.models].sort((a, b) => b.totalTokens - a.totalTokens);
   const cards = sorted.map((m) => {
-    const isMissing = isMissingCache(m.requests, m.cacheRead);
-    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead);
+    const isMissing = isMissingCache(m.requests, m.cacheRead, m.cacheWrite);
+    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite);
     const hitColor = isMissing ? "var(--missing)" : hitRate >= 0.85 ? "var(--cache)" : hitRate >= 0.7 ? "var(--tps)" : "var(--danger)";
     const hitDisplay = isMissing ? "MISSING" : fmtPercent(hitRate);
     const apiItem = data.apiCost.byModel.find((a) => a.provider === m.provider && a.model === m.model);
@@ -5319,7 +5758,7 @@ function renderModelCards(data) {
         <div class="stat-grid">
           <div class="stat-item"><span class="stat-label">Requests</span><span class="stat-value">${m.requests}</span></div>
           <div class="stat-item"><span class="stat-label">Total Tokens</span><span class="stat-value">${fmtTokens(m.totalTokens)}</span></div>
-          <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(m.inputTokens)}</span></div>
+          <div class="stat-item"><span class="stat-label">Input</span><span class="stat-value" style="color:var(--input)">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</span></div>
           <div class="stat-item"><span class="stat-label">Output</span><span class="stat-value" style="color:var(--output)">${fmtTokens(m.outputTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Reasoning</span><span class="stat-value" style="color:#c4a982">${fmtTokens(m.reasoningTokens)}</span></div>
           <div class="stat-item"><span class="stat-label">Cache Read</span><span class="stat-value" style="color:var(--cache)">${fmtTokens(m.cacheRead)}</span></div>
@@ -5330,7 +5769,7 @@ function renderModelCards(data) {
         </div>
       </div>
       <div class="token-bar">
-        <div class="token-seg input" style="width:${inputPct}%" title="Input: ${fmtTokens(m.inputTokens)} (${inputPct}%)"></div>
+        <div class="token-seg input" style="width:${inputPct}%" title="Input (uncached): ${fmtTokens(m.inputTokens)} (${inputPct}%)"></div>
         <div class="token-seg cache-read" style="width:${cacheReadPct}%" title="Cache Read: ${fmtTokens(m.cacheRead)} (${cacheReadPct}%)"></div>
         <div class="token-seg reasoning" style="width:${reasoningPct}%" title="Reasoning: ${fmtTokens(m.reasoningTokens)} (${reasoningPct}%)"></div>
         <div class="token-seg output" style="width:${outputPct}%" title="Output: ${fmtTokens(m.outputTokens)} (${outputPct}%)"></div>
@@ -5350,8 +5789,8 @@ function renderModelCards(data) {
 }
 function renderMessageTable(data) {
   const rows = data.messages.map((msg, i) => {
-    const isMissing = isMissingCache(1, msg.cacheRead);
-    const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead);
+    const isMissing = isMissingCache(1, msg.cacheRead, msg.cacheWrite);
+    const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead, msg.cacheWrite);
     const hitColor = isMissing ? "var(--missing)" : hitRate >= 0.85 ? "var(--cache)" : hitRate >= 0.7 ? "var(--tps)" : "var(--danger)";
     const hitDisplay = isMissing ? "MISSING" : fmtPercent(hitRate);
     const duration = msg.timeCompleted ? msg.timeCompleted - msg.timeCreated : null;
@@ -5361,7 +5800,7 @@ function renderMessageTable(data) {
       <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
       <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
-      <td data-sort="${msg.inputTokens}">${fmtTokens(msg.inputTokens)}</td>
+      <td data-sort="${totalInputTokens(msg.inputTokens, msg.cacheWrite)}">${fmtTokens(totalInputTokens(msg.inputTokens, msg.cacheWrite))}</td>
       <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
       <td data-sort="${msg.reasoningTokens}">${fmtTokens(msg.reasoningTokens)}</td>
       <td data-sort="${msg.cacheRead}">${fmtTokens(msg.cacheRead)}</td>
@@ -5493,8 +5932,8 @@ function initDurationChart() {
 function renderCacheTrendInit(data) {
   const labels = data.messages.map((_, i) => `#${i + 1}`);
   const hitRates = data.messages.map((m) => {
-    if (isMissingCache(1, m.cacheRead)) return null;
-    return cacheHitRate(m.inputTokens, m.cacheRead) * 100;
+    if (isMissingCache(1, m.cacheRead, m.cacheWrite)) return null;
+    return cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite) * 100;
   });
   return `
 var cacheLabels = ${jsonForScript(labels)};
@@ -5544,7 +5983,7 @@ function renderApiCostSection(data) {
     const pricingSrc = m.pricingProvider ? `<span style="color:var(--text-dim);font-size:0.85em">${escapeHtml(m.pricingProvider)}</span>` : "-";
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td>
     </tr>`;
   }).join("\n");
@@ -5598,7 +6037,7 @@ function renderInsights(data) {
   let bestStreak = 0, streakStart = -1, bestStart = 0;
   for (let i = 0; i < data.messages.length; i++) {
     const m = data.messages[i];
-    if (!isMissingCache(1, m.cacheRead) && cacheHitRate(m.inputTokens, m.cacheRead) >= 0.85) {
+    if (!isMissingCache(1, m.cacheRead, m.cacheWrite) && cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite) >= 0.85) {
       if (streakStart === -1) streakStart = i;
       const len = i - streakStart + 1;
       if (len > bestStreak) {
@@ -5855,8 +6294,8 @@ function renderKpiCards2(data) {
   const s = data.summary;
   let kpiInputSum = 0, kpiCacheSum = 0;
   for (const m of data.models) {
-    if (isMissingCache(m.requests, m.cacheRead)) continue;
-    kpiInputSum += m.inputTokens;
+    if (isMissingCache(m.requests, m.cacheRead, m.cacheWrite)) continue;
+    kpiInputSum += totalInputTokens(m.inputTokens, m.cacheWrite);
     kpiCacheSum += m.cacheRead;
   }
   const kpiHitRate = kpiInputSum + kpiCacheSum > 0 ? kpiCacheSum / (kpiInputSum + kpiCacheSum) : 0;
@@ -6160,7 +6599,7 @@ function renderApiCostSection2(data) {
     const costPer1M = costPer1MRaw != null ? `$${costPer1MRaw.toFixed(4)}` : "-";
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td><td>${escapeHtml(m.provider)}</td><td>${pricingSrc}</td>
-      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
+      <td data-sort="${m.requests}">${m.requests}</td><td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td><td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reportedCost}">${fmtCost(m.reportedCost)}</td><td data-sort="${m.apiEquivCost ?? -1}" style="font-weight:600">${apiStr}${estTag}</td><td data-sort="${costPer1MRaw ?? -1}">${costPer1M}</td>
     </tr>`;
   }).join("\n");
@@ -6212,8 +6651,8 @@ function renderProviderCards(data) {
 }
 function renderModelAnalyticsSection(data) {
   const usageRows = sortModelsByUsage(data.models).map((m) => {
-    const isMissing = isMissingCache(m.requests, m.cacheRead);
-    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead);
+    const isMissing = isMissingCache(m.requests, m.cacheRead, m.cacheWrite);
+    const hitRate = cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite);
     const hitColor = isMissing ? "var(--missing)" : hitRate >= 0.85 ? "var(--cache)" : hitRate >= 0.7 ? "var(--tps)" : "var(--danger)";
     const hitDisplay = isMissing ? "MISSING" : fmtPercent(hitRate);
     const apiItem = data.apiCost?.byModel.find((a) => a.provider === m.provider && a.model === m.model);
@@ -6226,7 +6665,7 @@ function renderModelAnalyticsSection(data) {
       <td data-sort="${m.requests}">${m.requests}</td>
       <td data-sort="${m.sessions}">${m.sessions}</td>
       <td data-sort="${m.totalTokens}">${fmtTokens(m.totalTokens)}</td>
-      <td data-sort="${m.inputTokens}">${fmtTokens(m.inputTokens)}</td>
+      <td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td>
       <td data-sort="${m.outputTokens}">${fmtTokens(m.outputTokens)}</td>
       <td data-sort="${m.reasoningTokens}">${fmtTokens(m.reasoningTokens)}</td>
       <td data-sort="${m.cacheRead}">${fmtTokens(m.cacheRead)}</td>
@@ -6293,7 +6732,7 @@ function renderModelAnalyticsSection(data) {
         <thead><tr>
           <th>Model</th><th>Provider</th><th class="sortable">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
           <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th><th class="sortable">Cache R</th><th class="sortable">Cache W</th>
-          <th class="sortable" title="Cache Read / (Input + Cache Read)">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing \xD7 token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
+          <th class="sortable" title="Cache Read / (Input + Cache Read); Input includes cache write">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing \xD7 token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
         </tr></thead>
         <tbody>${usageRows}</tbody>
       </table>
@@ -7203,7 +7642,7 @@ function renderPeriodTextReport(data) {
   lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)));
   lines.push(kpiLine("Requests", String(s.requestCount)));
   lines.push(kpiLine("Sessions", String(data.totalSessions ?? s.modelsUsed.length)));
-  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)));
+  lines.push(kpiLine("Input Tokens", formatTokens(totalInputTokens(s.inputTokens, s.cacheWrite))));
   lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)));
   lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)));
   lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)));
@@ -7261,7 +7700,7 @@ function renderSessionTextReport(data) {
   lines.push("KPI");
   lines.push(kpiLine("Total Tokens", formatTokens(s.totalTokens)));
   lines.push(kpiLine("Requests", String(s.requestCount)));
-  lines.push(kpiLine("Input Tokens", formatTokens(s.inputTokens)));
+  lines.push(kpiLine("Input Tokens", formatTokens(totalInputTokens(s.inputTokens, s.cacheWrite))));
   lines.push(kpiLine("Output Tokens", formatTokens(s.outputTokens)));
   lines.push(kpiLine("Reasoning Tokens", formatTokens(s.reasoningTokens)));
   lines.push(kpiLine("Cache Read", formatTokens(s.cacheRead)));
