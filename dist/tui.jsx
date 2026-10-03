@@ -703,7 +703,6 @@ import { setProp as _$setProp2 } from "@opentui/solid";
 import { use as _$use } from "@opentui/solid";
 import { createElement as _$createElement2 } from "@opentui/solid";
 import { createSignal as createSignal2, createMemo as createMemo2, createEffect as createEffect2, For as For2, Show as Show2, onCleanup as onCleanup2 } from "solid-js";
-import { RGBA as RGBA3 } from "@opentui/core";
 
 // src/i18n.ts
 var zh = {
@@ -795,7 +794,12 @@ var zh = {
   descSettingsDisplay: "\u5207\u6362 Provider \u914D\u989D\u6309\u201C\u5DF2\u7528\u201D\u6216\u201C\u5269\u4F59\u201D\u767E\u5206\u6BD4\u663E\u793A",
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
-  codex: "Codex"
+  codex: "Codex",
+  reportGenerating: "\u6B63\u5728\u751F\u6210\u62A5\u544A\u2026",
+  reportProgress: "\u5DF2\u8BFB\u53D6 {done}/{total} \u4E2A\u4F1A\u8BDD",
+  reportBusy: "\u62A5\u544A\u6B63\u5728\u751F\u6210\u4E2D",
+  distLabel: "\u5206\u5E03",
+  overhead: "\u989D\u5916\u5F00\u9500"
 };
 var en = {
   panelTitle: "Usage Stat",
@@ -886,7 +890,12 @@ var en = {
   descSettingsDisplay: "Show provider quota percentages as used or remaining",
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
-  codex: "Codex"
+  codex: "Codex",
+  reportGenerating: "Generating report\u2026",
+  reportProgress: "Read {done}/{total} sessions",
+  reportBusy: "A report is already being generated",
+  distLabel: "Dist",
+  overhead: "overhead"
 };
 var currentLang = detectLanguage();
 function detectLanguage() {
@@ -948,8 +957,8 @@ function parseCredentialValue(raw) {
     if (!value || typeof value !== "object") return null;
     const entry = value;
     const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : null;
-    const text = (candidate) => typeof candidate === "string" && candidate.trim() ? candidate : void 0;
-    const accountId = text(entry.accountId) ?? text(entry.accountID) ?? text(entry.account_id) ?? text(entry["account-id"]) ?? text(metadata?.accountId) ?? text(metadata?.accountID) ?? text(metadata?.account_id) ?? (entry.account && typeof entry.account === "object" ? text(entry.account.id) ?? text(entry.account.accountId) ?? text(entry.account.account_id) : void 0);
+    const text2 = (candidate) => typeof candidate === "string" && candidate.trim() ? candidate : void 0;
+    const accountId = text2(entry.accountId) ?? text2(entry.accountID) ?? text2(entry.account_id) ?? text2(entry["account-id"]) ?? text2(metadata?.accountId) ?? text2(metadata?.accountID) ?? text2(metadata?.account_id) ?? (entry.account && typeof entry.account === "object" ? text2(entry.account.id) ?? text2(entry.account.accountId) ?? text2(entry.account.account_id) : void 0);
     const expiresRaw = entry.expires;
     let expires;
     if (typeof expiresRaw === "number" && Number.isFinite(expiresRaw)) {
@@ -961,11 +970,11 @@ function parseCredentialValue(raw) {
       expires *= 1e3;
     }
     return {
-      type: text(entry.type),
-      key: text(entry.key),
-      token: text(entry.token),
-      access: text(entry.access),
-      refresh: text(entry.refresh),
+      type: text2(entry.type),
+      key: text2(entry.key),
+      token: text2(entry.token),
+      access: text2(entry.access),
+      refresh: text2(entry.refresh),
       expires,
       accountId: accountId ?? null
     };
@@ -1036,8 +1045,8 @@ function readDevinCredentials() {
     const parsed = JSON.parse(content);
     if (!parsed || typeof parsed !== "object") return null;
     const data = parsed;
-    const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
-    return { apiKey: text(data.apiKey), apiServerUrl: text(data.apiServerUrl) };
+    const text2 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+    return { apiKey: text2(data.apiKey), apiServerUrl: text2(data.apiServerUrl) };
   } catch {
     return null;
   }
@@ -1789,10 +1798,10 @@ function buildCopilotWindows(payload) {
   if (!quota) return [];
   const resetAt = data?.quota_reset_date;
   const add = (label, snapshotRaw) => {
-    const snapshot2 = asObject(snapshotRaw);
-    if (!snapshot2) return null;
-    const entitlement = toNumber(snapshot2.entitlement);
-    const remaining = toNumber(snapshot2.remaining);
+    const snapshot = asObject(snapshotRaw);
+    if (!snapshot) return null;
+    const entitlement = toNumber(snapshot.entitlement);
+    const remaining = toNumber(snapshot.remaining);
     const percent = entitlement != null && entitlement > 0 && remaining != null ? clampPct(100 - remaining / entitlement * 100) : null;
     return percentWindow(
       label,
@@ -2069,14 +2078,14 @@ function samePath(left, right) {
   return left.length === right.length && left.every((v, i) => v === right[i]);
 }
 function parseXaiGrpcTrailerStatus(frame) {
-  let text;
+  let text2;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(frame);
+    text2 = new TextDecoder("utf-8", { fatal: true }).decode(frame);
   } catch {
     return null;
   }
   let status = null;
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of text2.split(/\r?\n/)) {
     if (!line) continue;
     const separator2 = line.indexOf(":");
     if (separator2 <= 0) return null;
@@ -2656,6 +2665,269 @@ function resolveProviderUsageConfig(options) {
   return out;
 }
 
+// src/factory-keyring.ts
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { copyFileSync, existsSync as existsSync5, readFileSync as readFileSync5, renameSync, statSync as statSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { isAbsolute as isAbsolute2, join as join5 } from "node:path";
+import { createRequire as createRequire2 } from "node:module";
+var WORKOS_PROD_CLIENT_ID = "client_01HNM792M5G5G1A2THWPXKFMXB";
+var WORKOS_DEV_CLIENT_ID = "client_01HNM7927XNSKCJ4982Z5J3FFZ";
+var DEFAULT_WORKOS_BASE_URL = "https://api.workos.com/user_management";
+var KEYRING_SERVICE = "Factory CLI";
+var KEYRING_ACCOUNTS = ["auth-encryption-key", "auth-encryption-key-security-cli"];
+function envText(name) {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function isDevEnv() {
+  return envText("FACTORY_ENV")?.toLowerCase() === "development";
+}
+function isFactoryKeyringDisabled() {
+  const value = envText("FACTORY_DISABLE_KEYRING");
+  return value !== null && value !== "0" && value.toLowerCase() !== "false";
+}
+function factoryConfigDir() {
+  const override = envText("FACTORY_HOME_OVERRIDE");
+  if (override && isAbsolute2(override)) return override;
+  return join5(homedir5(), isDevEnv() ? ".factory-dev" : ".factory");
+}
+function factoryKeyringPath() {
+  return join5(factoryConfigDir(), "auth.v2.keyring");
+}
+function factoryKeytarPath() {
+  return envText("FACTORY_KEYTAR_PATH") ?? join5(factoryConfigDir(), "bin", "keytar.node");
+}
+function factoryKeyringService() {
+  return isDevEnv() ? `${KEYRING_SERVICE}-dev` : KEYRING_SERVICE;
+}
+function factoryWorkosBaseUrl() {
+  return (envText("FACTORY_WORKOS_BASE_URL") ?? DEFAULT_WORKOS_BASE_URL).replace(/\/+$/, "");
+}
+function defaultClientId() {
+  return isDevEnv() ? WORKOS_DEV_CLIENT_ID : WORKOS_PROD_CLIENT_ID;
+}
+function decryptFactoryKeyring(raw, key) {
+  const parts = raw.trim().split(":");
+  if (parts.length !== 3) return null;
+  try {
+    const iv = Buffer.from(parts[0], "base64");
+    const tag = Buffer.from(parts[1], "base64");
+    const ciphertext = Buffer.from(parts[2], "base64");
+    if (iv.length !== 16 || tag.length !== 16 || ciphertext.length === 0) return null;
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const parsed = JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function encryptFactoryKeyring(data, key) {
+  const iv = randomBytes(16);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
+  return `${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${ciphertext.toString("base64")}`;
+}
+function jwtClaims(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return claims && typeof claims === "object" ? claims : null;
+  } catch {
+    return null;
+  }
+}
+function jwtExpiresAtMs(token) {
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1e3 : null;
+}
+function factoryClientId(token) {
+  const claim = token ? jwtClaims(token)?.client_id : null;
+  return typeof claim === "string" && claim.trim() ? claim : defaultClientId();
+}
+var keytarModule = null;
+function loadKeytar() {
+  if (keytarModule) return keytarModule;
+  try {
+    const path = factoryKeytarPath();
+    if (!existsSync5(path)) return null;
+    const require2 = createRequire2(join5(homedir5(), ".opencode", "usage-stat-require.cjs"));
+    const mod = require2(path);
+    keytarModule = mod && typeof mod.getPassword === "function" ? mod : null;
+  } catch {
+    return null;
+  }
+  return keytarModule;
+}
+var KEYTAR_TIMEOUT_MS = 5e3;
+async function readKeyEncryptionKey() {
+  const keytar = loadKeytar();
+  if (!keytar) return null;
+  const service = factoryKeyringService();
+  for (const account of KEYRING_ACCOUNTS) {
+    try {
+      const value = await Promise.race([
+        keytar.getPassword(service, account),
+        new Promise((resolve) => setTimeout(() => resolve(null), KEYTAR_TIMEOUT_MS))
+      ]);
+      if (typeof value === "string" && value.trim()) {
+        const key = Buffer.from(value.trim(), "base64");
+        if (key.length === 32) return key;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+function createFactoryKeyringStorage() {
+  const path = factoryKeyringPath();
+  return {
+    readRaw() {
+      try {
+        if (!existsSync5(path) || !statSync2(path).isFile()) return null;
+        const raw = readFileSync5(path, "utf8").trim();
+        return raw || null;
+      } catch {
+        return null;
+      }
+    },
+    writeRaw(data) {
+      const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync3(tmp, data, { mode: 384 });
+      renameSync(tmp, path);
+    },
+    backupRaw() {
+      try {
+        if (existsSync5(path)) copyFileSync(path, `${path}.bak`);
+      } catch {
+      }
+    },
+    getKey: readKeyEncryptionKey
+  };
+}
+var REFRESH_TIMEOUT_MS = 15e3;
+function timedFetch(url, init, fetchImpl, timeoutMs = REFRESH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetchImpl(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+var FactoryKeyringRefreshError = class extends Error {
+  statusCode;
+  constructor(message, statusCode = null) {
+    super(message);
+    this.name = "FactoryKeyringRefreshError";
+    this.statusCode = statusCode;
+  }
+};
+async function refreshRequest(refreshToken, clientId, fetchImpl) {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: clientId
+  });
+  const response = await timedFetch(`${factoryWorkosBaseUrl()}/authenticate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body
+  }, fetchImpl);
+  if (!response.ok) {
+    throw new FactoryKeyringRefreshError(`WorkOS token refresh failed (HTTP ${response.status})`, response.status);
+  }
+  const parsed = await response.json().catch(() => null);
+  const accessToken = typeof parsed?.access_token === "string" ? parsed.access_token : null;
+  const newRefresh = typeof parsed?.refresh_token === "string" ? parsed.refresh_token : null;
+  if (!accessToken || !newRefresh) {
+    throw new FactoryKeyringRefreshError("WorkOS token refresh returned an unexpected response");
+  }
+  return { accessToken, refreshToken: newRefresh };
+}
+var inflightRefreshes = /* @__PURE__ */ new Map();
+function refreshFactoryWorkosToken(refreshToken, clientId, fetchImpl = fetch) {
+  const inflight = inflightRefreshes.get(refreshToken);
+  if (inflight) return inflight;
+  const promise = (async () => {
+    try {
+      return await refreshRequest(refreshToken, clientId, fetchImpl);
+    } catch (error) {
+      const status = error instanceof FactoryKeyringRefreshError ? error.statusCode : null;
+      const transient = status === null || status >= 500;
+      if (!transient) throw error;
+      return refreshRequest(refreshToken, clientId, fetchImpl);
+    }
+  })().finally(() => {
+    inflightRefreshes.delete(refreshToken);
+  });
+  inflightRefreshes.set(refreshToken, promise);
+  return promise;
+}
+async function loadKeyring(storage) {
+  const raw = storage.readRaw();
+  if (!raw) return null;
+  const key = await storage.getKey();
+  if (!key) return null;
+  const data = decryptFactoryKeyring(raw, key);
+  return data ? { data, key } : null;
+}
+function text(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function toCredential(accessToken, data) {
+  return {
+    accessToken,
+    cookie: null,
+    organizationId: text(data.active_organization_id)
+  };
+}
+var REFRESH_MARGIN_MS = 2 * 6e4;
+function expiringSoon(token, marginMs) {
+  const expMs = jwtExpiresAtMs(token);
+  return expMs !== null && expMs - Date.now() <= marginMs;
+}
+async function getFactoryKeyringCredential(opts = {}) {
+  if (isFactoryKeyringDisabled()) return null;
+  const storage = opts.storage ?? createFactoryKeyringStorage();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const margin = opts.refreshMarginMs ?? REFRESH_MARGIN_MS;
+  const loaded = await loadKeyring(storage);
+  if (!loaded) return null;
+  const accessToken = text(loaded.data.access_token);
+  const refreshToken = text(loaded.data.refresh_token);
+  if (!accessToken) return null;
+  if (!expiringSoon(accessToken, margin) || !refreshToken) {
+    return toCredential(accessToken, loaded.data);
+  }
+  const clientId = factoryClientId(accessToken);
+  const pair = await refreshFactoryWorkosToken(refreshToken, clientId, fetchImpl);
+  const current = await loadKeyring(storage);
+  const currentRefresh = current ? text(current.data.refresh_token) : null;
+  if (current && currentRefresh && currentRefresh !== refreshToken) {
+    const currentAccess = text(current.data.access_token);
+    if (currentAccess && !expiringSoon(currentAccess, margin)) {
+      return toCredential(currentAccess, current.data);
+    }
+    const pair2 = await refreshFactoryWorkosToken(currentRefresh, factoryClientId(currentAccess), fetchImpl);
+    const latest = await loadKeyring(storage) ?? current;
+    saveKeyring(storage, latest, {
+      ...latest.data,
+      access_token: pair2.accessToken,
+      refresh_token: pair2.refreshToken
+    });
+    return toCredential(pair2.accessToken, latest.data);
+  }
+  saveKeyring(storage, current ?? loaded, {
+    ...current?.data ?? loaded.data,
+    access_token: pair.accessToken,
+    refresh_token: pair.refreshToken
+  });
+  return toCredential(pair.accessToken, loaded.data);
+}
+function saveKeyring(storage, loaded, data) {
+  storage.backupRaw();
+  storage.writeRaw(encryptFactoryKeyring(data, loaded.key));
+}
+
 // src/droid-usage.ts
 var DROID_PLUGIN_ID = "opencode-droid-v2";
 var DROID_PROVIDER_NAME = "Droid (Factory)";
@@ -2700,9 +2972,9 @@ function factoryWindowEnd(value) {
     const ms2 = value < 1e10 ? value * 1e3 : value;
     return new Date(ms2).toISOString();
   }
-  const text = nonEmptyString2(value);
-  if (!text) return null;
-  const ms = Date.parse(text);
+  const text2 = nonEmptyString2(value);
+  if (!text2) return null;
+  const ms = Date.parse(text2);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 function factoryBucketWindow(label, raw) {
@@ -2743,7 +3015,7 @@ function parseFactorySubscriptionUsage(payload) {
   if (windows.length === 0) return null;
   return { windows, planLabel: null };
 }
-function timedFetch(url, init, fetchImpl, timeoutMs = PROVIDER_TIMEOUT_MS) {
+function timedFetch2(url, init, fetchImpl, timeoutMs = PROVIDER_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return fetchImpl(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -2753,7 +3025,7 @@ async function fetchFactorySubscriptionUsage(credential, fetchImpl = fetch) {
   if (credential.accessToken) headers.Authorization = `Bearer ${credential.accessToken}`;
   if (credential.cookie) headers.Cookie = credential.cookie;
   if (credential.organizationId) headers["X-Factory-Org-Id"] = credential.organizationId;
-  const response = await timedFetch(FACTORY_USAGE_URL, { method: "GET", headers, redirect: "manual" }, fetchImpl);
+  const response = await timedFetch2(FACTORY_USAGE_URL, { method: "GET", headers, redirect: "manual" }, fetchImpl);
   if (response.status === 401 || response.status === 403) {
     throw new Error("Factory session expired \u2014 update the saved web credential");
   }
@@ -2766,8 +3038,23 @@ async function fetchFactorySubscriptionUsage(credential, fetchImpl = fetch) {
 }
 function makeFactoryAccountQuotaSource(fetchImpl = fetch) {
   return async () => {
-    const credential = resolveFactoryUsageCredential();
-    if (!credential) return null;
+    let keyringError = null;
+    let credential = null;
+    try {
+      credential = await getFactoryKeyringCredential({ fetchImpl });
+    } catch (error) {
+      keyringError = error;
+    }
+    if (!credential) {
+      const saved = resolveFactoryUsageCredential();
+      if (saved && (saved.cookie || saved.accessToken && (jwtExpiresAtMs(saved.accessToken) ?? Infinity) > Date.now())) {
+        credential = saved;
+      }
+    }
+    if (!credential) {
+      if (keyringError) throw keyringError;
+      return null;
+    }
     return fetchFactorySubscriptionUsage(credential, fetchImpl);
   };
 }
@@ -2956,7 +3243,7 @@ async function checkDroidUsage(query, family, options = {}) {
     if (trackedError) reasons.push(trackedError);
     else if (!query) reasons.push("usage RPC unavailable on this host");
     if (quotaState === "failed") reasons.push("account usage request failed");
-    else if (quotaState === "missing") reasons.push("no saved Factory web credential");
+    else if (quotaState === "missing") reasons.push("no Factory credential (no CLI keyring, no saved web credential)");
     return fail(query != null || quotaState !== "none", reasons.join(" \xB7 ") || "no usage data available");
   }
   const windows = [];
@@ -2972,7 +3259,7 @@ async function checkDroidUsage(query, family, options = {}) {
       label: "Account quota",
       percent: null,
       resetsAt: null,
-      valueLabel: quotaState === "failed" ? "unknown (request failed)" : quotaState === "missing" ? "unavailable \u2014 no saved web credential" : "unavailable \u2014 session-tracked"
+      valueLabel: quotaState === "failed" ? "unknown (request failed)" : quotaState === "missing" ? "unavailable \u2014 no CLI keyring or saved web credential" : "unavailable \u2014 session-tracked"
     });
   }
   const trackedPart = summary ? summary.fsc == null ? scopedCount > 0 ? "FSC unknown (session-tracked)" : "waiting for tracked usage" : `${summary.partial ? "\u2265" : ""}${formatFsc(summary.fsc)} FSC tracked` : "session tracking unavailable";
@@ -2990,17 +3277,31 @@ async function checkDroidUsage(query, family, options = {}) {
 
 // src/theme-map.ts
 import { RGBA } from "@opentui/core";
+function hueLike(theme, hue, reference) {
+  try {
+    const step = reference ? theme.source?.(reference)?.step : void 0;
+    if (step == null) return void 0;
+    return theme.hue?.[hue]?.[step];
+  } catch {
+    return void 0;
+  }
+}
 function resolveThemeColors(theme) {
   const primary = theme.text?.default ?? RGBA.fromInts(200, 210, 230, 255);
   const muted = theme.text?.subdued ?? RGBA.fromInts(140, 150, 170, 255);
   const dim = RGBA.fromInts(100, 108, 122, 255);
-  const green = theme.text?.feedback?.success?.default ?? RGBA.fromInts(63, 185, 80, 255);
+  const success = theme.text?.feedback?.success?.default;
+  const warning = theme.text?.feedback?.warning?.default;
+  const green = success ?? RGBA.fromInts(63, 185, 80, 255);
   const red = theme.text?.feedback?.error?.default ?? RGBA.fromInts(244, 67, 54, 255);
-  const amber = theme.text?.feedback?.warning?.default ?? RGBA.fromInts(255, 193, 7, 255);
+  const amber = warning ?? RGBA.fromInts(255, 193, 7, 255);
   const purple = RGBA.fromInts(180, 120, 255, 255);
   const cyan = RGBA.fromInts(80, 190, 255, 255);
   const border = theme.border?.default ?? RGBA.fromInts(55, 65, 80, 255);
-  return { primary, muted, dim, green, red, amber, purple, cyan, border };
+  const distCache = green;
+  const distInput = hueLike(theme, "orange", success) ?? warning ?? RGBA.fromInts(255, 152, 0, 255);
+  const distOutput = hueLike(theme, "blue", success) ?? RGBA.fromInts(66, 135, 245, 255);
+  return { primary, muted, dim, green, red, amber, purple, cyan, border, distCache, distInput, distOutput };
 }
 
 // src/settings.ts
@@ -3056,6 +3357,201 @@ async function migrateLegacySettings(context) {
   }
 }
 
+// src/text-width.ts
+var WIDE_RANGES = [
+  [4352, 4447],
+  // Hangul Jamo leading consonants
+  [8986, 8987],
+  // ⌚⌛
+  [9193, 9196],
+  [9200, 9200],
+  [9203, 9203],
+  [9725, 9726],
+  [9748, 9749],
+  [9800, 9811],
+  [9855, 9855],
+  [9875, 9875],
+  [9889, 9889],
+  [9898, 9899],
+  [9917, 9918],
+  [9924, 9925],
+  [9934, 9934],
+  [9940, 9940],
+  [9962, 9962],
+  [9970, 9971],
+  [9973, 9973],
+  [9978, 9978],
+  [9981, 9981],
+  [9989, 9989],
+  [9994, 9995],
+  [10024, 10024],
+  [10060, 10060],
+  [10062, 10062],
+  [10067, 10069],
+  [10071, 10071],
+  [10133, 10135],
+  [10160, 10160],
+  [10175, 10175],
+  [11035, 11036],
+  [11088, 11088],
+  [11093, 11093],
+  [11904, 12350],
+  // CJK radicals, Kangxi, CJK symbols & punctuation
+  [12353, 13311],
+  // Hiragana, Katakana, Bopomofo, Hangul compat, CJK compat
+  [13312, 19903],
+  // CJK Ext A
+  [19968, 40959],
+  // CJK Unified
+  [40960, 42191],
+  // Yi
+  [43360, 43391],
+  [44032, 55203],
+  // Hangul syllables
+  [63744, 64255],
+  // CJK compat ideographs
+  [65040, 65049],
+  // vertical forms
+  [65072, 65135],
+  // CJK compat forms, small form variants
+  [65280, 65376],
+  // fullwidth ASCII/punctuation
+  [65504, 65510],
+  // fullwidth signs
+  [126980, 126980],
+  [127183, 127183],
+  [127374, 127374],
+  [127377, 127386],
+  [127488, 127569],
+  [127744, 128591],
+  // misc symbols & pictographs, emoticons
+  [128640, 128767],
+  // transport & map
+  [128992, 129003],
+  [129280, 129535],
+  // supplemental symbols & pictographs
+  [129648, 129791],
+  [131072, 262141]
+  // CJK Ext B+
+];
+function inRanges(code, ranges) {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = lo + hi >> 1;
+    const [start, end] = ranges[mid];
+    if (code < start) hi = mid - 1;
+    else if (code > end) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+function charWidth(code) {
+  if (code === 0) return 0;
+  if (code < 32 || code >= 127 && code < 160) return 0;
+  if (code >= 768 && code <= 879 || code >= 8203 && code <= 8207 || code >= 65024 && code <= 65039 || code >= 127995 && code <= 127999 || code >= 917760 && code <= 917999) return 0;
+  return inRanges(code, WIDE_RANGES) ? 2 : 1;
+}
+function visualWidth(str2) {
+  let w = 0;
+  for (const c of str2) w += charWidth(c.codePointAt(0) ?? 0);
+  return w;
+}
+function truncateToWidth(str2, width, ellipsis = "\u2026") {
+  if (width <= 0) return "";
+  if (visualWidth(str2) <= width) return str2;
+  const ellW = visualWidth(ellipsis);
+  if (ellW > width) return "";
+  const budget = width - ellW;
+  let out = "";
+  let used = 0;
+  for (const c of str2) {
+    const cw = charWidth(c.codePointAt(0) ?? 0);
+    if (used + cw > budget) break;
+    out += c;
+    used += cw;
+  }
+  return out + ellipsis;
+}
+function centerAlign(text2, width) {
+  if (width <= 0) return "";
+  const fitted = truncateToWidth(text2, width);
+  const w = visualWidth(fitted);
+  const left = Math.floor((width - w) / 2);
+  return " ".repeat(left) + fitted + " ".repeat(width - w - left);
+}
+
+// src/tui-layout.ts
+function distSegments(data, width) {
+  const values = [data.cacheRead, data.input, data.output].map((v) => Number.isFinite(v) && v > 0 ? v : 0);
+  const total = values[0] + values[1] + values[2];
+  const w = Math.max(0, Math.floor(width));
+  if (total <= 0 || w === 0) return { cache: 0, input: 0, output: 0 };
+  const nonZero = [0, 1, 2].filter((i) => values[i] > 0);
+  const out = [0, 0, 0];
+  if (w <= nonZero.length) {
+    const ranked = [...nonZero].sort((a, b) => values[b] - values[a] || a - b);
+    for (const i of ranked.slice(0, w)) out[i] = 1;
+  } else {
+    const exact = values.map((v) => v / total * w);
+    let assigned = 0;
+    for (let i = 0; i < 3; i++) {
+      out[i] = Math.floor(exact[i]);
+      assigned += out[i];
+    }
+    const byRemainder = [...nonZero].sort((a, b) => exact[b] - out[b] - (exact[a] - out[a]) || values[b] - values[a] || a - b);
+    for (let k = 0; assigned < w; k++, assigned++) out[byRemainder[k % byRemainder.length]]++;
+    for (const i of nonZero) {
+      if (out[i] > 0) continue;
+      const donor = [0, 1, 2].reduce((best, j) => out[j] > out[best] ? j : best, 0);
+      out[donor]--;
+      out[i] = 1;
+    }
+  }
+  return { cache: out[0], input: out[1], output: out[2] };
+}
+var DIST_BAR_MIN = 6;
+var DIST_BAR_MAX = 48;
+var DIST_RATE_BUDGET = 7;
+var DIST_TREND_BUDGET = 7;
+function distBarWidth(contentWidth, prefixWidth, suffix, showTrend) {
+  const budget = DIST_RATE_BUDGET + (showTrend ? DIST_TREND_BUDGET : 0);
+  const suffixW = Math.max(budget, visualWidth(suffix));
+  return clamp(contentWidth - prefixWidth - suffixW, DIST_BAR_MIN, DIST_BAR_MAX);
+}
+var PROVIDER_BAR_MIN = 5;
+var PROVIDER_BAR_MAX = 20;
+function providerRowLayout(contentWidth, label, suffix, reset, compactReset) {
+  const fixed = visualWidth(label) + visualWidth(suffix);
+  for (const r of reset ? [reset, compactReset, ""] : [""]) {
+    const bar = contentWidth - fixed - visualWidth(r);
+    if (bar >= PROVIDER_BAR_MIN || r === "") {
+      return { barWidth: clamp(bar, PROVIDER_BAR_MIN, PROVIDER_BAR_MAX), reset: r };
+    }
+  }
+  return { barWidth: PROVIDER_BAR_MIN, reset: "" };
+}
+function providerHeaderFit(available, name, right) {
+  const chrome = 4;
+  const fittedName = truncateToWidth(name, Math.max(1, available - chrome));
+  const room = available - chrome - visualWidth(fittedName) - 1;
+  return { name: fittedName, right: room >= 2 ? truncateToWidth(right, room) : "" };
+}
+function usageLevel(usedPercent) {
+  if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) return "ok";
+  if (usedPercent >= 90) return "critical";
+  if (usedPercent >= 70) return "warn";
+  return "ok";
+}
+function percentBar(percent, width) {
+  const p = Number.isFinite(percent) ? percent : 0;
+  const filled = Math.max(0, Math.min(width, Math.floor(p / 100 * width)));
+  return "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
+}
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
 // src/provider-usage-blocks.tsx
 var REFRESH_MS = 2 * 60 * 1e3;
 var PROVIDER_NAMES = Object.fromEntries(PROVIDERS.map((p) => [p.id, p.name]));
@@ -3081,6 +3577,8 @@ var PROVIDER_COLORS = {
   devin: RGBA2.fromInts(9, 180, 150, 255),
   droid: RGBA2.fromInts(255, 150, 60, 255)
 };
+var HEADER_INSET = 4;
+var BODY_INSET = 6;
 function ProviderUsageBlocks(props) {
   const {
     context
@@ -3328,17 +3826,14 @@ function ProviderUsageBlocks(props) {
     if (s.loading) return mutedColor();
     if (!s.result) return dimColor();
     if (!s.result.ok) return redColor();
-    const worst = worstUsagePercent(s.result.windows);
-    if (worst != null) {
-      if (worst >= 90) return redColor();
-      if (worst >= 70) return amberColor();
-    }
+    return levelColor(usageLevel(worstUsagePercent(s.result.windows)));
+  }
+  function levelColor(level) {
+    if (level === "critical") return redColor();
+    if (level === "warn") return amberColor();
     return greenColor();
   }
-  function percentBar(percent, width) {
-    const filled = Math.max(0, Math.min(width, Math.floor(percent / 100 * width)));
-    return "\u2588".repeat(filled) + "\u2591".repeat(Math.max(0, width - filled));
-  }
+  const panelWidth = () => props.panelWidth ?? 38;
   function totalDollars(valueLabel) {
     return toNumber(valueLabel?.match(/\/\s*\$([\d,.]+)/)?.[1]?.replace(/,/g, "")) ?? 0;
   }
@@ -3366,13 +3861,14 @@ function ProviderUsageBlocks(props) {
             return "\u25CF";
           };
           const headerText = () => {
-            if (state.loading && !state.result) return `${t("providerRefreshing")}\u2026`;
+            if (state.loading && !state.result) return t("providerRefreshing");
             const summary = collapsedSummary(state.result?.windows, displayMode());
             if (state.result?.ok && summary != null) return summary;
             const status = state.result?.status ?? t("providerNotConfigured");
             const prefix = `${PROVIDER_NAMES[state.id]} \u2014 `;
             return status.startsWith(prefix) ? status.slice(prefix.length) : status;
           };
+          const header = () => providerHeaderFit(panelWidth() - HEADER_INSET, PROVIDER_NAMES[state.id] ?? state.id, headerText());
           return (() => {
             var _el$2 = _$createElement("box"), _el$3 = _$createElement("box"), _el$4 = _$createElement("text"), _el$5 = _$createElement("span"), _el$6 = _$createTextNode(` `), _el$7 = _$createElement("span"), _el$8 = _$createElement("text");
             _$insertNode(_el$2, _el$3);
@@ -3388,12 +3884,9 @@ function ProviderUsageBlocks(props) {
             _$insertNode(_el$4, _el$6);
             _$insertNode(_el$4, _el$7);
             _$insert(_el$5, dot);
-            _$insert(_el$7, () => PROVIDER_NAMES[state.id]);
+            _$insert(_el$7, () => header().name);
             _$insert(_el$4, () => isOpen() ? " \u25BE" : " \u25B8", null);
-            _$insert(_el$8, (() => {
-              var _c$ = _$memo(() => headerText().length > 32);
-              return () => _c$() ? headerText().slice(0, 31) + "\u2026" : headerText();
-            })());
+            _$insert(_el$8, () => header().right);
             _$insert(_el$2, _$createComponent(Show, {
               get when() {
                 return isOpen();
@@ -3408,9 +3901,8 @@ function ProviderUsageBlocks(props) {
                     return _$memo(() => !!state.loading)() && !state.result;
                   },
                   get children() {
-                    var _el$0 = _$createElement("text"), _el$1 = _$createTextNode(`\u2026`);
-                    _$insertNode(_el$0, _el$1);
-                    _$insert(_el$0, () => t("providerRefreshing"), _el$1);
+                    var _el$0 = _$createElement("text");
+                    _$insert(_el$0, () => t("providerRefreshing"));
                     _$effect((_$p) => _$setProp(_el$0, "fg", mutedColor(), _$p));
                     return _el$0;
                   }
@@ -3420,10 +3912,10 @@ function ProviderUsageBlocks(props) {
                     return _$memo(() => !!!state.loading)() && !state.result;
                   },
                   get children() {
-                    var _el$10 = _$createElement("text");
-                    _$insertNode(_el$10, _$createTextNode(`\u2014`));
-                    _$effect((_$p) => _$setProp(_el$10, "fg", mutedColor(), _$p));
-                    return _el$10;
+                    var _el$1 = _$createElement("text");
+                    _$insertNode(_el$1, _$createTextNode(`\u2014`));
+                    _$effect((_$p) => _$setProp(_el$1, "fg", mutedColor(), _$p));
+                    return _el$1;
                   }
                 }), null);
                 _$insert(_el$9, _$createComponent(Show, {
@@ -3432,19 +3924,19 @@ function ProviderUsageBlocks(props) {
                   },
                   get children() {
                     return [(() => {
-                      var _el$12 = _$createElement("text");
-                      _$insert(_el$12, () => state.result?.status ?? "");
-                      _$effect((_$p) => _$setProp(_el$12, "fg", redColor(), _$p));
-                      return _el$12;
+                      var _el$11 = _$createElement("text");
+                      _$insert(_el$11, () => state.result?.status ?? "");
+                      _$effect((_$p) => _$setProp(_el$11, "fg", redColor(), _$p));
+                      return _el$11;
                     })(), _$createComponent(Show, {
                       get when() {
                         return _$memo(() => state.result !== null)() && !state.result?.configured;
                       },
                       get children() {
-                        var _el$13 = _$createElement("text");
-                        _$insert(_el$13, () => t("providerEnableHint"));
-                        _$effect((_$p) => _$setProp(_el$13, "fg", dimColor(), _$p));
-                        return _el$13;
+                        var _el$12 = _$createElement("text");
+                        _$insert(_el$12, () => t("providerEnableHint"));
+                        _$effect((_$p) => _$setProp(_el$12, "fg", dimColor(), _$p));
+                        return _el$12;
                       }
                     })];
                   }
@@ -3458,116 +3950,139 @@ function ProviderUsageBlocks(props) {
                       get each() {
                         return state.result?.windows ?? [];
                       },
-                      children: (win) => {
+                      children: (win, index) => {
+                        const droidGroup = state.id === "droid" ? /^(Standard|Core) · (5h|weekly|monthly)$/.exec(win.label) : null;
+                        const windowLabel2 = droidGroup ? droidGroup[2].charAt(0).toUpperCase() + droidGroup[2].slice(1) : win.label;
                         const isDollarPool = DOLLAR_POOL_LABEL.test(win.valueLabel ?? "");
-                        const label = win.label ? win.label + ": " : "";
-                        if (win.percent != null) {
-                          const shownPercent = () => displayMode() === "remaining" ? 100 - win.percent : win.percent;
-                          const poolCredits = isDollarPool ? displayMode() === "remaining" ? dollarPoolRemaining(win.valueLabel) : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)) : null;
-                          const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null;
-                          return _$createComponent(Show, {
-                            when: !isDollarPool,
-                            get fallback() {
-                              return (() => {
-                                var _el$18 = _$createElement("box"), _el$19 = _$createElement("text"), _el$20 = _$createElement("span"), _el$21 = _$createTextNode(` `), _el$22 = _$createTextNode(`%`), _el$23 = _$createElement("text"), _el$24 = _$createElement("span");
-                                _$insertNode(_el$18, _el$19);
-                                _$insertNode(_el$18, _el$23);
-                                _$setProp(_el$18, "flexDirection", "column");
-                                _$insertNode(_el$19, _el$20);
-                                _$insert(_el$19, label, _el$20);
-                                _$insertNode(_el$20, _el$21);
-                                _$insertNode(_el$20, _el$22);
-                                _$insert(_el$20, () => percentBar(shownPercent(), 12), _el$21);
-                                _$insert(_el$20, () => Math.round(shownPercent()), _el$22);
-                                _$insert(_el$20, (() => {
-                                  var _c$4 = _$memo(() => displayMode() === "remaining");
-                                  return () => _c$4() ? ` ${t("left")}` : "";
+                        const label = windowLabel2 ? windowLabel2 + ": " : "";
+                        const contentWidth = () => panelWidth() - BODY_INSET - (droidGroup ? 1 : 0);
+                        const winColor = () => levelColor(usageLevel(win.percent));
+                        function renderWindow() {
+                          if (win.percent != null) {
+                            const shownPercent = () => displayMode() === "remaining" ? 100 - win.percent : win.percent;
+                            const percentSuffix = () => ` ${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`;
+                            const layout = () => {
+                              const reset = !isDollarPool && win.resetsAt ? formatResetDuration(win.resetsAt) : "";
+                              return providerRowLayout(contentWidth(), label, percentSuffix(), reset ? ` \xB7 ${t("providerResets")} ${reset}` : "", reset ? ` \xB7 ${reset}` : "");
+                            };
+                            const poolCredits = isDollarPool ? displayMode() === "remaining" ? dollarPoolRemaining(win.valueLabel) : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)) : null;
+                            const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null;
+                            return _$createComponent(Show, {
+                              when: !isDollarPool,
+                              get fallback() {
+                                return (() => {
+                                  var _el$15 = _$createElement("box"), _el$16 = _$createElement("text"), _el$17 = _$createElement("span"), _el$18 = _$createElement("text"), _el$19 = _$createElement("span");
+                                  _$insertNode(_el$15, _el$16);
+                                  _$insertNode(_el$15, _el$18);
+                                  _$setProp(_el$15, "flexDirection", "column");
+                                  _$insertNode(_el$16, _el$17);
+                                  _$insert(_el$16, label, _el$17);
+                                  _$insert(_el$17, () => percentBar(shownPercent(), layout().barWidth), null);
+                                  _$insert(_el$17, percentSuffix, null);
+                                  _$insertNode(_el$18, _el$19);
+                                  _$insert(_el$19, () => `${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`);
+                                  _$effect((_p$) => {
+                                    var _v$7 = mutedColor(), _v$8 = {
+                                      fg: winColor()
+                                    }, _v$9 = {
+                                      fg: winColor()
+                                    };
+                                    _v$7 !== _p$.e && (_p$.e = _$setProp(_el$16, "fg", _v$7, _p$.e));
+                                    _v$8 !== _p$.t && (_p$.t = _$setProp(_el$17, "style", _v$8, _p$.t));
+                                    _v$9 !== _p$.a && (_p$.a = _$setProp(_el$19, "style", _v$9, _p$.a));
+                                    return _p$;
+                                  }, {
+                                    e: void 0,
+                                    t: void 0,
+                                    a: void 0
+                                  });
+                                  return _el$15;
+                                })();
+                              },
+                              get children() {
+                                var _el$13 = _$createElement("text"), _el$14 = _$createElement("span");
+                                _$insertNode(_el$13, _el$14);
+                                _$insert(_el$13, label, _el$14);
+                                _$insert(_el$14, () => percentBar(shownPercent(), layout().barWidth), null);
+                                _$insert(_el$14, percentSuffix, null);
+                                _$insert(_el$13, (() => {
+                                  var _c$ = _$memo(() => !!layout().reset);
+                                  return () => _c$() ? (() => {
+                                    var _el$20 = _$createElement("span");
+                                    _$insert(_el$20, () => layout().reset);
+                                    _$effect((_$p) => _$setProp(_el$20, "style", {
+                                      fg: dimColor()
+                                    }, _$p));
+                                    return _el$20;
+                                  })() : null;
                                 })(), null);
-                                _$insertNode(_el$23, _el$24);
-                                _$insert(_el$24, () => `${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`);
                                 _$effect((_p$) => {
-                                  var _v$7 = mutedColor(), _v$8 = {
-                                    fg: color()
-                                  }, _v$9 = {
-                                    fg: color()
+                                  var _v$5 = mutedColor(), _v$6 = {
+                                    fg: winColor()
                                   };
-                                  _v$7 !== _p$.e && (_p$.e = _$setProp(_el$19, "fg", _v$7, _p$.e));
-                                  _v$8 !== _p$.t && (_p$.t = _$setProp(_el$20, "style", _v$8, _p$.t));
-                                  _v$9 !== _p$.a && (_p$.a = _$setProp(_el$24, "style", _v$9, _p$.a));
+                                  _v$5 !== _p$.e && (_p$.e = _$setProp(_el$13, "fg", _v$5, _p$.e));
+                                  _v$6 !== _p$.t && (_p$.t = _$setProp(_el$14, "style", _v$6, _p$.t));
                                   return _p$;
                                 }, {
                                   e: void 0,
-                                  t: void 0,
-                                  a: void 0
+                                  t: void 0
                                 });
-                                return _el$18;
-                              })();
-                            },
-                            get children() {
-                              var _el$14 = _$createElement("text"), _el$15 = _$createElement("span"), _el$16 = _$createTextNode(` `), _el$17 = _$createTextNode(`%`);
-                              _$insertNode(_el$14, _el$15);
-                              _$insert(_el$14, label, _el$15);
-                              _$insertNode(_el$15, _el$16);
-                              _$insertNode(_el$15, _el$17);
-                              _$insert(_el$15, () => percentBar(shownPercent(), 12), _el$16);
-                              _$insert(_el$15, () => Math.round(shownPercent()), _el$17);
-                              _$insert(_el$15, (() => {
-                                var _c$2 = _$memo(() => displayMode() === "remaining");
-                                return () => _c$2() ? ` ${t("left")}` : "";
-                              })(), null);
-                              _$insert(_el$14, (() => {
-                                var _c$3 = _$memo(() => !!win.resetsAt);
-                                return () => _c$3() ? (() => {
-                                  var _el$25 = _$createElement("span");
-                                  _$insert(_el$25, () => ` \xB7 ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`);
-                                  _$effect((_$p) => _$setProp(_el$25, "style", {
-                                    fg: dimColor()
-                                  }, _$p));
-                                  return _el$25;
-                                })() : null;
-                              })(), null);
+                                return _el$13;
+                              }
+                            });
+                          }
+                          if (win.valueLabel) {
+                            return (() => {
+                              var _el$21 = _$createElement("text"), _el$22 = _$createElement("span");
+                              _$insertNode(_el$21, _el$22);
+                              _$insert(_el$21, label, _el$22);
+                              _$insert(_el$22, () => truncateToWidth(win.valueLabel, Math.max(1, contentWidth() - visualWidth(label))));
                               _$effect((_p$) => {
-                                var _v$5 = mutedColor(), _v$6 = {
-                                  fg: color()
+                                var _v$0 = mutedColor(), _v$1 = {
+                                  fg: greenColor()
                                 };
-                                _v$5 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$5, _p$.e));
-                                _v$6 !== _p$.t && (_p$.t = _$setProp(_el$15, "style", _v$6, _p$.t));
+                                _v$0 !== _p$.e && (_p$.e = _$setProp(_el$21, "fg", _v$0, _p$.e));
+                                _v$1 !== _p$.t && (_p$.t = _$setProp(_el$22, "style", _v$1, _p$.t));
                                 return _p$;
                               }, {
                                 e: void 0,
                                 t: void 0
                               });
-                              return _el$14;
-                            }
-                          });
-                        }
-                        if (win.valueLabel) {
+                              return _el$21;
+                            })();
+                          }
                           return (() => {
-                            var _el$26 = _$createElement("text"), _el$27 = _$createElement("span");
-                            _$insertNode(_el$26, _el$27);
-                            _$insert(_el$26, label, _el$27);
-                            _$insert(_el$27, () => win.valueLabel);
-                            _$effect((_p$) => {
-                              var _v$0 = mutedColor(), _v$1 = {
-                                fg: greenColor()
-                              };
-                              _v$0 !== _p$.e && (_p$.e = _$setProp(_el$26, "fg", _v$0, _p$.e));
-                              _v$1 !== _p$.t && (_p$.t = _$setProp(_el$27, "style", _v$1, _p$.t));
-                              return _p$;
-                            }, {
-                              e: void 0,
-                              t: void 0
-                            });
-                            return _el$26;
+                            var _el$23 = _$createElement("text"), _el$24 = _$createTextNode(`\u2014`);
+                            _$insertNode(_el$23, _el$24);
+                            _$insert(_el$23, label, _el$24);
+                            _$effect((_$p) => _$setProp(_el$23, "fg", mutedColor(), _$p));
+                            return _el$23;
                           })();
                         }
-                        return (() => {
-                          var _el$28 = _$createElement("text"), _el$29 = _$createTextNode(`\u2014`);
-                          _$insertNode(_el$28, _el$29);
-                          _$insert(_el$28, label, _el$29);
-                          _$effect((_$p) => _$setProp(_el$28, "fg", mutedColor(), _$p));
-                          return _el$28;
-                        })();
+                        if (droidGroup) {
+                          return (() => {
+                            var _el$25 = _$createElement("box"), _el$28 = _$createElement("box");
+                            _$insertNode(_el$25, _el$28);
+                            _$setProp(_el$25, "flexDirection", "column");
+                            _$insert(_el$25, _$createComponent(Show, {
+                              get when() {
+                                return !state.result?.windows?.[index() - 1]?.label.startsWith(`${droidGroup[1]} \xB7 `);
+                              },
+                              get children() {
+                                var _el$26 = _$createElement("text"), _el$27 = _$createTextNode(`:`);
+                                _$insertNode(_el$26, _el$27);
+                                _$insert(_el$26, () => droidGroup[1], _el$27);
+                                _$effect((_$p) => _$setProp(_el$26, "fg", mutedColor(), _$p));
+                                return _el$26;
+                              }
+                            }), _el$28);
+                            _$setProp(_el$28, "flexDirection", "column");
+                            _$setProp(_el$28, "paddingLeft", 1);
+                            _$insert(_el$28, renderWindow);
+                            return _el$25;
+                          })();
+                        }
+                        return renderWindow();
                       }
                     });
                   }
@@ -3601,1162 +4116,12 @@ function ProviderUsageBlocks(props) {
   });
 }
 
-// src/sidebar.tsx
-var DEFAULT_CONFIG = {
-  sidebar: {
-    showPerformance: true,
-    showPricing: true,
-    showTrend: true
-  },
-  language: "auto"
-};
-function progressBarWidth(percent, width) {
-  if (percent >= 100) return width;
-  return Math.floor(percent / 100 * width);
-}
-function progressFilled(percent, width) {
-  return "\u2588".repeat(Math.max(0, progressBarWidth(percent, width)));
-}
-function progressRemaining(percent, width) {
-  return "\u2591".repeat(Math.max(0, width - progressBarWidth(percent, width)));
-}
-function getVisualWidth(str) {
-  let w = 0;
-  for (const c of str) {
-    const code = c.codePointAt(0) ?? 0;
-    if (code >= 19968 && code <= 40959 || code >= 12352 && code <= 12543 || code >= 44032 && code <= 55203 || code >= 4352 && code <= 4607 || code >= 11904 && code <= 12031) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
-}
-function centerAlign(text, width) {
-  const visualW = getVisualWidth(text);
-  if (visualW >= width) return text;
-  const left = Math.floor((width - visualW) / 2);
-  const right = width - visualW - left;
-  return " ".repeat(left) + text + " ".repeat(right);
-}
-function hitRateColor(rate) {
-  if (rate >= 85) return RGBA3.fromInts(76, 175, 80, 255);
-  if (rate >= 70) return RGBA3.fromInts(255, 193, 7, 255);
-  return RGBA3.fromInts(244, 67, 54, 255);
-}
-var COLLAPSE_INITIAL = {
-  global: false,
-  models: {}
-};
-function loadConfig(context) {
-  const base = {
-    sidebar: {
-      ...DEFAULT_CONFIG.sidebar
-    },
-    language: DEFAULT_CONFIG.language
-  };
-  try {
-    const pluginCfg = context.options;
-    if (pluginCfg?.sidebar) Object.assign(base.sidebar, pluginCfg.sidebar);
-    if (pluginCfg?.language) base.language = pluginCfg.language;
-  } catch {
-  }
-  return base;
-}
-function UsageStatPanel(props) {
-  const {
-    context,
-    perfTracker
-  } = props;
-  const optionConfig = loadConfig(context);
-  let settings = null;
-  try {
-    const [store] = getSettingsStore(context);
-    settings = store;
-    migrateLegacySettings(context);
-  } catch (err) {
-    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err);
-  }
-  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance;
-  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
-  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
-  setLanguage(settings ? settings.language : optionConfig.language);
-  createEffect2(() => setLanguage(settings ? settings.language : optionConfig.language));
-  const t2 = (key) => {
-    void settings?.language;
-    return t(key);
-  };
-  const isEnglish = (str) => /^[a-zA-Z\s\.\/]+$/.test(str);
-  let storedCollapse = null;
-  let collapseMutate = null;
-  try {
-    const [store, mutate] = context.storage.store("usage-stat-collapse", {
-      initial: COLLAPSE_INITIAL
-    });
-    storedCollapse = store;
-    collapseMutate = mutate;
-  } catch (err) {
-    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err);
-  }
-  const [localCollapse, setLocalCollapse] = createSignal2({});
-  function toggleGlobal() {
-    const next = !(localCollapse().global ?? storedCollapse?.global ?? false);
-    setLocalCollapse((prev) => ({
-      ...prev,
-      global: next
-    }));
-    if (collapseMutate) void collapseMutate((draft) => {
-      draft.global = next;
-    }).catch(() => {
-    });
-  }
-  function toggleModel(key) {
-    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false;
-    const next = !current;
-    setLocalCollapse((prev) => ({
-      ...prev,
-      models: {
-        ...prev.models,
-        [key]: next
-      }
-    }));
-    if (collapseMutate) void collapseMutate((draft) => {
-      draft.models[key] = next;
-    }).catch(() => {
-    });
-  }
-  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false;
-  const isModelCollapsed = (key) => (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true;
-  const [panelWidth, setPanelWidth] = createSignal2(38);
-  let outerBoxRef = null;
-  const colors = resolveThemeColors(context.theme);
-  const primaryColor = () => colors.primary;
-  const mutedColor = () => colors.muted;
-  const dimColor = () => colors.dim;
-  const greenColor = () => colors.green;
-  const borderColor = () => colors.border;
-  const missingColor = () => colors.purple;
-  const modelStats = createMemo2(() => {
-    const map = /* @__PURE__ */ new Map();
-    const msgs = props.allTokenMessages();
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
-      const key = `${msg.providerID}/${msg.modelID}`;
-      let e = map.get(key);
-      if (!e) {
-        e = {
-          providerID: msg.providerID,
-          modelID: msg.modelID,
-          totalInput: 0,
-          totalOutput: 0,
-          totalReasoning: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalCost: 0,
-          requestCount: 0,
-          lastMessageIndex: -1
-        };
-        map.set(key, e);
-      }
-      e.totalInput += msg.inputTokens;
-      e.totalOutput += msg.outputTokens;
-      e.totalReasoning += msg.reasoningTokens;
-      e.cacheRead += msg.cacheRead;
-      e.cacheWrite += msg.cacheWrite;
-      e.totalCost += msg.cost;
-      e.requestCount++;
-      e.lastMessageIndex = i;
-    }
-    return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
-  });
-  const messageTotals = createMemo2(() => {
-    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
-    for (const [, s] of modelStats()) {
-      i += s.totalInput;
-      o += s.totalOutput;
-      ir += s.totalReasoning;
-      cr += s.cacheRead;
-      cw += s.cacheWrite;
-      r += s.requestCount;
-      c += s.totalCost;
-    }
-    return {
-      totalInput: i,
-      totalOutput: o,
-      totalReasoning: ir,
-      totalCacheRead: cr,
-      totalCacheWrite: cw,
-      totalRequests: r,
-      totalCost: c,
-      totalTokens: i + o + ir + cr + cw
-    };
-  });
-  const sessionTotals = createMemo2(() => {
-    void props.revision();
-    const selected = context.data.session.get(props.sessionID);
-    if (!selected) return messageTotals();
-    const family = selected.parentID ? [props.sessionID] : context.data.session.family(props.sessionID).length > 0 ? context.data.session.family(props.sessionID) : [props.sessionID];
-    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, c = 0;
-    for (const sessionID of family) {
-      const session = context.data.session.get(sessionID);
-      if (!session) continue;
-      i += session.tokens.input;
-      o += session.tokens.output;
-      ir += session.tokens.reasoning;
-      cr += session.tokens.cache.read;
-      cw += session.tokens.cache.write;
-      c += session.cost;
-    }
-    return {
-      totalInput: i,
-      totalOutput: o,
-      totalReasoning: ir,
-      totalCacheRead: cr,
-      totalCacheWrite: cw,
-      totalRequests: messageTotals().totalRequests,
-      totalCost: c,
-      totalTokens: i + o + ir + cr + cw
-    };
-  });
-  const globalHitRate = createMemo2(() => {
-    let i = 0, cr = 0;
-    for (const [, s] of modelStats()) {
-      if (isMissingCache(s.requestCount, s.cacheRead, s.cacheWrite)) continue;
-      i += totalInputTokens(s.totalInput, s.cacheWrite);
-      cr += s.cacheRead;
-    }
-    const denom = i + cr;
-    return denom > 0 ? cr / denom * 100 : -1;
-  });
-  const modelHitRate = createMemo2(() => {
-    return modelStats().map(([key, stat]) => {
-      const denom = totalInputTokens(stat.totalInput, stat.cacheWrite) + stat.cacheRead;
-      if (denom === 0) return {
-        key,
-        rate: 0,
-        msgs: []
-      };
-      const msgs = [];
-      for (const msg of props.allTokenMessages()) {
-        if (`${msg.providerID}/${msg.modelID}` !== key) continue;
-        msgs.push(msg);
-      }
-      return {
-        key,
-        rate: cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100,
-        msgs
-      };
-    });
-  });
-  const modelTrend = createMemo2(() => {
-    return modelHitRate().map(({
-      key,
-      msgs
-    }) => {
-      if (msgs.length < 6) return {
-        key,
-        trend: null
-      };
-      const sumSlice = (start, end) => {
-        let sumCache = 0, sumTotal = 0;
-        for (let i = start; i < end && i < msgs.length; i++) {
-          sumCache += msgs[i].cacheRead;
-          sumTotal += totalInputTokens(msgs[i].inputTokens, msgs[i].cacheWrite) + msgs[i].cacheRead;
-        }
-        return {
-          sumCache,
-          sumTotal
-        };
-      };
-      const n = msgs.length;
-      const recent = sumSlice(n - 3, n);
-      const prev = sumSlice(n - 6, n - 3);
-      const rateRecent = recent.sumTotal > 0 ? recent.sumCache / recent.sumTotal * 100 : 0;
-      const ratePrev = prev.sumTotal > 0 ? prev.sumCache / prev.sumTotal * 100 : 0;
-      return {
-        key,
-        trend: rateRecent - ratePrev
-      };
-    });
-  });
-  const [partVersion, setPartVersion] = createSignal2(0);
-  const perfStats = createMemo2(() => {
-    void props.allTokenMessages();
-    void partVersion();
-    void props.revision();
-    return perfTracker.getSessionStats();
-  });
-  onCleanup2(() => {
-  });
-  const innerWidth = () => panelWidth() - 2;
-  const barWidth = () => Math.max(8, innerWidth() - 19);
-  const divider = () => {
-    const w = innerWidth();
-    if (w <= 2) return "\u2500".repeat(w);
-    return " " + "\u2500".repeat(w - 2) + " ";
-  };
-  const toggle = {
-    global: toggleGlobal,
-    model: toggleModel
-  };
-  return (() => {
-    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("text");
-    _$insertNode2(_el$, _el$2);
-    _$use((el) => {
-      outerBoxRef = el;
-    }, _el$);
-    _$setProp2(_el$, "onSizeChange", () => {
-      if (outerBoxRef) setPanelWidth(outerBoxRef.width);
-    });
-    _$setProp2(_el$, "flexDirection", "column");
-    _$setProp2(_el$, "border", true);
-    _$setProp2(_el$, "borderStyle", "rounded");
-    _$insertNode2(_el$2, _el$3);
-    _$insertNode2(_el$2, _el$5);
-    _$setProp2(_el$2, "flexDirection", "row");
-    _$setProp2(_el$2, "justifyContent", "space-between");
-    _$setProp2(_el$2, "paddingX", 1);
-    _$insertNode2(_el$3, _el$4);
-    _$insert2(_el$3, () => isPanelCollapsed() ? "\u25B6" : "\u25BE", _el$4);
-    _$insert2(_el$3, () => t2("panelTitle"), null);
-    _$insert2(_el$5, (() => {
-      var _c$ = _$memo2(() => !!isPanelCollapsed());
-      return () => _c$() ? formatTokens(sessionTotals().totalTokens) : "";
-    })(), null);
-    _$insert2(_el$5, (() => {
-      var _c$2 = _$memo2(() => globalHitRate() >= 0);
-      return () => _c$2() ? (() => {
-        var _el$10 = _$createElement2("span");
-        _$insert2(_el$10, (() => {
-          var _c$3 = _$memo2(() => !!isPanelCollapsed());
-          return () => _c$3() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`;
-        })());
-        _$effect2((_$p) => _$setProp2(_el$10, "style", {
-          fg: hitRateColor(globalHitRate())
-        }, _$p));
-        return _el$10;
-      })() : "";
-    })(), null);
-    _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
-      context,
-      get sessionID() {
-        return props.sessionID;
-      }
-    }), null);
-    _$insert2(_el$, _$createComponent2(Show2, {
-      get when() {
-        return !isPanelCollapsed();
-      },
-      get children() {
-        return [(() => {
-          var _el$6 = _$createElement2("text");
-          _$insert2(_el$6, divider);
-          _$effect2((_$p) => _$setProp2(_el$6, "fg", borderColor(), _$p));
-          return _el$6;
-        })(), (() => {
-          var _el$7 = _$createElement2("box");
-          _$setProp2(_el$7, "flexDirection", "row");
-          _$setProp2(_el$7, "paddingX", 1);
-          _$insert2(_el$7, _$createComponent2(For2, {
-            get each() {
-              return [{
-                val: formatTokens(sessionTotals().totalTokens),
-                lbl: t2("total")
-              }, {
-                val: sessionTotals().totalRequests.toString(),
-                lbl: t2("requests")
-              }, {
-                val: formatTokens(totalInputTokens(sessionTotals().totalInput, sessionTotals().totalCacheWrite)),
-                lbl: t2("input")
-              }, {
-                val: formatTokens(sessionTotals().totalOutput),
-                lbl: t2("output")
-              }];
-            },
-            children: (item, idx) => {
-              const colW = () => {
-                const totalW = panelWidth() - 4;
-                const base = Math.floor(totalW / 4);
-                return idx() === 3 ? totalW - base * 3 : base;
-              };
-              return (() => {
-                var _el$11 = _$createElement2("box"), _el$12 = _$createElement2("text"), _el$13 = _$createElement2("text");
-                _$insertNode2(_el$11, _el$12);
-                _$insertNode2(_el$11, _el$13);
-                _$setProp2(_el$11, "flexDirection", "column");
-                _$insert2(_el$12, () => centerAlign(item.val, colW()));
-                _$insert2(_el$13, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
-                _$effect2((_p$) => {
-                  var _v$7 = colW(), _v$8 = primaryColor(), _v$9 = dimColor();
-                  _v$7 !== _p$.e && (_p$.e = _$setProp2(_el$11, "width", _v$7, _p$.e));
-                  _v$8 !== _p$.t && (_p$.t = _$setProp2(_el$12, "fg", _v$8, _p$.t));
-                  _v$9 !== _p$.a && (_p$.a = _$setProp2(_el$13, "fg", _v$9, _p$.a));
-                  return _p$;
-                }, {
-                  e: void 0,
-                  t: void 0,
-                  a: void 0
-                });
-                return _el$11;
-              })();
-            }
-          }));
-          return _el$7;
-        })(), _$createComponent2(Show2, {
-          get when() {
-            return _$memo2(() => !!showPricing())() && sessionTotals().totalCost > 0;
-          },
-          get children() {
-            var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("text"), _el$0 = _$createTextNode2(`: `), _el$1 = _$createElement2("span");
-            _$insertNode2(_el$8, _el$9);
-            _$setProp2(_el$8, "flexDirection", "row");
-            _$setProp2(_el$8, "justifyContent", "center");
-            _$setProp2(_el$8, "marginTop", 1);
-            _$insertNode2(_el$9, _el$0);
-            _$insertNode2(_el$9, _el$1);
-            _$insert2(_el$9, () => t2("cost"), _el$0);
-            _$insert2(_el$1, () => formatCost(sessionTotals().totalCost));
-            _$effect2((_p$) => {
-              var _v$ = mutedColor(), _v$2 = {
-                fg: greenColor()
-              };
-              _v$ !== _p$.e && (_p$.e = _$setProp2(_el$9, "fg", _v$, _p$.e));
-              _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$1, "style", _v$2, _p$.t));
-              return _p$;
-            }, {
-              e: void 0,
-              t: void 0
-            });
-            return _el$8;
-          }
-        }), _$createComponent2(For2, {
-          get each() {
-            return modelStats();
-          },
-          children: ([key, stat]) => {
-            const isExpanded = () => !isModelCollapsed(key);
-            const hitRate = cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100;
-            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead, stat.cacheWrite);
-            const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
-            const trendStr = () => {
-              if (!showTrend()) return "";
-              const td = modelTrend().find((h) => h.key === key);
-              if (!td?.trend || td.trend === 0) return "";
-              return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
-            };
-            const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? RGBA3.fromInts(63, 185, 80, 255) : RGBA3.fromInts(244, 67, 54, 255);
-            const MAX_PROVIDER_LEN = 12;
-            let providerDisplay = stat.providerID;
-            if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "\u2026";
-            let fullTitle = `${providerDisplay}/${stat.modelID}`;
-            if (fullTitle.length > 22) {
-              const parts = fullTitle.split("/");
-              if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
-            }
-            const maxNameLen = Math.max(8, innerWidth() - 12);
-            const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "\u2026" : fullTitle;
-            const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
-            const targetW = () => Math.max(getVisualWidth(`${t2("cache")}:`), getVisualWidth(`${t2("cost")}:`));
-            const paddedCachePrefix = () => {
-              const label = `${t2("cache")}:`;
-              return label + " ".repeat(targetW() - getVisualWidth(label));
-            };
-            const paddedCostPrefix = () => {
-              const label = `${t2("cost")}:`;
-              return label + " ".repeat(targetW() - getVisualWidth(label));
-            };
-            const trendBudget = () => showTrend() ? 7 : 0;
-            const modelBarWidth = () => Math.max(8, panelWidth() - 4 - targetW() - 11 - trendBudget());
-            return (() => {
-              var _el$14 = _$createElement2("box"), _el$15 = _$createElement2("box"), _el$16 = _$createElement2("text"), _el$17 = _$createElement2("span"), _el$19 = _$createTextNode2(` `), _el$20 = _$createElement2("span"), _el$21 = _$createElement2("text");
-              _$insertNode2(_el$14, _el$15);
-              _$setProp2(_el$14, "flexDirection", "column");
-              _$setProp2(_el$14, "marginTop", 1);
-              _$insertNode2(_el$15, _el$16);
-              _$insertNode2(_el$15, _el$21);
-              _$setProp2(_el$15, "flexDirection", "row");
-              _$setProp2(_el$15, "justifyContent", "space-between");
-              _$setProp2(_el$15, "onMouseDown", () => toggle.model(key));
-              _$setProp2(_el$15, "paddingX", 1);
-              _$insertNode2(_el$16, _el$17);
-              _$insertNode2(_el$16, _el$19);
-              _$insertNode2(_el$16, _el$20);
-              _$insertNode2(_el$17, _$createTextNode2(`\u25CF`));
-              _$insert2(_el$20, shortTitle);
-              _$insert2(_el$21, modelHeaderRight);
-              _$insert2(_el$14, _$createComponent2(Show2, {
-                get when() {
-                  return isExpanded();
-                },
-                get children() {
-                  var _el$22 = _$createElement2("box"), _el$23 = _$createElement2("box"), _el$24 = _$createElement2("box"), _el$25 = _$createElement2("text");
-                  _$insertNode2(_el$22, _el$23);
-                  _$insertNode2(_el$22, _el$25);
-                  _$setProp2(_el$22, "flexDirection", "column");
-                  _$setProp2(_el$22, "paddingX", 1);
-                  _$insertNode2(_el$23, _el$24);
-                  _$setProp2(_el$23, "flexDirection", "column");
-                  _$setProp2(_el$23, "border", true);
-                  _$setProp2(_el$23, "borderStyle", "rounded");
-                  _$setProp2(_el$24, "flexDirection", "row");
-                  _$insert2(_el$24, _$createComponent2(For2, {
-                    get each() {
-                      return [{
-                        val: formatTokens(modelTotalTokens),
-                        lbl: t2("total")
-                      }, {
-                        val: formatTokens(totalInputTokens(stat.totalInput, stat.cacheWrite)),
-                        lbl: t2("input")
-                      }, {
-                        val: formatTokens(stat.totalOutput),
-                        lbl: t2("output")
-                      }];
-                    },
-                    children: (item, idx) => {
-                      const colW = () => {
-                        const totalW = panelWidth() - 6;
-                        const base = Math.floor(totalW / 3);
-                        return idx() === 2 ? totalW - base * 2 : base;
-                      };
-                      return (() => {
-                        var _el$36 = _$createElement2("box"), _el$37 = _$createElement2("text"), _el$38 = _$createElement2("text");
-                        _$insertNode2(_el$36, _el$37);
-                        _$insertNode2(_el$36, _el$38);
-                        _$setProp2(_el$36, "flexDirection", "column");
-                        _$insert2(_el$37, () => centerAlign(item.val, colW()));
-                        _$insert2(_el$38, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
-                        _$effect2((_p$) => {
-                          var _v$18 = colW(), _v$19 = primaryColor(), _v$20 = dimColor();
-                          _v$18 !== _p$.e && (_p$.e = _$setProp2(_el$36, "width", _v$18, _p$.e));
-                          _v$19 !== _p$.t && (_p$.t = _$setProp2(_el$37, "fg", _v$19, _p$.t));
-                          _v$20 !== _p$.a && (_p$.a = _$setProp2(_el$38, "fg", _v$20, _p$.a));
-                          return _p$;
-                        }, {
-                          e: void 0,
-                          t: void 0,
-                          a: void 0
-                        });
-                        return _el$36;
-                      })();
-                    }
-                  }));
-                  _$insert2(_el$25, paddedCachePrefix, null);
-                  _$insert2(_el$25, isMissing ? (() => {
-                    var _el$39 = _$createElement2("span"), _el$40 = _$createTextNode2(` `);
-                    _$insertNode2(_el$39, _el$40);
-                    _$insert2(_el$39, () => progressRemaining(0, modelBarWidth()), _el$40);
-                    _$insert2(_el$39, () => t2("missing"), null);
-                    _$effect2((_$p) => _$setProp2(_el$39, "style", {
-                      fg: missingColor()
-                    }, _$p));
-                    return _el$39;
-                  })() : (() => {
-                    var _el$41 = _$createElement2("span"), _el$42 = _$createTextNode2(` `), _el$43 = _$createTextNode2(`%`);
-                    _$insertNode2(_el$41, _el$42);
-                    _$insertNode2(_el$41, _el$43);
-                    _$insert2(_el$41, () => progressFilled(hitRate, modelBarWidth()), _el$42);
-                    _$insert2(_el$41, () => progressRemaining(hitRate, modelBarWidth()), _el$42);
-                    _$insert2(_el$41, () => hitRate.toFixed(1), _el$43);
-                    _$effect2((_$p) => _$setProp2(_el$41, "style", {
-                      fg: hitRateColor(hitRate)
-                    }, _$p));
-                    return _el$41;
-                  })(), null);
-                  _$insert2(_el$25, (() => {
-                    var _c$4 = _$memo2(() => !!trendStr());
-                    return () => _c$4() ? (() => {
-                      var _el$44 = _$createElement2("span");
-                      _$insert2(_el$44, trendStr);
-                      _$effect2((_$p) => _$setProp2(_el$44, "style", {
-                        fg: trendColor()
-                      }, _$p));
-                      return _el$44;
-                    })() : null;
-                  })(), null);
-                  _$insert2(_el$22, _$createComponent2(Show2, {
-                    get when() {
-                      return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
-                    },
-                    get children() {
-                      var _el$26 = _$createElement2("text"), _el$27 = _$createTextNode2(` `), _el$28 = _$createElement2("span"), _el$29 = _$createTextNode2(`  `), _el$30 = _$createTextNode2(` `), _el$31 = _$createElement2("span"), _el$32 = _$createTextNode2(`  `), _el$33 = _$createTextNode2(` `), _el$34 = _$createElement2("span");
-                      _$insertNode2(_el$26, _el$27);
-                      _$insertNode2(_el$26, _el$28);
-                      _$insertNode2(_el$26, _el$29);
-                      _$insertNode2(_el$26, _el$30);
-                      _$insertNode2(_el$26, _el$31);
-                      _$insertNode2(_el$26, _el$32);
-                      _$insertNode2(_el$26, _el$33);
-                      _$insertNode2(_el$26, _el$34);
-                      _$setProp2(_el$26, "marginTop", 1);
-                      _$insert2(_el$26, () => t2("ttft"), _el$27);
-                      _$insert2(_el$28, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
-                      _$insert2(_el$26, () => t2("tps"), _el$30);
-                      _$insert2(_el$31, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
-                      _$insert2(_el$26, () => t2("lat"), _el$33);
-                      _$insert2(_el$34, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
-                      _$effect2((_p$) => {
-                        var _v$0 = mutedColor(), _v$1 = {
-                          fg: primaryColor()
-                        }, _v$10 = {
-                          fg: primaryColor()
-                        }, _v$11 = {
-                          fg: primaryColor()
-                        };
-                        _v$0 !== _p$.e && (_p$.e = _$setProp2(_el$26, "fg", _v$0, _p$.e));
-                        _v$1 !== _p$.t && (_p$.t = _$setProp2(_el$28, "style", _v$1, _p$.t));
-                        _v$10 !== _p$.a && (_p$.a = _$setProp2(_el$31, "style", _v$10, _p$.a));
-                        _v$11 !== _p$.o && (_p$.o = _$setProp2(_el$34, "style", _v$11, _p$.o));
-                        return _p$;
-                      }, {
-                        e: void 0,
-                        t: void 0,
-                        a: void 0,
-                        o: void 0
-                      });
-                      return _el$26;
-                    }
-                  }), null);
-                  _$insert2(_el$22, _$createComponent2(Show2, {
-                    get when() {
-                      return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
-                    },
-                    get children() {
-                      var _el$35 = _$createElement2("text");
-                      _$insert2(_el$35, paddedCostPrefix, null);
-                      _$insert2(_el$35, () => formatCost(stat.totalCost), null);
-                      _$effect2((_$p) => _$setProp2(_el$35, "fg", mutedColor(), _$p));
-                      return _el$35;
-                    }
-                  }), null);
-                  _$effect2((_p$) => {
-                    var _v$12 = borderColor(), _v$13 = mutedColor();
-                    _v$12 !== _p$.e && (_p$.e = _$setProp2(_el$23, "borderColor", _v$12, _p$.e));
-                    _v$13 !== _p$.t && (_p$.t = _$setProp2(_el$25, "fg", _v$13, _p$.t));
-                    return _p$;
-                  }, {
-                    e: void 0,
-                    t: void 0
-                  });
-                  return _el$22;
-                }
-              }), null);
-              _$effect2((_p$) => {
-                var _v$14 = mutedColor(), _v$15 = {
-                  fg: isMissing ? missingColor() : hitRateColor(hitRate)
-                }, _v$16 = {
-                  fg: primaryColor()
-                }, _v$17 = mutedColor();
-                _v$14 !== _p$.e && (_p$.e = _$setProp2(_el$16, "fg", _v$14, _p$.e));
-                _v$15 !== _p$.t && (_p$.t = _$setProp2(_el$17, "style", _v$15, _p$.t));
-                _v$16 !== _p$.a && (_p$.a = _$setProp2(_el$20, "style", _v$16, _p$.a));
-                _v$17 !== _p$.o && (_p$.o = _$setProp2(_el$21, "fg", _v$17, _p$.o));
-                return _p$;
-              }, {
-                e: void 0,
-                t: void 0,
-                a: void 0,
-                o: void 0
-              });
-              return _el$14;
-            })();
-          }
-        })];
-      }
-    }), null);
-    _$effect2((_p$) => {
-      var _v$3 = borderColor(), _v$4 = toggle.global, _v$5 = primaryColor(), _v$6 = mutedColor();
-      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$, "borderColor", _v$3, _p$.e));
-      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$2, "onMouseDown", _v$4, _p$.t));
-      _v$5 !== _p$.a && (_p$.a = _$setProp2(_el$3, "fg", _v$5, _p$.a));
-      _v$6 !== _p$.o && (_p$.o = _$setProp2(_el$5, "fg", _v$6, _p$.o));
-      return _p$;
-    }, {
-      e: void 0,
-      t: void 0,
-      a: void 0,
-      o: void 0
-    });
-    return _el$;
-  })();
-}
-
-// src/queries.ts
-var client = null;
-function setV2Client(c) {
-  client = c;
-  clearQueryCache();
-}
-function getV2Client() {
-  return client;
-}
-function requireClient() {
-  if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
-  return client;
-}
-var SNAPSHOT_TTL_MS = 3e4;
-var snapshotPromise = null;
-var snapshotAt = 0;
-function clearQueryCache() {
-  snapshotPromise = null;
-  snapshotAt = 0;
-}
-async function loadSnapshot() {
-  const c = requireClient();
-  const all = [];
-  let cursor;
-  for (; ; ) {
-    const res = await c.session.list({ limit: 500, cursor });
-    const page = res?.data;
-    if (!Array.isArray(page) || page.length === 0) break;
-    all.push(...page);
-    const next = res?.cursor?.next;
-    if (!next) break;
-    cursor = next;
-  }
-  const messages = /* @__PURE__ */ new Map();
-  const batchSize = 8;
-  for (let i = 0; i < all.length; i += batchSize) {
-    const batch = all.slice(i, i + batchSize);
-    const results = await Promise.all(batch.map(async (s) => {
-      try {
-        return await fetchAllMessages(s.id);
-      } catch (err) {
-        console.warn(`[opencode-usage-stat] failed to read messages for ${s.id}:`, err);
-        return null;
-      }
-    }));
-    for (let j = 0; j < batch.length; j++) {
-      if (results[j]) messages.set(batch[j].id, results[j]);
-    }
-  }
-  return { sessions: all, messages };
-}
-function snapshot() {
-  if (snapshotPromise && snapshotAt && Date.now() - snapshotAt > SNAPSHOT_TTL_MS) {
-    snapshotPromise = null;
-    snapshotAt = 0;
-  }
-  if (!snapshotPromise) {
-    const pending = loadSnapshot();
-    void pending.then(
-      (result) => {
-        snapshotAt = Date.now();
-      },
-      () => {
-      }
-    );
-    void pending.catch(() => {
-      if (snapshotPromise === pending) {
-        snapshotPromise = null;
-        snapshotAt = 0;
-      }
-    });
-    snapshotPromise = pending;
-  }
-  return snapshotPromise;
-}
-async function fetchAllSessions() {
-  return (await snapshot()).sessions;
-}
-async function loadAssistants(filters = {}) {
-  const snap = await snapshot();
-  const out = [];
-  for (const [sessionID, msgs] of snap.messages) {
-    for (const m of msgs) {
-      const a = asAssistant(m, sessionID);
-      if (!a) continue;
-      if (a.tokens.total <= 0) continue;
-      if (!matchesFilters(a, filters)) continue;
-      out.push(a);
-    }
-  }
-  return out;
-}
-async function fetchAllMessages(sessionID, limit = 200) {
-  const c = requireClient();
-  const all = [];
-  let cursor;
-  for (; ; ) {
-    const res = await c.message.list({ sessionID, limit, order: cursor ? void 0 : "asc", cursor });
-    const page = res?.data;
-    if (!Array.isArray(page) || page.length === 0) break;
-    all.push(...page);
-    const next = res?.cursor?.next;
-    if (!next) break;
-    cursor = next;
-  }
-  return all;
-}
-function asAssistant(m, sessionID) {
-  if (!m || typeof m !== "object" || m.type !== "assistant") return null;
-  const a = m;
-  const tokens = a.tokens;
-  if (!tokens || typeof tokens !== "object") return null;
-  const input = tokens.input ?? 0;
-  const output = tokens.output ?? 0;
-  const reasoning = tokens.reasoning ?? 0;
-  const cacheRead = tokens.cache?.read ?? 0;
-  const cacheWrite = tokens.cache?.write ?? 0;
-  return {
-    sessionID,
-    providerID: a.model?.providerID ?? "unknown",
-    modelID: a.model?.id ?? "unknown",
-    messageID: a.id,
-    role: "assistant",
-    created: a.time?.created ?? 0,
-    completed: a.time?.completed,
-    cost: a.cost ?? 0,
-    tokens: {
-      input,
-      output,
-      reasoning,
-      cacheRead,
-      cacheWrite,
-      total: input + output + reasoning + cacheRead + cacheWrite
-    }
-  };
-}
-function isValidDate(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
-function toLocalDay(ms) {
-  const d = new Date(ms);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-function matchesFilters(a, filters) {
-  if (filters.sessionIds && filters.sessionIds.length > 0 && !filters.sessionIds.includes(a.sessionID)) return false;
-  if (filters.sessionId && a.sessionID !== filters.sessionId) return false;
-  if (filters.provider && a.providerID !== filters.provider) return false;
-  if (filters.model && a.modelID !== filters.model) return false;
-  if (a.created != null) {
-    const day = toLocalDay(a.created);
-    if (filters.startDate && isValidDate(filters.startDate) && day < filters.startDate) return false;
-    if (filters.endDate && isValidDate(filters.endDate) && day > filters.endDate) return false;
-  }
-  return true;
-}
-function toSessionTokenData(assistants) {
-  const models = /* @__PURE__ */ new Set();
-  const providers = /* @__PURE__ */ new Set();
-  let totalTokens = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  let totalCost = 0;
-  for (const a of assistants) {
-    const t2 = a.tokens;
-    totalTokens += t2.total;
-    inputTokens += t2.input;
-    outputTokens += t2.output;
-    reasoningTokens += t2.reasoning;
-    cacheRead += t2.cacheRead;
-    cacheWrite += t2.cacheWrite;
-    totalCost += a.cost;
-    models.add(a.modelID);
-    providers.add(a.providerID);
-  }
-  const modelsArray = Array.from(models);
-  return {
-    model: modelsArray.length === 1 ? modelsArray[0] : "",
-    provider: providers.size === 1 ? Array.from(providers)[0] : "",
-    modelsUsed: modelsArray,
-    totalTokens,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheRead,
-    cacheWrite,
-    totalCost,
-    requestCount: assistants.length
-  };
-}
-async function getSummary(filters = {}) {
-  return toSessionTokenData(await loadAssistants(filters));
-}
-async function getModelBreakdown(filters = {}) {
-  const assistants = await loadAssistants(filters);
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const key = `${a.providerID ?? "unknown"}|${a.modelID ?? "unknown"}`;
-    const t2 = a.tokens;
-    let item = map.get(key);
-    if (!item) {
-      item = {
-        provider: a.providerID ?? "unknown",
-        model: a.modelID ?? "unknown",
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalCost: 0
-      };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.cacheWrite += t2.cacheWrite;
-    item.totalCost += a.cost;
-    sessionSet.add(`${key}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [provider, model] = s.split("|");
-    const item = map.get(`${provider}|${model}`);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
-}
-async function getProviderBreakdown(filters = {}) {
-  const assistants = await loadAssistants(filters);
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const key = a.providerID ?? "unknown";
-    const t2 = a.tokens;
-    let item = map.get(key);
-    if (!item) {
-      item = {
-        provider: key,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0
-      };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    sessionSet.add(`${key}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [provider] = s.split("|");
-    const item = map.get(provider);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
-}
-async function getDailyBreakdown(filters = {}) {
-  const limit = filters.limit ?? 90;
-  const assistants = await loadAssistants(filters);
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const day = a.created != null ? toLocalDay(a.created) : "unknown";
-    const t2 = a.tokens;
-    let item = map.get(day);
-    if (!item) {
-      item = {
-        day,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0
-      };
-      map.set(day, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    sessionSet.add(`${day}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [day] = s.split("|");
-    const item = map.get(day);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, Math.max(1, limit));
-}
-async function getSessionBreakdown(filters = {}) {
-  const limit = filters.limit ?? 15;
-  const sessions = await fetchAllSessions();
-  const byId = new Map(sessions.map((s) => [s.id, s]));
-  const assistants = await loadAssistants(filters);
-  const map = /* @__PURE__ */ new Map();
-  for (const a of assistants) {
-    let item = map.get(a.sessionID);
-    const t2 = a.tokens;
-    if (!item) {
-      const s = byId.get(a.sessionID);
-      const first = s?.model;
-      item = {
-        sessionId: a.sessionID,
-        title: s?.title ?? "(untitled)",
-        provider: a.providerID ?? "unknown",
-        model: a.modelID ?? first?.id ?? "unknown",
-        requests: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0,
-        day: a.created != null ? toLocalDay(a.created) : ""
-      };
-      map.set(a.sessionID, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    if (a.created != null) {
-      const day = toLocalDay(a.created);
-      if (day > item.day) item.day = day;
-    }
-  }
-  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, Math.max(1, limit));
-}
-async function getChildSessionIds(parentSessionId) {
-  try {
-    const sessions = await fetchAllSessions();
-    const direct = sessions.filter((s) => s.parentID === parentSessionId).map((s) => s.id);
-    const out = [...direct];
-    for (const id of direct) {
-      try {
-        out.push(...await getChildSessionIds(id));
-      } catch {
-      }
-    }
-    return Array.from(new Set(out));
-  } catch {
-    return [];
-  }
-}
-async function getMessageDetails(sessionId) {
-  const childIds = await getChildSessionIds(sessionId);
-  const allIds = [sessionId, ...childIds];
-  const filters = { sessionIds: allIds };
-  const assistants = await loadAssistants(filters);
-  return assistants.sort((a, b) => a.created - b.created).map((a) => ({
-    messageId: a.messageID,
-    model: a.modelID ?? "unknown",
-    provider: a.providerID ?? "unknown",
-    inputTokens: a.tokens.input,
-    outputTokens: a.tokens.output,
-    reasoningTokens: a.tokens.reasoning,
-    cacheRead: a.tokens.cacheRead,
-    cacheWrite: a.tokens.cacheWrite,
-    totalTokens: a.tokens.total,
-    cost: a.cost,
-    timeCreated: a.created,
-    timeCompleted: a.completed ?? null
-  }));
-}
-async function getSessionTitle(sessionId) {
-  const c = requireClient();
-  try {
-    const s = await c.session.get({ sessionID: sessionId });
-    return s?.title ?? "(untitled)";
-  } catch {
-    return "(untitled)";
-  }
-}
-async function getErrorStats(filters = {}) {
-  const snap = await snapshot();
-  let successCount = 0;
-  let failedCount = 0;
-  const byModelMap = /* @__PURE__ */ new Map();
-  for (const [sessionID, msgs] of snap.messages) {
-    for (const m of msgs) {
-      if (m?.type !== "assistant") continue;
-      const a = asAssistant(m, sessionID);
-      if (!a) continue;
-      if (!matchesFilters(a, filters)) continue;
-      const key = `${a.providerID}|${a.modelID}`;
-      let row = byModelMap.get(key);
-      if (!row) {
-        row = { provider: a.providerID, model: a.modelID, failed: 0, total: 0 };
-        byModelMap.set(key, row);
-      }
-      row.total++;
-      if (a.tokens.total === 0) {
-        row.failed++;
-        failedCount++;
-      } else {
-        successCount++;
-      }
-    }
-  }
-  const byModel = Array.from(byModelMap.values()).sort((a, b) => b.failed - a.failed);
-  const errorRate = successCount + failedCount > 0 ? failedCount / (successCount + failedCount) : 0;
-  return { successCount, failedCount, errorRate, byModel };
-}
-async function getHourlyHeatmap(filters = {}) {
-  const assistants = await loadAssistants(filters);
-  const map = /* @__PURE__ */ new Map();
-  for (const a of assistants) {
-    const created = a.created;
-    if (created == null) continue;
-    const d = new Date(created);
-    const dow = d.getDay();
-    const hour = d.getHours();
-    const key = `${dow}|${hour}`;
-    let item = map.get(key);
-    if (!item) {
-      item = { dow, hour, requests: 0, totalTokens: 0, totalCost: 0 };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += a.tokens.total;
-    item.totalCost += a.cost;
-  }
-  return Array.from(map.values());
-}
-async function getUsageReport(filters = {}) {
-  const [summary, models, providers, daily, sessions, errors, totalSessions] = await Promise.all([
-    getSummary(filters),
-    getModelBreakdown(filters),
-    getProviderBreakdown(filters),
-    getDailyBreakdown(filters),
-    getSessionBreakdown(filters),
-    getErrorStats(filters),
-    getSessionCount(filters)
-  ]);
-  return { filters, summary, models, providers, daily, sessions, totalSessions, errors };
-}
-async function getSessionCount(filters = {}) {
-  const assistants = await loadAssistants(filters);
-  return new Set(assistants.map((a) => a.sessionID)).size;
-}
-
 // src/pricing.ts
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync3, existsSync as existsSync5 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync4, existsSync as existsSync6 } from "node:fs";
+import { join as join6 } from "node:path";
+import { homedir as homedir6 } from "node:os";
 import { execSync } from "node:child_process";
-var PRICING_PATH = join5(homedir5(), ".opencode", "usage-stat-pricing.json");
+var PRICING_PATH = join6(homedir6(), ".opencode", "usage-stat-pricing.json");
 var MODELS_DEV_URL = "https://models.dev/api.json";
 var MISSING_HIT_RATE = 0.94;
 var CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -4878,7 +4243,7 @@ function fetchAndCachePricing() {
       fetchedAt: (/* @__PURE__ */ new Date()).toISOString(),
       models
     };
-    writeFileSync3(PRICING_PATH, JSON.stringify(cache), "utf-8");
+    writeFileSync4(PRICING_PATH, JSON.stringify(cache), "utf-8");
     return cache;
   } catch {
     return loadCachedPricing();
@@ -4886,8 +4251,8 @@ function fetchAndCachePricing() {
 }
 function loadCachedPricing() {
   try {
-    if (existsSync5(PRICING_PATH)) {
-      const content = readFileSync5(PRICING_PATH, "utf-8");
+    if (existsSync6(PRICING_PATH)) {
+      const content = readFileSync6(PRICING_PATH, "utf-8");
       return JSON.parse(content);
     }
   } catch {
@@ -4957,9 +4322,1036 @@ function estimateApiCost(providerID, modelID, requestCount, inputTokens, outputT
   return { model, cost, estimated: isMissing, pricingProvider: officialProvider };
 }
 
+// src/sqlite-source.ts
+import { createRequire as createRequire3 } from "node:module";
+import { existsSync as existsSync7 } from "node:fs";
+import { join as join7 } from "node:path";
+import { homedir as homedir7 } from "node:os";
+var REQUIRED_COLUMNS = {
+  session_v2: [
+    "id",
+    "project_id",
+    "parent_id",
+    "directory",
+    "title",
+    "cost",
+    "tokens_input",
+    "tokens_output",
+    "tokens_reasoning",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "time_created",
+    "time_updated"
+  ],
+  session_message: ["id", "session_id", "type", "time_created", "data"]
+};
+var pathOverride;
+function usageDbPath() {
+  if (pathOverride === null) return null;
+  return pathOverride ?? credentialDatabasePath();
+}
+function openReadonlyDb(path) {
+  if (!existsSync7(path)) return null;
+  try {
+    const require2 = createRequire3(join7(homedir7(), ".opencode", "usage-stat-require.cjs"));
+    if (typeof globalThis.Bun !== "undefined") {
+      const { Database } = require2("bun:sqlite");
+      const db2 = new Database(path, { readonly: true });
+      return {
+        all: (sql, params = []) => db2.query(sql).all(...params),
+        close: () => db2.close()
+      };
+    }
+    const { DatabaseSync } = require2("node:sqlite");
+    const db = new DatabaseSync(path, { readOnly: true });
+    const cache = /* @__PURE__ */ new Map();
+    return {
+      all: (sql, params = []) => {
+        let stmt = cache.get(sql);
+        if (!stmt) {
+          stmt = db.prepare(sql);
+          cache.set(sql, stmt);
+        }
+        return stmt.all(...params);
+      },
+      close: () => db.close()
+    };
+  } catch {
+    return null;
+  }
+}
+function hasUsageSchema(db) {
+  try {
+    for (const [table, cols] of Object.entries(REQUIRED_COLUMNS)) {
+      const names = new Set(db.all(`PRAGMA table_info(${table})`).map((r) => String(r.name)));
+      if (!cols.every((c) => names.has(c))) return false;
+    }
+    const probe = db.all(`SELECT json_extract('{"a":{"b":1}}', '$.a.b') AS v`);
+    return Number(probe[0]?.v) === 1;
+  } catch {
+    return false;
+  }
+}
+var SESSION_COLUMNS = `id, project_id, parent_id, directory, title, time_created, time_updated, cost,
+  tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write`;
+function toSessionRow(r) {
+  return {
+    id: String(r.id),
+    projectID: r.project_id == null ? "" : String(r.project_id),
+    parentID: r.parent_id == null || r.parent_id === "" ? null : String(r.parent_id),
+    directory: r.directory == null ? "" : String(r.directory),
+    title: r.title == null || r.title === "" ? "(untitled)" : String(r.title),
+    timeCreated: Number(r.time_created) || 0,
+    timeUpdated: Number(r.time_updated) || 0,
+    cost: Number(r.cost) || 0,
+    input: Number(r.tokens_input) || 0,
+    output: Number(r.tokens_output) || 0,
+    reasoning: Number(r.tokens_reasoning) || 0,
+    cacheRead: Number(r.tokens_cache_read) || 0,
+    cacheWrite: Number(r.tokens_cache_write) || 0
+  };
+}
+var MESSAGE_COLUMNS = `m.rowid AS rid, m.session_id AS sid, m.id AS id, m.time_created AS created,
+  json_extract(m.data, '$.time.completed') AS completed,
+  json_extract(m.data, '$.agent') AS agent,
+  json_extract(m.data, '$.model.providerID') AS provider,
+  json_extract(m.data, '$.model.id') AS model,
+  json_extract(m.data, '$.cost') AS cost,
+  json_extract(m.data, '$.tokens.input') AS t_in,
+  json_extract(m.data, '$.tokens.output') AS t_out,
+  json_extract(m.data, '$.tokens.reasoning') AS t_rsn,
+  json_extract(m.data, '$.tokens.cache.read') AS t_cr,
+  json_extract(m.data, '$.tokens.cache.write') AS t_cw,
+  json_extract(m.data, '$.finish') AS finish,
+  json_extract(m.data, '$.error.type') AS etype`;
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function str(v) {
+  return typeof v === "string" && v !== "" ? v : null;
+}
+function toUsageRow(r) {
+  const input = num(r.t_in);
+  const output = num(r.t_out);
+  const reasoning = num(r.t_rsn);
+  const cacheRead = num(r.t_cr);
+  const cacheWrite = num(r.t_cw);
+  const completed = r.completed == null ? null : num(r.completed) || null;
+  return {
+    sessionID: String(r.sid),
+    messageID: String(r.id),
+    providerID: str(r.provider) ?? "unknown",
+    modelID: str(r.model) ?? "unknown",
+    agent: str(r.agent) ?? "unknown",
+    created: num(r.created),
+    completed,
+    cost: num(r.cost),
+    input,
+    output,
+    reasoning,
+    cacheRead,
+    cacheWrite,
+    total: input + output + reasoning + cacheRead + cacheWrite,
+    finish: str(r.finish),
+    errorType: str(r.etype)
+  };
+}
+var yieldToLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
+var CHUNK_TARGET_MS = 25;
+var CHUNK_MIN = 100;
+var CHUNK_MAX = 1e3;
+var SESSION_ID_CHUNK = 40;
+async function loadRows(db, opts) {
+  const out = [];
+  const report = (rows, ms) => opts.onChunk?.(rows, ms);
+  if (opts.sessionIds) {
+    const ids = Array.from(new Set(opts.sessionIds));
+    for (let i = 0; i < ids.length; i += SESSION_ID_CHUNK) {
+      const batch = ids.slice(i, i + SESSION_ID_CHUNK);
+      const params = [...batch];
+      let where = `m.session_id IN (${batch.map(() => "?").join(",")}) AND m.type = 'assistant'`;
+      if (opts.sinceMs != null) {
+        where += " AND m.time_created >= ?";
+        params.push(opts.sinceMs);
+      }
+      if (opts.untilMs != null) {
+        where += " AND m.time_created < ?";
+        params.push(opts.untilMs);
+      }
+      const t0 = performance.now();
+      const rows = db.all(`SELECT ${MESSAGE_COLUMNS} FROM session_message m WHERE ${where}`, params);
+      for (const r of rows) out.push(toUsageRow(r));
+      report(rows.length, performance.now() - t0);
+      await yieldToLoop();
+    }
+    return out;
+  }
+  const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+  let lastTime = opts.sinceMs ?? 0;
+  let lastRowid = -1;
+  let limit = 500;
+  const sql = `SELECT ${MESSAGE_COLUMNS} FROM session_message m
+    WHERE m.type = 'assistant' AND m.time_created >= ? AND (m.time_created > ? OR m.rowid > ?) AND m.time_created < ?
+    ORDER BY m.time_created, m.rowid LIMIT ?`;
+  for (; ; ) {
+    const t0 = performance.now();
+    const rows = db.all(sql, [lastTime, lastTime, lastRowid, until, limit]);
+    const ms = performance.now() - t0;
+    for (const r of rows) out.push(toUsageRow(r));
+    report(rows.length, ms);
+    if (rows.length < limit) break;
+    const last = rows[rows.length - 1];
+    lastTime = num(last.created);
+    lastRowid = num(last.rid);
+    limit = Math.round(Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, limit * (CHUNK_TARGET_MS / Math.max(ms, 1)))));
+    await yieldToLoop();
+  }
+  return out;
+}
+function loadSessions(db, ids) {
+  if (!ids) return db.all(`SELECT ${SESSION_COLUMNS} FROM session_v2`).map(toSessionRow);
+  const out = [];
+  const unique = Array.from(new Set(ids));
+  for (let i = 0; i < unique.length; i += 500) {
+    const batch = unique.slice(i, i + 500);
+    const rows = db.all(`SELECT ${SESSION_COLUMNS} FROM session_v2 WHERE id IN (${batch.map(() => "?").join(",")})`, batch);
+    out.push(...rows.map(toSessionRow));
+  }
+  return out;
+}
+function openUsageSqliteSource(db) {
+  let handle = db ?? null;
+  if (!handle) {
+    const path = usageDbPath();
+    if (!path) return null;
+    handle = openReadonlyDb(path);
+  }
+  if (!handle) return null;
+  if (!hasUsageSchema(handle)) {
+    try {
+      handle.close();
+    } catch {
+    }
+    return null;
+  }
+  const h = handle;
+  return {
+    family(sessionID) {
+      const rows = h.all(
+        `WITH RECURSIVE fam(id, depth) AS (
+           SELECT id, 0 FROM session_v2 WHERE id = ?
+           UNION SELECT s.id, fam.depth + 1 FROM session_v2 s JOIN fam ON s.parent_id = fam.id WHERE fam.depth < 64
+         ) SELECT id FROM fam ORDER BY depth`,
+        [sessionID]
+      );
+      if (rows.length === 0) return null;
+      return Array.from(new Set(rows.map((r) => String(r.id))));
+    },
+    hasSessions(ids) {
+      const unique = Array.from(new Set(ids));
+      if (unique.length === 0) return true;
+      const rows = h.all(`SELECT count(*) AS n FROM session_v2 WHERE id IN (${unique.map(() => "?").join(",")})`, unique);
+      return Number(rows[0]?.n) === unique.length;
+    },
+    async load(opts) {
+      const rows = await loadRows(h, opts);
+      const sessions = loadSessions(h, opts.sessionIds);
+      return { sessions, rows };
+    },
+    close() {
+      try {
+        h.close();
+      } catch {
+      }
+    }
+  };
+}
+
+// src/queries.ts
+var client = null;
+function setV2Client(c) {
+  client = c;
+  clearQueryCache();
+}
+function requireClient() {
+  if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
+  return client;
+}
+var DATASET_TTL_MS = 3e4;
+var SQLITE_DATASET_TTL_MS = 2e3;
+var SESSION_LIST_TTL_MS = 3e4;
+var API_CONCURRENCY = 16;
+var datasetCache = /* @__PURE__ */ new Map();
+var sessionListCache = null;
+var apiRowCache = /* @__PURE__ */ new Map();
+function clearQueryCache() {
+  datasetCache.clear();
+  sessionListCache = null;
+  apiRowCache.clear();
+}
+function datasetKey(opts) {
+  return JSON.stringify([opts.sinceMs ?? null, opts.untilMs ?? null, opts.sessionIds ? [...opts.sessionIds].sort() : null]);
+}
+function loadDataset(opts = {}) {
+  const key = datasetKey(opts);
+  const now = Date.now();
+  for (const [k, v] of datasetCache) if (now - v.at > v.ttl) datasetCache.delete(k);
+  const hit = datasetCache.get(key);
+  if (hit) return hit.promise;
+  const promise = loadDatasetUncached(opts);
+  const entry = { at: now, ttl: DATASET_TTL_MS, promise };
+  datasetCache.set(key, entry);
+  promise.then(
+    (ds) => {
+      if (ds.source.source === "sqlite") {
+        entry.at = Date.now();
+        entry.ttl = SQLITE_DATASET_TTL_MS;
+      }
+    },
+    () => {
+      if (datasetCache.get(key)?.promise === promise) datasetCache.delete(key);
+    }
+  );
+  return promise;
+}
+async function loadDatasetUncached(opts) {
+  const t0 = Date.now();
+  const viaSqlite = await loadViaSqlite(opts);
+  if (viaSqlite) {
+    return { ...viaSqlite, failedSessions: /* @__PURE__ */ new Set(), source: { source: "sqlite", elapsedMs: Date.now() - t0 } };
+  }
+  const viaApi = await loadViaApi(opts);
+  return { ...viaApi, source: { source: "api", elapsedMs: Date.now() - t0 } };
+}
+async function loadViaSqlite(opts) {
+  let src = null;
+  try {
+    src = openUsageSqliteSource();
+    if (!src) return null;
+    if (!await sqliteMatchesClient(src, opts)) return null;
+    const { sessions, rows } = await src.load(opts);
+    return { sessions: new Map(sessions.map((s) => [s.id, s])), rows };
+  } catch {
+    return null;
+  } finally {
+    src?.close();
+  }
+}
+async function sqliteMatchesClient(src, opts) {
+  if (opts.sessionIds) return src.hasSessions(opts.sessionIds);
+  if (!client) return true;
+  try {
+    const res = await client.session.list({ limit: 10 });
+    const ids = Array.isArray(res?.data) ? res.data.map((s) => s.id) : [];
+    return src.hasSessions(ids);
+  } catch {
+    return true;
+  }
+}
+function sessionInfoToRow(s) {
+  const t2 = s.tokens;
+  return {
+    id: s.id,
+    projectID: s.projectID ?? "",
+    parentID: s.parentID ?? null,
+    directory: s.location?.directory ?? "",
+    title: s.title || "(untitled)",
+    timeCreated: s.time?.created ?? 0,
+    timeUpdated: s.time?.updated ?? 0,
+    cost: s.cost ?? 0,
+    input: t2?.input ?? 0,
+    output: t2?.output ?? 0,
+    reasoning: t2?.reasoning ?? 0,
+    cacheRead: t2?.cache?.read ?? 0,
+    cacheWrite: t2?.cache?.write ?? 0
+  };
+}
+function listAllSessions() {
+  if (sessionListCache && Date.now() - sessionListCache.at <= SESSION_LIST_TTL_MS) return sessionListCache.promise;
+  const promise = (async () => {
+    const c = requireClient();
+    const all = [];
+    let cursor;
+    for (; ; ) {
+      const res = await c.session.list({ limit: 500, cursor });
+      const page = res?.data;
+      if (!Array.isArray(page) || page.length === 0) break;
+      all.push(...page);
+      const next = res?.cursor?.next;
+      if (!next) break;
+      cursor = next;
+    }
+    return all;
+  })();
+  sessionListCache = { at: Date.now(), promise };
+  promise.catch(() => {
+    if (sessionListCache?.promise === promise) sessionListCache = null;
+  });
+  return promise;
+}
+async function listChildren(parentID) {
+  const c = requireClient();
+  const all = [];
+  let cursor;
+  for (; ; ) {
+    const res = await c.session.list({ parentID, limit: 500, cursor });
+    const page = res?.data;
+    if (!Array.isArray(page) || page.length === 0) break;
+    all.push(...page.filter((s) => s.parentID === parentID));
+    const next = res?.cursor?.next;
+    if (!next) break;
+    cursor = next;
+  }
+  return all;
+}
+async function apiFamily(rootID) {
+  const c = requireClient();
+  const out = [];
+  try {
+    const root = await c.session.get({ sessionID: rootID });
+    if (root) out.push(root);
+  } catch {
+  }
+  const seen = /* @__PURE__ */ new Set([rootID]);
+  let frontier = [rootID];
+  while (frontier.length > 0) {
+    const next = [];
+    const results = await Promise.all(frontier.map((id) => listChildren(id).catch(() => [])));
+    for (const children of results) {
+      for (const s of children) {
+        if (seen.has(s.id)) continue;
+        seen.add(s.id);
+        out.push(s);
+        next.push(s.id);
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+async function fetchMessageRows(sessionID) {
+  const c = requireClient();
+  const rows = [];
+  let cursor;
+  for (; ; ) {
+    const res = await c.message.list({ sessionID, limit: 200, order: cursor ? void 0 : "asc", cursor });
+    const page = res?.data;
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const m of page) {
+      const row = projectAssistant(m, sessionID);
+      if (row) rows.push(row);
+    }
+    const next = res?.cursor?.next;
+    if (!next) break;
+    cursor = next;
+  }
+  return rows;
+}
+function projectAssistant(m, sessionID) {
+  if (!m || typeof m !== "object" || m.type !== "assistant") return null;
+  const a = m;
+  const tokens = a.tokens;
+  const input = tokens?.input ?? 0;
+  const output = tokens?.output ?? 0;
+  const reasoning = tokens?.reasoning ?? 0;
+  const cacheRead = tokens?.cache?.read ?? 0;
+  const cacheWrite = tokens?.cache?.write ?? 0;
+  return {
+    sessionID,
+    messageID: a.id,
+    providerID: a.model?.providerID || "unknown",
+    modelID: a.model?.id || "unknown",
+    agent: a.agent || "unknown",
+    created: a.time?.created ?? 0,
+    completed: a.time?.completed ?? null,
+    cost: a.cost ?? 0,
+    input,
+    output,
+    reasoning,
+    cacheRead,
+    cacheWrite,
+    total: input + output + reasoning + cacheRead + cacheWrite,
+    finish: a.finish ?? null,
+    errorType: a.error?.type ?? null
+  };
+}
+function sessionStamp(s) {
+  return `${s.time?.updated ?? 0}|${s.cost ?? 0}|${s.tokens?.output ?? 0}`;
+}
+async function loadViaApi(opts) {
+  const infos = opts.sessionIds ? (await Promise.all(opts.sessionIds.map((id) => requireClient().session.get({ sessionID: id }).catch(() => null)))).filter((s) => !!s) : await listAllSessions();
+  const sessions = new Map(infos.map((s) => [s.id, sessionInfoToRow(s)]));
+  const targets = opts.sinceMs != null ? infos.filter((s) => (s.time?.updated ?? Infinity) >= opts.sinceMs) : infos;
+  const rows = [];
+  const failedSessions = /* @__PURE__ */ new Set();
+  let done = 0;
+  let index = 0;
+  const worker = async () => {
+    while (index < targets.length) {
+      const s = targets[index++];
+      const stamp = sessionStamp(s);
+      let projected = apiRowCache.get(s.id)?.stamp === stamp ? apiRowCache.get(s.id).rows : null;
+      if (!projected) {
+        try {
+          projected = await fetchMessageRows(s.id);
+          apiRowCache.set(s.id, { stamp, rows: projected });
+        } catch (err) {
+          console.warn(`[opencode-usage-stat] failed to read messages for ${s.id}:`, err);
+          failedSessions.add(s.id);
+        }
+      }
+      if (projected) {
+        for (const r of projected) {
+          if (opts.sinceMs != null && r.created < opts.sinceMs) continue;
+          if (opts.untilMs != null && r.created >= opts.untilMs) continue;
+          rows.push(r);
+        }
+      }
+      done++;
+      opts.onProgress?.(done, targets.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(API_CONCURRENCY, targets.length) }, worker));
+  return { sessions, rows, failedSessions };
+}
+function isValidDate(s) {
+  return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+function toLocalDay(ms) {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function localMidnight(day) {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+function addDays(day, delta) {
+  const [y, m, d] = day.split("-").map(Number);
+  return toLocalDay(new Date(y, m - 1, d + delta).getTime());
+}
+function filtersToRange(filters) {
+  const range = {};
+  if (isValidDate(filters.startDate)) range.sinceMs = localMidnight(filters.startDate);
+  if (isValidDate(filters.endDate)) range.untilMs = localMidnight(addDays(filters.endDate, 1));
+  const ids = filters.sessionIds && filters.sessionIds.length > 0 ? filters.sessionIds : filters.sessionId ? [filters.sessionId] : void 0;
+  if (ids) range.sessionIds = ids;
+  return range;
+}
+function matchesRow(r, filters, range) {
+  if (range.sessionIds && !range.sessionIds.includes(r.sessionID)) return false;
+  if (filters.provider && r.providerID !== filters.provider) return false;
+  if (filters.model && r.modelID !== filters.model) return false;
+  if (range.sinceMs != null && r.created < range.sinceMs) return false;
+  if (range.untilMs != null && r.created >= range.untilMs) return false;
+  return true;
+}
+function usageRows(rows) {
+  return rows.filter((r) => r.total > 0);
+}
+function summarizeRows(rows) {
+  const models = /* @__PURE__ */ new Set();
+  const providers = /* @__PURE__ */ new Set();
+  const out = { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, totalCost: 0 };
+  for (const r of rows) {
+    out.totalTokens += r.total;
+    out.inputTokens += r.input;
+    out.outputTokens += r.output;
+    out.reasoningTokens += r.reasoning;
+    out.cacheRead += r.cacheRead;
+    out.cacheWrite += r.cacheWrite;
+    out.totalCost += r.cost;
+    models.add(r.modelID);
+    providers.add(r.providerID);
+  }
+  const modelsArray = Array.from(models);
+  return {
+    model: modelsArray.length === 1 ? modelsArray[0] : "",
+    provider: providers.size === 1 ? Array.from(providers)[0] : "",
+    modelsUsed: modelsArray,
+    ...out,
+    requestCount: rows.length
+  };
+}
+function modelBreakdownRows(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const key = `${r.providerID}|${r.modelID}`;
+    let item = map.get(key);
+    if (!item) {
+      item = {
+        provider: r.providerID,
+        model: r.modelID,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalCost: 0,
+        ids: /* @__PURE__ */ new Set()
+      };
+      map.set(key, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.inputTokens += r.input;
+    item.outputTokens += r.output;
+    item.reasoningTokens += r.reasoning;
+    item.cacheRead += r.cacheRead;
+    item.cacheWrite += r.cacheWrite;
+    item.totalCost += r.cost;
+    item.ids.add(r.sessionID);
+  }
+  return Array.from(map.values()).map(({ ids, ...item }) => ({ ...item, sessions: ids.size })).sort((a, b) => b.totalTokens - a.totalTokens);
+}
+function providerBreakdownRows(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let item = map.get(r.providerID);
+    if (!item) {
+      item = {
+        provider: r.providerID,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+        ids: /* @__PURE__ */ new Set()
+      };
+      map.set(r.providerID, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.inputTokens += r.input;
+    item.outputTokens += r.output;
+    item.reasoningTokens += r.reasoning;
+    item.cacheRead += r.cacheRead;
+    item.totalCost += r.cost;
+    item.ids.add(r.sessionID);
+  }
+  return Array.from(map.values()).map(({ ids, ...item }) => ({ ...item, sessions: ids.size })).sort((a, b) => b.totalTokens - a.totalTokens);
+}
+function dailyBreakdownRows(rows, limit = 90) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const day = toLocalDay(r.created);
+    let item = map.get(day);
+    if (!item) {
+      item = {
+        day,
+        requests: 0,
+        sessions: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+        ids: /* @__PURE__ */ new Set()
+      };
+      map.set(day, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.inputTokens += r.input;
+    item.outputTokens += r.output;
+    item.reasoningTokens += r.reasoning;
+    item.cacheRead += r.cacheRead;
+    item.totalCost += r.cost;
+    item.ids.add(r.sessionID);
+  }
+  return Array.from(map.values()).map(({ ids, ...item }) => ({ ...item, sessions: ids.size })).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, Math.max(1, limit));
+}
+function sessionBreakdownRows(rows, sessions, limit = 15) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let item = map.get(r.sessionID);
+    const day = toLocalDay(r.created);
+    if (!item) {
+      item = {
+        sessionId: r.sessionID,
+        title: sessions.get(r.sessionID)?.title ?? "(untitled)",
+        provider: r.providerID,
+        model: r.modelID,
+        requests: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheRead: 0,
+        totalCost: 0,
+        day
+      };
+      map.set(r.sessionID, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.inputTokens += r.input;
+    item.outputTokens += r.output;
+    item.reasoningTokens += r.reasoning;
+    item.cacheRead += r.cacheRead;
+    item.totalCost += r.cost;
+    if (day > item.day) item.day = day;
+  }
+  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, Math.max(1, limit));
+}
+function classifyRow(r) {
+  if (r.errorType === "aborted") return "aborted";
+  if (r.finish === "error") return "failed";
+  if (r.finish == null && r.completed == null) return "pending";
+  return "success";
+}
+function errorStatsRows(rows) {
+  let successCount = 0;
+  let failedCount = 0;
+  let abortedCount = 0;
+  const byModel = /* @__PURE__ */ new Map();
+  const byType = /* @__PURE__ */ new Map();
+  const finishes = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const outcome = classifyRow(r);
+    if (outcome === "pending") continue;
+    const key = `${r.providerID}|${r.modelID}`;
+    let m = byModel.get(key);
+    if (!m) {
+      m = { provider: r.providerID, model: r.modelID, failed: 0, aborted: 0, total: 0 };
+      byModel.set(key, m);
+    }
+    m.total++;
+    const reason = r.finish ?? "none";
+    finishes.set(reason, (finishes.get(reason) ?? 0) + 1);
+    if (outcome === "success") {
+      successCount++;
+      continue;
+    }
+    if (outcome === "aborted") {
+      abortedCount++;
+      m.aborted++;
+    } else {
+      failedCount++;
+      m.failed++;
+    }
+    const type = r.errorType ?? "unknown";
+    byType.set(type, (byType.get(type) ?? 0) + 1);
+  }
+  const denom = successCount + failedCount;
+  return {
+    successCount,
+    failedCount,
+    abortedCount,
+    errorRate: denom > 0 ? failedCount / denom : 0,
+    byModel: Array.from(byModel.values()).sort((a, b) => b.failed - a.failed || b.aborted - a.aborted || b.total - a.total),
+    byType: Array.from(byType, ([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+    finishReasons: Array.from(finishes, ([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count)
+  };
+}
+function heatmapRows(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const d = new Date(r.created);
+    const dow = d.getDay();
+    const hour = d.getHours();
+    const key = `${dow}|${hour}`;
+    let item = map.get(key);
+    if (!item) {
+      item = { dow, hour, requests: 0, totalTokens: 0, totalCost: 0 };
+      map.set(key, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.totalCost += r.cost;
+  }
+  return Array.from(map.values());
+}
+var COST_EPSILON = 1e-9;
+function overheadStatsRows(rows, sessions, range = {}, exclude = /* @__PURE__ */ new Set()) {
+  const sums = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let s = sums.get(r.sessionID);
+    if (!s) {
+      s = { cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
+      sums.set(r.sessionID, s);
+    }
+    s.cost += r.cost;
+    s.input += r.input;
+    s.output += r.output;
+    s.reasoning += r.reasoning;
+    s.cacheRead += r.cacheRead;
+    s.cacheWrite += r.cacheWrite;
+  }
+  const out = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, sessions: 0 };
+  const ids = range.sessionIds ?? Array.from(sessions.keys());
+  for (const id of ids) {
+    const s = sessions.get(id);
+    if (!s || exclude.has(id)) continue;
+    if (range.sinceMs != null && s.timeCreated < range.sinceMs) continue;
+    if (range.untilMs != null && s.timeUpdated >= range.untilMs) continue;
+    const a = sums.get(id) ?? { cost: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
+    const input = Math.max(0, s.input - a.input);
+    const output = Math.max(0, s.output - a.output);
+    const reasoning = Math.max(0, s.reasoning - a.reasoning);
+    const cacheRead = Math.max(0, s.cacheRead - a.cacheRead);
+    const cacheWrite = Math.max(0, s.cacheWrite - a.cacheWrite);
+    const cost = s.cost - a.cost > COST_EPSILON ? s.cost - a.cost : 0;
+    const total = input + output + reasoning + cacheRead + cacheWrite;
+    if (total === 0 && cost === 0) continue;
+    out.inputTokens += input;
+    out.outputTokens += output;
+    out.reasoningTokens += reasoning;
+    out.cacheRead += cacheRead;
+    out.cacheWrite += cacheWrite;
+    out.totalTokens += total;
+    out.cost += cost;
+    out.sessions++;
+  }
+  return out;
+}
+function projectBreakdownRows(rows, sessions, limit = 20) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const s = sessions.get(r.sessionID);
+    const directory = s?.directory || "(unknown)";
+    let item = map.get(directory);
+    if (!item) {
+      item = { directory, projectId: s?.projectID ?? "", sessions: 0, requests: 0, totalTokens: 0, totalCost: 0, ids: /* @__PURE__ */ new Set() };
+      map.set(directory, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.totalCost += r.cost;
+    item.ids.add(r.sessionID);
+  }
+  return Array.from(map.values()).map(({ ids, ...item }) => ({ ...item, sessions: ids.size })).sort((a, b) => b.totalTokens - a.totalTokens).slice(0, limit);
+}
+function agentBreakdownRows(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let item = map.get(r.agent);
+    if (!item) {
+      item = { agent: r.agent, sessions: 0, requests: 0, totalTokens: 0, totalCost: 0, ids: /* @__PURE__ */ new Set() };
+      map.set(r.agent, item);
+    }
+    item.requests++;
+    item.totalTokens += r.total;
+    item.totalCost += r.cost;
+    item.ids.add(r.sessionID);
+  }
+  return Array.from(map.values()).map(({ ids, ...item }) => ({ ...item, sessions: ids.size })).sort((a, b) => b.totalTokens - a.totalTokens);
+}
+function sessionKindRows(rows, sessions) {
+  const make = () => ({ sessions: 0, requests: 0, totalTokens: 0, totalCost: 0, ids: /* @__PURE__ */ new Set() });
+  const root = make();
+  const child = make();
+  for (const r of rows) {
+    const bucket = sessions.get(r.sessionID)?.parentID ? child : root;
+    bucket.requests++;
+    bucket.totalTokens += r.total;
+    bucket.totalCost += r.cost;
+    bucket.ids.add(r.sessionID);
+  }
+  const fin = ({ ids, ...b }) => ({ ...b, sessions: ids.size });
+  return { root: fin(root), child: fin(child) };
+}
+function modelLatencyRows(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    if (r.completed == null || r.completed <= r.created) continue;
+    if (classifyRow(r) !== "success") continue;
+    const key = `${r.providerID}|${r.modelID}`;
+    let item = map.get(key);
+    if (!item) {
+      item = { provider: r.providerID, model: r.modelID, samples: [] };
+      map.set(key, item);
+    }
+    item.samples.push(r.completed - r.created);
+  }
+  return Array.from(map.values()).map(({ provider, model, samples }) => {
+    samples.sort((a, b) => a - b);
+    return {
+      provider,
+      model,
+      samples: samples.length,
+      p50Ms: percentileSorted(samples, 0.5),
+      p90Ms: percentileSorted(samples, 0.9),
+      avgMs: samples.reduce((a, b) => a + b, 0) / samples.length
+    };
+  }).sort((a, b) => b.samples - a.samples);
+}
+function cacheSavingsFromModels(models) {
+  let total = 0;
+  let any = false;
+  const byModel = models.filter((m) => m.cacheRead > 0).map((m) => {
+    let saved = null;
+    try {
+      const p = lookupPricing(m.provider, m.model);
+      if (p && p.input != null) {
+        saved = m.cacheRead / 1e6 * Math.max(0, p.input - (p.cache_read ?? 0));
+        total += saved;
+        any = true;
+      }
+    } catch {
+    }
+    return { provider: m.provider, model: m.model, cacheRead: m.cacheRead, saved };
+  });
+  return { estimatedSavedCost: any ? total : null, byModel };
+}
+function periodSnapshotRows(rows) {
+  const used = usageRows(rows);
+  const s = summarizeRows(used);
+  return {
+    totalTokens: s.totalTokens,
+    totalCost: s.totalCost,
+    requestCount: s.requestCount,
+    sessions: new Set(used.map((r) => r.sessionID)).size,
+    cacheHitRate: used.length > 0 ? cacheHitRate(s.inputTokens, s.cacheRead, s.cacheWrite) : null,
+    errorRate: errorStatsRows(rows).errorRate
+  };
+}
+function formatLocalMinute(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${toLocalDay(ms)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function previousRange(range) {
+  if (range.sinceMs == null) return null;
+  const until = range.untilMs ?? Date.now();
+  const span = until - range.sinceMs;
+  if (span <= 0) return null;
+  const sinceDay = toLocalDay(range.sinceMs);
+  const dayAligned = localMidnight(sinceDay) === range.sinceMs && localMidnight(toLocalDay(until)) === until;
+  if (dayAligned) {
+    const days = Math.round(span / 864e5);
+    const start = addDays(sinceDay, -days);
+    return {
+      sinceMs: localMidnight(start),
+      untilMs: range.sinceMs,
+      label: { start, end: addDays(sinceDay, -1) }
+    };
+  }
+  return {
+    sinceMs: range.sinceMs - span,
+    untilMs: range.sinceMs,
+    label: { start: formatLocalMinute(range.sinceMs - span), end: formatLocalMinute(range.sinceMs) }
+  };
+}
+async function getPeriodReport(filters = {}, window = filtersToRange(filters), onProgress) {
+  const prev = previousRange(window);
+  const loadRange = { ...window, sinceMs: prev ? prev.sinceMs : window.sinceMs };
+  const ds = await loadDataset({ ...loadRange, onProgress });
+  const current = ds.rows.filter((r) => matchesRow(r, filters, window));
+  const used = usageRows(current);
+  const models = modelBreakdownRows(used);
+  const filteredByModel = !!(filters.provider || filters.model);
+  let comparison = { previous: null, previousRange: null };
+  if (prev) {
+    const prevWindow = { ...window, sinceMs: prev.sinceMs, untilMs: prev.untilMs };
+    comparison = {
+      previous: periodSnapshotRows(ds.rows.filter((r) => matchesRow(r, filters, prevWindow))),
+      previousRange: prev.label
+    };
+  }
+  return {
+    filters,
+    summary: summarizeRows(used),
+    models,
+    providers: providerBreakdownRows(used),
+    daily: dailyBreakdownRows(used, filters.limit ?? 90),
+    sessions: sessionBreakdownRows(used, ds.sessions, filters.limit ?? 15),
+    totalSessions: new Set(used.map((r) => r.sessionID)).size,
+    errors: errorStatsRows(current),
+    hourlyHeatmap: heatmapRows(used),
+    overhead: filteredByModel ? void 0 : overheadStatsRows(ds.rows, ds.sessions, window, ds.failedSessions),
+    projects: projectBreakdownRows(used, ds.sessions),
+    agents: agentBreakdownRows(used),
+    sessionKinds: sessionKindRows(used, ds.sessions),
+    modelLatency: modelLatencyRows(current),
+    cacheSavings: cacheSavingsFromModels(models),
+    comparison,
+    source: ds.source
+  };
+}
+async function getSessionFamily(sessionId) {
+  try {
+    const src = openUsageSqliteSource();
+    if (src) {
+      try {
+        const fam = src.family(sessionId);
+        if (fam) return fam;
+      } finally {
+        src.close();
+      }
+    }
+  } catch {
+  }
+  if (!client) return [sessionId];
+  const infos = await apiFamily(sessionId);
+  const ids = infos.map((s) => s.id);
+  return ids.includes(sessionId) ? [sessionId, ...ids.filter((id) => id !== sessionId)] : [sessionId, ...ids];
+}
+function toMessageRow(r, sessions) {
+  return {
+    messageId: r.messageID,
+    model: r.modelID,
+    provider: r.providerID,
+    inputTokens: r.input,
+    outputTokens: r.output,
+    reasoningTokens: r.reasoning,
+    cacheRead: r.cacheRead,
+    cacheWrite: r.cacheWrite,
+    totalTokens: r.total,
+    cost: r.cost,
+    timeCreated: r.created,
+    timeCompleted: r.completed,
+    sessionId: r.sessionID,
+    agent: r.agent,
+    finish: r.finish,
+    errorType: r.errorType,
+    isChild: !!sessions.get(r.sessionID)?.parentID
+  };
+}
+async function getSessionReportInput(sessionId, onProgress) {
+  const family = await getSessionFamily(sessionId);
+  const ds = await loadDataset({ sessionIds: family, onProgress });
+  const used = usageRows(ds.rows).sort((a, b) => a.created - b.created);
+  const childIds = new Set(family.filter((id) => id !== sessionId));
+  let title = ds.sessions.get(sessionId)?.title;
+  if (!title) title = client ? await getSessionTitle(sessionId) : "(untitled)";
+  return {
+    sessionId,
+    sessionTitle: title,
+    subagentCount: childIds.size,
+    summary: summarizeRows(used),
+    models: modelBreakdownRows(used),
+    messages: used.map((r) => toMessageRow(r, ds.sessions)),
+    errors: errorStatsRows(ds.rows),
+    overhead: overheadStatsRows(ds.rows, ds.sessions, { sessionIds: family }, ds.failedSessions),
+    agents: agentBreakdownRows(used),
+    childSessions: sessionBreakdownRows(used.filter((r) => childIds.has(r.sessionID)), ds.sessions, Number.MAX_SAFE_INTEGER),
+    source: ds.source
+  };
+}
+async function getSessionTitle(sessionId) {
+  const c = requireClient();
+  try {
+    const s = await c.session.get({ sessionID: sessionId });
+    return s?.title ?? "(untitled)";
+  } catch {
+    return "(untitled)";
+  }
+}
+
 // src/html-common.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "node:fs";
-import { dirname as dirname2, join as join6 } from "node:path";
+import { existsSync as existsSync8, readFileSync as readFileSync7 } from "node:fs";
+import { dirname as dirname2, join as join8 } from "node:path";
 import { fileURLToPath } from "node:url";
 function fmtTokens(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
@@ -5018,15 +5410,173 @@ function nowString() {
 function percentile2(sortedAsc, p) {
   return percentileSorted(sortedAsc, p);
 }
+function middleEllipsis(s, max) {
+  const chars = Array.from(s);
+  if (chars.length <= max) return s;
+  if (max < 3) return chars.slice(0, Math.max(0, max)).join("");
+  const keep = max - 1;
+  const tail = Math.ceil(keep * 0.6);
+  const head = keep - tail;
+  return chars.slice(0, head).join("") + "\u2026" + chars.slice(chars.length - tail).join("");
+}
+function shortenHome(path, home) {
+  if (!home) return path;
+  const h = home.replace(/[\\/]+$/, "");
+  if (!h) return path;
+  if (path === h) return "~";
+  if (path.startsWith(h + "/") || path.startsWith(h + "\\")) return "~" + path.slice(h.length);
+  return path;
+}
+function pathBasename(path) {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+function relativeChange(current, previous) {
+  if (previous == null || !Number.isFinite(previous) || !Number.isFinite(current)) return null;
+  if (previous <= 0) return current > 0 ? { direction: "up", text: "\u2191 new" } : { direction: "flat", text: "\u2192 0.0%" };
+  const pct2 = (current - previous) / previous * 100;
+  const abs = Math.abs(pct2);
+  if (abs < 0.05) return { direction: "flat", text: "\u2192 0.0%" };
+  const num2 = abs >= 1e3 ? Math.round(abs).toString() : abs.toFixed(1);
+  return { direction: pct2 > 0 ? "up" : "down", text: `${pct2 > 0 ? "\u2191" : "\u2193"} ${num2}%` };
+}
+function pointChange(current, previous) {
+  if (current == null || previous == null || !Number.isFinite(current) || !Number.isFinite(previous)) return null;
+  const pp = (current - previous) * 100;
+  const abs = Math.abs(pp);
+  if (abs < 0.05) return { direction: "flat", text: "\u2192 0.0 pp" };
+  return { direction: pp > 0 ? "up" : "down", text: `${pp > 0 ? "\u2191" : "\u2193"} ${abs.toFixed(1)} pp` };
+}
+function fmtRangeShort(start, end) {
+  const ys = /^(\d{4})-(\d{2}-\d{2})/.exec(start);
+  const ye = /^(\d{4})-(\d{2}-\d{2})/.exec(end);
+  if (ys && ye && ys[1] === ye[1]) return `${ys[2]} \u2192 ${ye[2]}`;
+  return `${start} \u2192 ${end}`;
+}
+function sourceLabel(source) {
+  if (!source) return "OpenCode V2 API";
+  return source.source === "sqlite" ? "SQLite (read-only)" : "OpenCode V2 API";
+}
+function footerSourceHtml(source) {
+  const built = source && Number.isFinite(source.elapsedMs) && source.elapsedMs >= 0 ? ` &middot; Built in ${source.elapsedMs < 1 ? "<1ms" : fmtDuration(source.elapsedMs)}` : "";
+  return `Data: ${escapeHtml(sourceLabel(source))}${built}`;
+}
+function barListHtml(items, ariaLabel) {
+  if (items.length === 0) return "";
+  const max = Math.max(...items.map((i) => i.value), 0);
+  const rows = items.map((item) => {
+    const w = max > 0 && item.value > 0 ? Math.max(1.5, item.value / max * 100) : 0;
+    const title = item.title ?? item.label;
+    return `<li class="bar-row">
+        <div class="bar-label" title="${escapeHtml(title)}"><span class="bar-name">${escapeHtml(item.label)}</span>${item.sub ? `<span class="bar-sub">${escapeHtml(item.sub)}</span>` : ""}</div>
+        <div class="bar-value">${escapeHtml(item.display)}${item.meta ? `<span class="bar-meta">${escapeHtml(item.meta)}</span>` : ""}</div>
+        <div class="bar-track" aria-hidden="true"><span class="bar-fill tone-${item.tone ?? "default"}" style="width:${w.toFixed(1)}%"></span></div>
+      </li>`;
+  }).join("");
+  return `<ul class="bar-list" aria-label="${escapeHtml(ariaLabel)}">${rows}</ul>`;
+}
+function panelHtml(title, body, opts = {}) {
+  const badge = opts.badge ? `<span class="badge"${opts.badgeTitle ? ` title="${escapeHtml(opts.badgeTitle)}"` : ""}>${escapeHtml(opts.badge)}</span>` : "";
+  return `<div class="panel${opts.className ? " " + opts.className : ""}">
+      <div class="panel-head"><div class="panel-title">${escapeHtml(title)}${badge}</div>${opts.sub ? `<div class="panel-sub">${escapeHtml(opts.sub)}</div>` : ""}</div>
+      ${body}
+    </div>`;
+}
+function sectionNavHtml(items) {
+  if (items.length < 2) return "";
+  const links = items.map((i) => `<a href="#${escapeHtml(i.id)}">${escapeHtml(i.label)}</a>`).join("");
+  return `<nav class="section-nav" aria-label="Report sections">${links}</nav>`;
+}
+var FINISH_REASON_META = {
+  "stop": { label: "stop", tone: "good", hint: "Model finished normally" },
+  "tool-calls": { label: "tool-calls", tone: "accent", hint: "Turn ended to run tools" },
+  "length": { label: "length \xB7 truncated", tone: "warn", hint: "Output hit the max-token limit and was cut off" },
+  "error": { label: "error", tone: "danger", hint: "Request ended with an error" },
+  "content-filter": { label: "content-filter", tone: "warn", hint: "Output blocked by the provider's content filter" },
+  "unknown": { label: "unknown", tone: "muted" },
+  "none": { label: "none", tone: "muted", hint: "No finish reason recorded" }
+};
+function finishReasonMeta(reason) {
+  return FINISH_REASON_META[reason] ?? { label: reason, tone: "muted" };
+}
+function finishReasonCount(errors, reason) {
+  return errors?.finishReasons?.find((r) => r.reason === reason)?.count ?? 0;
+}
+function abortedCountOf(errors) {
+  if (!errors) return 0;
+  if (typeof errors.abortedCount === "number") return errors.abortedCount;
+  return errors.byType?.find((t2) => t2.type === "aborted")?.count ?? 0;
+}
+function errorTypesPanelHtml(errors) {
+  if (!errors || !Array.isArray(errors.byType)) return "";
+  const failedTypes = errors.byType.filter((t2) => t2.type !== "aborted" && t2.count > 0);
+  const aborted = abortedCountOf(errors);
+  if (failedTypes.length === 0 && aborted === 0 && errors.failedCount === 0) return "";
+  const failedSum = failedTypes.reduce((s, t2) => s + t2.count, 0);
+  const body = failedTypes.length > 0 ? barListHtml(failedTypes.slice(0, 10).map((t2) => ({
+    label: t2.type,
+    value: t2.count,
+    display: String(t2.count),
+    meta: failedSum > 0 ? fmtPercent(t2.count / failedSum) : void 0,
+    tone: "danger"
+  })), "Error types") : `<div class="panel-empty">${errors.failedCount > 0 ? `${errors.failedCount} failed, type breakdown unavailable` : "No failed requests"}</div>`;
+  const abortedLine = aborted > 0 ? `<div class="panel-note"><span class="note-dot" aria-hidden="true"></span>User aborted <strong>${aborted}</strong> <span class="note-faint">&middot; interrupted by the user, not counted as errors</span></div>` : "";
+  const done = errors.successCount + errors.failedCount;
+  return panelHtml("Error Types", body + abortedLine, {
+    sub: `${errors.failedCount} failed${done > 0 ? ` \xB7 ${fmtPercent(errors.errorRate)} of ${done}` : ""}`
+  });
+}
+function finishReasonsPanelHtml(errors) {
+  const reasons = (errors?.finishReasons ?? []).filter((r) => r.count > 0);
+  if (reasons.length === 0) return "";
+  const total = reasons.reduce((s, r) => s + r.count, 0);
+  const sorted = [...reasons].sort((a, b) => b.count - a.count);
+  const aborted = abortedCountOf(errors);
+  const body = barListHtml(sorted.map((r) => {
+    const meta = finishReasonMeta(r.reason);
+    const label = r.reason === "error" && aborted > 0 ? `error \xB7 incl. ${aborted} aborted` : meta.label;
+    return {
+      label,
+      title: meta.hint ? `${r.reason}: ${meta.hint}` : r.reason,
+      value: r.count,
+      display: String(r.count),
+      meta: fmtPercent(r.count / total),
+      tone: meta.tone
+    };
+  }), "Finish reasons");
+  const truncated = finishReasonCount(errors, "length");
+  const note = truncated > 0 ? `<div class="panel-note warn"><span class="note-dot" aria-hidden="true"></span><strong>${truncated}</strong> response${truncated > 1 ? "s" : ""} hit the output limit <span class="note-faint">&middot; finish = length</span></div>` : "";
+  return panelHtml("Finish Reasons", body + note, { sub: `${total} completed requests` });
+}
+function overheadPanelHtml(overhead, opts = {}) {
+  if (!overhead || overhead.totalTokens <= 0 && overhead.cost <= 0) return "";
+  const stat = (label, value) => `<div class="stat-item"><span class="stat-label">${label}</span><span class="stat-value">${value}</span></div>`;
+  const body = `
+      <div class="panel-figure">${fmtTokens(overhead.totalTokens)}<span class="panel-figure-sub">tokens &middot; ${fmtCost(overhead.cost)}</span></div>
+      <div class="mini-stats">
+        ${stat("Input", fmtTokens(overhead.inputTokens))}
+        ${stat("Output", fmtTokens(overhead.outputTokens))}
+        ${stat("Reasoning", fmtTokens(overhead.reasoningTokens))}
+        ${stat("Cache R", fmtTokens(overhead.cacheRead))}
+        ${stat("Cache W", fmtTokens(overhead.cacheWrite))}
+        ${opts.showSessions ? stat("Sessions", String(overhead.sessions)) : ""}
+      </div>
+      <div class="panel-note"><span class="note-faint">Title generation, compaction and other usage not attached to assistant messages: session totals minus the sum of assistant messages, floored at 0.</span></div>`;
+  return panelHtml("Overhead", body, {
+    sub: "title / compaction",
+    badge: "Derived",
+    badgeTitle: "Derived value: computed by subtraction, not reported directly"
+  });
+}
 function embeddedEChartsScript() {
   const candidates = [
-    join6(dirname2(fileURLToPath(import.meta.url)), "..", "vendor", "echarts.min.js"),
-    join6(process.cwd(), "vendor", "echarts.min.js"),
-    join6(process.cwd(), "dist", "..", "vendor", "echarts.min.js")
+    join8(dirname2(fileURLToPath(import.meta.url)), "..", "vendor", "echarts.min.js"),
+    join8(process.cwd(), "vendor", "echarts.min.js"),
+    join8(process.cwd(), "dist", "..", "vendor", "echarts.min.js")
   ];
   for (const path of candidates) {
-    if (!existsSync6(path)) continue;
-    const source = readFileSync6(path, "utf8").replace(/<\/script/gi, "<\\/script");
+    if (!existsSync8(path)) continue;
+    const source = readFileSync7(path, "utf8").replace(/<\/script/gi, "<\\/script");
     return `<script>${source}</script>`;
   }
   return `<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>`;
@@ -5283,8 +5833,8 @@ var SHARED_CSS = `
   .section-title{font-size:11px;font-family:var(--font-mono);font-weight:500;text-transform:uppercase;letter-spacing:.17em;color:#cbc9c4;margin-bottom:10px;padding:0 4px;display:flex;align-items:center;gap:10px}
   .section-title::before{content:'';width:7px;height:7px;background:transparent;border:1px solid #d8d8d5;border-radius:50%;box-shadow:0 0 14px rgba(231,231,228,.35)}
   .section-title .sub{font-size:9px;color:var(--text-faint);letter-spacing:.08em;text-transform:none;font-weight:400}
-  .chart-box,.model-card,.provider-card,.insight-card,.empty-state{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}
-  .chart-box::before,.model-card::before,.provider-card::before,.insight-card::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}
+  .chart-box,.model-card,.provider-card,.insight-card,.empty-state,.panel{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}
+  .chart-box::before,.model-card::before,.provider-card::before,.insight-card::before,.panel::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}
   .chart-box{padding:12px;height:420px}
   .chart-box canvas{position:relative;z-index:1}
 
@@ -5362,7 +5912,85 @@ var SHARED_CSS = `
   .reveal-item{opacity:0;transform:translateY(22px);transition:opacity .65s var(--ease),transform .65s var(--ease);transition-delay:var(--reveal-delay,0ms)}
   .reveal-item.in-view{opacity:1;transform:none}
 
+  .section[id],.anchor[id]{scroll-margin-top:64px}
+  .kpi-api-row{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px}
+  .data-table td.session-title{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .two-col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+  .two-col>.section,.two-col>.panel{margin-bottom:0}
+  .panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:12px}
+  .provider-layout{grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
+  .provider-share{display:flex;flex-direction:column}
+  .provider-share .chart-box{flex:1;height:auto;min-height:300px}
+
+  .section-nav{position:sticky;top:10px;z-index:50;display:flex;gap:2px;width:max-content;max-width:100%;overflow-x:auto;scrollbar-width:none;margin:0 0 22px;padding:4px;background:rgba(17,17,20,.86);border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 40px -24px rgba(0,0,0,.9)}
+  .section-nav::-webkit-scrollbar{display:none}
+  .section-nav a{flex-shrink:0;padding:6px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:10px;font-family:var(--font-mono);letter-spacing:.07em;text-transform:uppercase;transition:color .25s,background .25s}
+  .section-nav a:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .section-nav a.active{color:#111114;background:#e7e7e4}
+
+  .kpi-delta{display:flex;flex-wrap:wrap;gap:2px 6px;align-items:baseline;margin-top:6px}
+  .kpi-sub+.kpi-delta{margin-top:4px}
+  .kpi-delta .delta-range{color:var(--text-faint)}
+  .delta-good{color:var(--success)} .delta-bad{color:var(--danger)} .delta-neutral{color:var(--text-dim)}
+  .kpi-card.kpi-light .delta-good{color:#2c6a4c} .kpi-card.kpi-light .delta-bad{color:#9c2f3a} .kpi-card.kpi-light .delta-neutral{color:#4a4a52} .kpi-card.kpi-light .delta-range{color:#55555d}
+
+  .panel{padding:18px 18px 16px;transition:border-color .4s var(--ease)}
+  .panel:hover{border-color:var(--border-light)}
+  .panel>*{position:relative;z-index:1}
+  .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .panel-title{display:flex;align-items:center;gap:8px;font-size:10px;font-family:var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text)}
+  .panel-sub{font-size:10px;font-family:var(--font-mono);color:var(--text-faint);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .panel-figure{font-family:var(--font-mono);font-size:30px;line-height:1;letter-spacing:-.05em;color:var(--text);font-variant-numeric:tabular-nums;margin:2px 0 14px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}
+  .panel-figure-sub{font-size:11px;letter-spacing:.02em;color:var(--text-dim)}
+  .panel-note{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 6px;margin-top:12px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08);font-size:11px;color:var(--text-dim);line-height:1.45}
+  .panel-note strong{color:var(--text);font-weight:600;font-family:var(--font-mono)}
+  .panel-note .note-faint{color:var(--text-faint)}
+  .panel-note .note-dot{width:6px;height:6px;border-radius:50%;background:var(--missing);align-self:center;flex-shrink:0}
+  .panel-note.warn .note-dot{background:var(--tps)}
+  .panel-empty{padding:18px 0;text-align:center;color:var(--text-faint);font-family:var(--font-mono);font-size:11px}
+  .badge{display:inline-block;padding:2px 7px;border-radius:99px;border:1px solid rgba(208,183,125,.4);color:var(--tps);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;background:rgba(208,183,125,.07);cursor:help}
+  .mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:10px 12px}
+
+  .bar-list{list-style:none;display:flex;flex-direction:column;gap:11px}
+  .bar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 14px;align-items:end}
+  .bar-label{min-width:0;display:flex;flex-direction:column}
+  .bar-name{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar-sub{font-size:10px;color:var(--text-faint);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+  .bar-value{font-family:var(--font-mono);font-size:12px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+  .bar-meta{color:var(--text-faint);font-size:10px;margin-left:8px}
+  .bar-track{grid-column:1/-1;height:5px;border-radius:99px;background:rgba(255,255,255,.05);overflow:hidden}
+  .bar-fill{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#6f6f78,#e7e7e4);transition:width .8s var(--ease)}
+  .bar-fill.tone-danger{background:linear-gradient(90deg,#7d4248,#df7b83)}
+  .bar-fill.tone-warn{background:linear-gradient(90deg,#76663f,#d0b77d)}
+  .bar-fill.tone-good{background:linear-gradient(90deg,#4b6b5b,#8fb7a2)}
+  .bar-fill.tone-accent{background:linear-gradient(90deg,#5d6979,#c8d4e3)}
+  .bar-fill.tone-muted{background:linear-gradient(90deg,#3d3d45,#77777f)}
+
+  .split-bar{display:flex;height:10px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.05);margin:6px 0 10px}
+  .split-seg{height:100%}
+  .split-seg.root{background:linear-gradient(90deg,#bfbfc4,#ededea)} .split-seg.child{background:linear-gradient(90deg,#5d6979,#c8d4e3)}
+  .split-legend{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .split-legend .legend-dot.root{background:#e7e7e4} .split-legend .legend-dot.child{background:var(--input)}
+  .split-key{display:flex;align-items:center;gap:6px;font-size:10px;font-family:var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);margin-bottom:4px}
+  .split-val{font-family:var(--font-mono);font-size:12px;color:var(--text);font-variant-numeric:tabular-nums}
+  .split-val span{color:var(--text-faint);font-size:10px}
+  .split-row-label{font-size:9px;font-family:var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);margin-top:8px}
+
+  .range-cell{min-width:140px}
+  .range-track{position:relative;height:6px;border-radius:99px;background:rgba(255,255,255,.05)}
+  .range-fill{position:absolute;top:0;bottom:0;left:0;border-radius:99px;background:linear-gradient(90deg,rgba(200,212,227,.25),rgba(223,123,131,.55))}
+  .range-p50{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;border-radius:1px;background:#8fb7a2}
+  .data-table td.cell-left,.data-table th.cell-left{text-align:left}
+  .data-table th.cell-num{text-align:right}
+  .data-table td.cell-num{text-align:right;font-family:var(--font-mono);color:#cdcdd3}
+  .path-cell{display:flex;flex-direction:column;min-width:0;max-width:420px}
+  .path-cell .path-name{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .path-cell .path-full{font-family:var(--font-mono);font-size:10px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .status-chip{display:inline-block;padding:1px 7px;border-radius:99px;font-size:9.5px;font-family:var(--font-mono);border:1px solid var(--border);color:var(--text-dim);white-space:nowrap}
+  .status-chip.tone-danger{color:var(--danger);border-color:rgba(223,123,131,.4)} .status-chip.tone-warn{color:var(--tps);border-color:rgba(208,183,125,.4)} .status-chip.tone-muted{color:var(--text-faint)}
+
   @media(max-width:1200px){.kpi-hero-row,.kpi-session-row{grid-template-columns:repeat(3,1fr)}.kpi-minor-row{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:1100px){.provider-layout{grid-template-columns:minmax(0,1fr)}.provider-share .chart-box{flex:none;height:300px}}
   @media(max-width:768px){
     .kpi-hero-row,.kpi-minor-row,.kpi-session-row{grid-template-columns:repeat(2,minmax(0,1fr))}
     .stat-grid{grid-template-columns:repeat(2,1fr)}
@@ -5377,6 +6005,17 @@ var SHARED_CSS = `
     .data-table{font-size:11px}
     .data-table th,.data-table td{padding:6px 8px}
     .provider-row{grid-template-columns:1fr}
+    .two-col{grid-template-columns:minmax(0,1fr);gap:18px}
+    .kpi-api-row{grid-template-columns:minmax(0,1fr)}
+    .kpi-api-row .kpi-card{min-height:0;padding:14px}
+    .kpi-api-row .kpi-label{margin-bottom:8px}
+    .section-nav{top:6px;margin-bottom:16px}
+    .section-nav a{padding:6px 10px}
+    .panel{padding:15px 14px 13px}
+    .panel-head{flex-direction:column;align-items:flex-start;gap:3px}
+    .panel-sub{text-align:left;white-space:normal}
+    .panel-figure{font-size:26px}
+    .section-title{flex-wrap:wrap;row-gap:2px}
   }
   @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.reveal-item{opacity:1!important;transform:none!important}}
   `;
@@ -5512,7 +6151,7 @@ function initDashboardMotion() {
     revealEls.forEach(function(el) { observer.observe(el); });
   }
 
-  document.querySelectorAll('.kpi-card, .chart-box, .model-card, .provider-card, .insight-card').forEach(function(el) {
+  document.querySelectorAll('.kpi-card, .chart-box, .model-card, .provider-card, .insight-card, .panel').forEach(function(el) {
     el.addEventListener('pointermove', function(e) {
       var r = el.getBoundingClientRect();
       el.style.setProperty('--mx', (e.clientX - r.left) + 'px');
@@ -5531,11 +6170,13 @@ function initDashboardMotion() {
     }
   });
 
-  if (!reduced) document.querySelectorAll('.token-seg').forEach(function(seg) {
+  if (!reduced) document.querySelectorAll('.token-seg, .bar-fill').forEach(function(seg) {
     var target = seg.style.width;
     seg.style.width = '0%';
     requestAnimationFrame(function() { requestAnimationFrame(function() { seg.style.width = target; }); });
   });
+
+  initSectionNav();
 
   var progress = document.getElementById('scroll-progress-bar');
   var scheduled = false;
@@ -5551,27 +6192,49 @@ function initDashboardMotion() {
   updateProgress();
 }
 
+// Highlights the nav link of the section crossing the upper third of the viewport.
+function initSectionNav() {
+  var nav = document.querySelector('.section-nav');
+  if (!nav || !('IntersectionObserver' in window)) return;
+  var links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+  var byId = {};
+  links.forEach(function(a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (!entry.isIntersecting) return;
+      var a = byId[entry.target.id];
+      if (!a) return;
+      links.forEach(function(l) { l.classList.remove('active'); l.removeAttribute('aria-current'); });
+      a.classList.add('active');
+      a.setAttribute('aria-current', 'location');
+      // Scroll only the nav strip; scrollIntoView would interrupt the page's smooth scroll.
+      if (nav.scrollWidth > nav.clientWidth) nav.scrollLeft = a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2;
+    });
+  }, { rootMargin: '-30% 0px -65% 0px' });
+  Object.keys(byId).forEach(function(id) { var el = document.getElementById(id); if (el) obs.observe(el); });
+}
+
 window.addEventListener('resize', function() {
   if (window.__charts) Object.values(window.__charts).forEach(function(c) { if (c && c.resize) c.resize(); });
 });`;
 
 // src/model-icons.ts
-import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
-import { join as join7, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync9, readFileSync as readFileSync8 } from "node:fs";
+import { join as join9, dirname as dirname3 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function resolveIconsDir() {
   const candidates = [];
   try {
     const url = import.meta.url;
-    if (url) candidates.push(join7(dirname3(fileURLToPath2(url)), "..", "icons"));
+    if (url) candidates.push(join9(dirname3(fileURLToPath2(url)), "..", "icons"));
   } catch {
   }
   const cwd = process.cwd();
-  for (const base of [cwd, join7(cwd, "dist", "..")]) {
-    candidates.push(join7(base, "icons"));
+  for (const base of [cwd, join9(cwd, "dist", "..")]) {
+    candidates.push(join9(base, "icons"));
   }
   for (const c of candidates) {
-    if (c && existsSync7(join7(c, "_default.svg"))) return c;
+    if (c && existsSync9(join9(c, "_default.svg"))) return c;
   }
   return null;
 }
@@ -5630,14 +6293,14 @@ function readIconDataUri(fileName) {
     _cache.set(fileName, "");
     return "";
   }
-  const filePath = join7(ICONS_DIR, fileName);
+  const filePath = join9(ICONS_DIR, fileName);
   try {
-    const buf = readFileSync7(filePath);
+    const buf = readFileSync8(filePath);
     let uri;
     if (fileName.endsWith(".svg")) {
-      let text = buf.toString("utf8");
-      text = text.replace(/currentColor/gi, FALLBACK_FILL);
-      uri = "data:image/svg+xml;base64," + Buffer.from(text, "utf8").toString("base64");
+      let text2 = buf.toString("utf8");
+      text2 = text2.replace(/currentColor/gi, FALLBACK_FILL);
+      uri = "data:image/svg+xml;base64," + Buffer.from(text2, "utf8").toString("base64");
     } else {
       uri = "data:image/png;base64," + buf.toString("base64");
     }
@@ -5663,6 +6326,17 @@ function modelIconImg(modelId, size = 16) {
 }
 
 // src/session-usage-html.ts
+function generationSpeed(messages) {
+  let tokens = 0, timeMs = 0;
+  for (const m of messages) {
+    if (!m.timeCompleted) continue;
+    const d = m.timeCompleted - m.timeCreated;
+    if (!(d > 0)) continue;
+    tokens += m.outputTokens + m.reasoningTokens;
+    timeMs += d;
+  }
+  return { tps: timeMs > 0 ? tokens / (timeMs / 1e3) : 0, tokens, timeMs };
+}
 function renderKpiCards(data) {
   const s = data.summary;
   let kpiInputSum = 0, kpiCacheSum = 0;
@@ -5702,10 +6376,10 @@ function renderKpiCards(data) {
         <div class="kpi-label">Avg Tok/Req</div>
         <div class="kpi-value" data-countup="${fmtTokens(Math.round(avgTokensPerReq))}">${fmtTokens(Math.round(avgTokensPerReq))}</div>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Tokens/s</div>
+      <div class="kpi-card" title="Output + reasoning tokens divided by the summed duration (completed \u2212 created) of completed requests">
+        <div class="kpi-label">Gen Tokens/s</div>
         <div class="kpi-value" data-countup="${tpsStr}">${tpsStr}</div>
-        <div class="kpi-sub">${fmtDuration(data.sessionDurationMs)} span</div>
+        <div class="kpi-sub">${(data.genTimeMs ?? 0) > 0 ? `${fmtTokens(data.genTokens ?? 0)} out in ${fmtDuration(data.genTimeMs ?? 0)}` : data.tps > 0 ? "output + reasoning" : "no completed requests"}</div>
       </div>
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Reported Cost</div>
@@ -5727,7 +6401,7 @@ function renderKpiCards(data) {
       <div class="kpi-card">
         <div class="kpi-label">Error Rate</div>
         <div class="kpi-value" style="color:${errorColor}" data-countup="${errorRatePct}">${errorRatePct}</div>
-        <div class="kpi-sub">${data.errors.failedCount} failed</div>
+        <div class="kpi-sub" title="Aborted = interrupted by the user; not counted in the error rate">${data.errors.failedCount} failed &middot; ${abortedCountOf(data.errors)} aborted</div>
       </div>
     </div>`;
 }
@@ -5787,7 +6461,28 @@ function renderModelCards(data) {
   }).join("\n");
   return cards;
 }
+function statusChip(msg) {
+  if (msg.errorType === "aborted") return `<span class="status-chip tone-muted" title="Interrupted by the user">aborted</span>`;
+  if (msg.finish === "error" || msg.errorType && msg.errorType !== "aborted") {
+    const t2 = msg.errorType || "error";
+    return `<span class="status-chip tone-danger" title="${escapeHtml(t2)}">${escapeHtml(t2.length > 22 ? t2.slice(0, 21) + "\u2026" : t2)}</span>`;
+  }
+  if (!msg.finish) return msg.timeCompleted ? "-" : `<span class="status-chip tone-muted">running</span>`;
+  const meta = finishReasonMeta(msg.finish);
+  const tone = meta.tone === "warn" ? "tone-warn" : "";
+  return `<span class="status-chip ${tone}"${meta.hint ? ` title="${escapeHtml(meta.hint)}"` : ""}>${escapeHtml(msg.finish)}</span>`;
+}
 function renderMessageTable(data) {
+  if (data.messages.length === 0) {
+    return `
+  <div class="section" id="requests">
+    <div class="section-title">Per-Request Breakdown</div>
+    <div class="empty-state">No requests recorded in this session.</div>
+  </div>`;
+  }
+  const agentSet = new Set(data.messages.map((m) => m.agent).filter((a) => !!a));
+  const showAgent = agentSet.size > 1 || data.messages.some((m) => m.isChild);
+  const showStatus = data.messages.some((m) => m.finish !== void 0 || m.errorType !== void 0);
   const rows = data.messages.map((msg, i) => {
     const isMissing = isMissingCache(1, msg.cacheRead, msg.cacheWrite);
     const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead, msg.cacheWrite);
@@ -5795,10 +6490,12 @@ function renderMessageTable(data) {
     const hitDisplay = isMissing ? "MISSING" : fmtPercent(hitRate);
     const duration = msg.timeCompleted ? msg.timeCompleted - msg.timeCreated : null;
     const durColor = duration != null && duration > data.p90Duration ? "var(--danger)" : "var(--text)";
+    const agentCell = showAgent ? `<td class="cell-left">${escapeHtml(msg.agent || "-")}${msg.isChild ? ' <span class="status-chip" title="Request from a sub-agent session">sub</span>' : ""}</td>` : "";
     return `<tr>
       <td data-sort="${i + 1}">${i + 1}</td>
       <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
+      ${agentCell}
       <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
       <td data-sort="${totalInputTokens(msg.inputTokens, msg.cacheWrite)}">${fmtTokens(totalInputTokens(msg.inputTokens, msg.cacheWrite))}</td>
       <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
@@ -5807,18 +6504,19 @@ function renderMessageTable(data) {
       <td data-sort="${msg.cacheWrite}">${fmtTokens(msg.cacheWrite)}</td>
       <td data-sort="${isMissing ? -1 : hitRate}" style="color:${hitColor};font-weight:600">${hitDisplay}</td>
       <td data-sort="${duration ?? -1}" style="color:${durColor}">${fmtDuration(duration)}</td>
+      ${showStatus ? `<td>${statusChip(msg)}</td>` : ""}
       <td data-sort="${msg.cost}">${fmtCost(msg.cost)}</td>
     </tr>`;
   }).join("\n");
   return `
-  <div class="section">
+  <div class="section" id="requests">
     <div class="section-title">Per-Request Breakdown <span class="sub">(${data.messages.length} requests, click headers to sort)</span></div>
     <table id="messages-table" class="data-table">
       <thead><tr>
-        <th class="sortable">#</th><th class="sortable">Time</th><th>Model</th><th class="sortable">Total</th>
+        <th class="sortable">#</th><th class="sortable">Time</th><th>Model</th>${showAgent ? '<th class="sortable cell-left">Agent</th>' : ""}<th class="sortable">Total</th>
         <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th>
         <th class="sortable">Cache R</th><th class="sortable">Cache W</th>
-        <th class="sortable">Hit Rate</th><th class="sortable">Duration</th><th class="sortable">Cost</th>
+        <th class="sortable">Hit Rate</th><th class="sortable">Duration</th>${showStatus ? '<th class="sortable" title="Finish reason / error type">Status</th>' : ""}<th class="sortable">Cost</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -5990,15 +6688,15 @@ function renderApiCostSection(data) {
   const totalApi = apiCost.totalApiCost ?? 0;
   const reported = apiCost.reportedCost;
   const diff = totalApi - reported;
-  const diffStr = diff > 1e-3 ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>` : `<span style="color:var(--cache)">${fmtCost(diff)}</span>`;
+  const diffStr = diff > 1e-3 ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>` : `<span style="color:var(--cache)">${diff < 0 ? "\u2212" + fmtCost(-diff) : fmtCost(diff)}</span>`;
   return `
-  <div class="section">
+  <div class="section" id="api-cost">
     <div class="section-title">API Equivalent Cost Analysis</div>
     <p style="font-size:12px;color:var(--text-dim);padding:4px 0 8px">
       For providers that don't report cost, API equivalent cost is estimated using official model pricing (models.dev) &times; token usage.
       <span style="color:var(--missing)">~</span> = MISSING model (upstream no cache data) estimated at 94% hit rate.
     </p>
-    <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi-row kpi-api-row">
       <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : "-"}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
@@ -6070,12 +6768,29 @@ function renderInsights(data) {
       });
     }
   }
+  const aborted = abortedCountOf(data.errors);
   if (data.errors.failedCount > 0) {
     insights.push({
       icon: "!",
       bg: "rgba(223,123,131,0.15)",
       title: "Errors detected",
-      value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests`
+      value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests${aborted > 0 ? ` \xB7 ${aborted} user-aborted` : ""}`
+    });
+  } else if (aborted > 0) {
+    insights.push({
+      icon: "\u25A0",
+      bg: "rgba(168,160,187,0.15)",
+      title: "User interrupts",
+      value: `<span class="accent">${aborted}</span> request${aborted > 1 ? "s" : ""} aborted by the user (not errors)`
+    });
+  }
+  const truncated = finishReasonCount(data.errors, "length");
+  if (truncated > 0) {
+    insights.push({
+      icon: "\u2702",
+      bg: "rgba(208,183,125,0.15)",
+      title: "Truncated outputs",
+      value: `<span class="accent">${truncated}</span> response${truncated > 1 ? "s" : ""} hit the output token limit`
     });
   }
   if (insights.length === 0) return "";
@@ -6088,14 +6803,82 @@ function renderInsights(data) {
       </div>
     </div>`).join("\n");
   return `
-  <div class="section">
+  <div class="section" id="insights">
     <div class="section-title">Smart Insights</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px">
       ${cards}
     </div>
   </div>`;
 }
-async function buildSessionReportData(sessionId, sessionTitle, subagentCount, summary, models, messages, errors) {
+function renderAgentsPanel(data) {
+  const agents = (data.agents ?? []).filter((a) => a.totalTokens > 0 || a.requests > 0);
+  if (agents.length === 0) return "";
+  const list = barListHtml([...agents].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 10).map((a) => ({
+    label: a.agent || "(none)",
+    sub: `${a.requests} req${a.sessions > 1 ? ` \xB7 ${a.sessions} sessions` : ""}`,
+    value: a.totalTokens,
+    display: fmtTokens(a.totalTokens),
+    meta: fmtCost(a.totalCost),
+    tone: "accent"
+  })), "Usage by agent");
+  const sub = agents.length > 10 ? `top 10 of ${agents.length} agents` : `${agents.length} agent${agents.length === 1 ? "" : "s"}`;
+  return panelHtml("Agents", list, { sub });
+}
+var CHILD_SESSION_LIMIT = 12;
+function renderChildSessionsPanel(data) {
+  const children = (data.childSessions ?? []).filter((c) => c.totalTokens > 0 || c.requests > 0);
+  if (children.length === 0) return "";
+  const childTokens = children.reduce((s, c) => s + c.totalTokens, 0);
+  const childCost = children.reduce((s, c) => s + c.totalCost, 0);
+  const rootTokens = Math.max(0, data.summary.totalTokens - childTokens);
+  const all = rootTokens + childTokens;
+  const rootPct = all > 0 ? rootTokens / all : 0;
+  const split = all > 0 ? `
+      <div class="split-row-label">This session vs sub-agents &middot; token share</div>
+      <div class="split-bar" role="img" aria-label="Main session ${fmtPercent(rootPct)}, sub-agent sessions ${fmtPercent(1 - rootPct)} of tokens">
+        <span class="split-seg root" style="width:${(rootPct * 100).toFixed(2)}%"></span><span class="split-seg child" style="width:${((1 - rootPct) * 100).toFixed(2)}%"></span>
+      </div>
+      <div class="split-legend">
+        <div><div class="split-key"><span class="legend-dot root"></span>Main</div><div class="split-val">${fmtPercent(rootPct)} <span>&middot; ${fmtTokens(rootTokens)} &middot; ${fmtCost(Math.max(0, data.summary.totalCost - childCost))}</span></div></div>
+        <div><div class="split-key"><span class="legend-dot child"></span>Sub-agents</div><div class="split-val">${fmtPercent(1 - rootPct)} <span>&middot; ${fmtTokens(childTokens)} &middot; ${fmtCost(childCost)}</span></div></div>
+      </div>
+      <div style="height:16px"></div>` : "";
+  const sorted = [...children].sort((a, b) => b.totalTokens - a.totalTokens);
+  const list = barListHtml(sorted.slice(0, CHILD_SESSION_LIMIT).map((c) => ({
+    label: c.title || c.sessionId,
+    sub: `${c.model || "-"} \xB7 ${c.requests} req`,
+    title: `${c.title || "(untitled)"} \u2014 ${c.sessionId}`,
+    value: c.totalTokens,
+    display: fmtTokens(c.totalTokens),
+    meta: fmtCost(c.totalCost),
+    tone: "accent"
+  })), "Sub-agent sessions by tokens");
+  const more = children.length > CHILD_SESSION_LIMIT ? `<div class="panel-note"><span class="note-faint">Top ${CHILD_SESSION_LIMIT} of ${children.length} sub-agent sessions</span></div>` : "";
+  return panelHtml("Sub-agent Sessions", split + list + more, { sub: `${children.length} session${children.length === 1 ? "" : "s"}` });
+}
+function renderAgentsSection(data) {
+  const agents = renderAgentsPanel(data);
+  const children = renderChildSessionsPanel(data);
+  if (!agents && !children) return "";
+  return `
+  <div class="section" id="agents">
+    <div class="section-title">Agents &amp; Sub-agents</div>
+    <div class="panel-grid">${children}${agents}</div>
+  </div>`;
+}
+function renderReliabilitySection(data) {
+  const types = errorTypesPanelHtml(data.errors);
+  const reasons = finishReasonsPanelHtml(data.errors);
+  const overhead = overheadPanelHtml(data.overhead);
+  if (!types && !reasons && !overhead) return "";
+  return `
+  <div class="section" id="reliability">
+    <div class="section-title">Outcomes &amp; Overhead</div>
+    <div class="panel-grid">${types}${reasons}${overhead}</div>
+  </div>`;
+}
+async function buildSessionReportData(input) {
+  const { sessionId, sessionTitle, subagentCount, summary, models, messages, errors } = input;
   const apiCostByModel = models.map((m) => {
     const est = estimateApiCost(
       m.provider,
@@ -6131,8 +6914,7 @@ async function buildSessionReportData(sessionId, sessionTitle, subagentCount, su
   const firstMsg = messages.length > 0 ? messages[0].timeCreated : null;
   const lastMsg = messages.length > 0 ? messages[messages.length - 1].timeCreated : null;
   const sessionDurationMs = firstMsg && lastMsg ? lastMsg - firstMsg : 0;
-  const durationSec = sessionDurationMs / 1e3;
-  const tps = durationSec > 0 ? summary.totalTokens / durationSec : 0;
+  const gen = generationSpeed(messages);
   const costPerRequest = summary.requestCount > 0 ? summary.totalCost / summary.requestCount : 0;
   const durations = messages.map((m) => m.timeCompleted ? m.timeCompleted - m.timeCreated : null).filter((d) => d !== null && d > 0).sort((a, b) => a - b);
   const p50Duration = percentile2(durations, 0.5);
@@ -6156,10 +6938,16 @@ async function buildSessionReportData(sessionId, sessionTitle, subagentCount, su
     apiCost,
     errors,
     generatedAt: nowString(),
+    overhead: input.overhead,
+    agents: input.agents,
+    childSessions: input.childSessions,
+    source: input.source,
     sessionDurationMs,
     firstMessageTime: firstMsg,
     lastMessageTime: lastMsg,
-    tps,
+    tps: gen.tps,
+    genTokens: gen.tokens,
+    genTimeMs: gen.timeMs,
     costPerRequest,
     p50Duration,
     p90Duration,
@@ -6175,6 +6963,8 @@ function generateSessionUsageHtml(data) {
   const messageTableStr = renderMessageTable(data);
   const apiCostStr = renderApiCostSection(data);
   const insightsStr = renderInsights(data);
+  const agentsStr = renderAgentsSection(data);
+  const reliabilityStr = renderReliabilitySection(data);
   const trendJs = data.messages.length > 0 ? renderTrendChartInit(data) : "";
   const durationJs = data.messages.length > 0 ? renderDurationChartInit(data) : "";
   const cacheJs = data.messages.length > 0 ? renderCacheTrendInit(data) : "";
@@ -6183,6 +6973,14 @@ function generateSessionUsageHtml(data) {
   const firstTimeStr = data.firstMessageTime ? showDates ? fmtDateTime(data.firstMessageTime) : fmtTime(data.firstMessageTime) : "-";
   const lastTimeStr = data.lastMessageTime ? showDates ? fmtDateTime(data.lastMessageTime) : fmtTime(data.lastMessageTime) : "-";
   const durationStr = fmtDuration(data.sessionDurationMs);
+  const nav = [{ id: "overview", label: "Overview" }];
+  if (insightsStr) nav.push({ id: "insights", label: "Insights" });
+  if (hasMessages) nav.push({ id: "trends", label: "Trends" });
+  nav.push({ id: "models", label: "Models" });
+  if (agentsStr) nav.push({ id: "agents", label: "Agents" });
+  if (reliabilityStr) nav.push({ id: "reliability", label: "Outcomes" });
+  if (apiCostStr) nav.push({ id: "api-cost", label: "API Cost" });
+  nav.push({ id: "requests", label: "Requests" });
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6204,27 +7002,26 @@ ${BG_ANIMATION_HTML}
       <div class="session-info">Session: ${escapeHtml(data.sessionId)} &middot; ${escapeHtml(data.sessionTitle)}${data.subagentCount > 0 ? ` &middot; <span style="color:var(--input)">+${data.subagentCount} subagent${data.subagentCount > 1 ? "s" : ""}</span>` : ""}</div>
       <div class="session-info" style="margin-top:2px">Timeline: ${firstTimeStr} \u2192 ${lastTimeStr} &middot; Duration: ${durationStr}</div>
     </div>
-    <div class="header-right">Generated: ${data.generatedAt}</div>
+    <div class="header-right">Generated: ${escapeHtml(data.generatedAt)}</div>
   </div>
 
+  ${sectionNavHtml(nav)}
+
+  <div id="overview" class="anchor">
   ${kpiStr}
+  </div>
 
   ${insightsStr}
 
-  <div class="section">
-    <div class="section-title">Cache Hit Rate Trend</div>
-    ${hasMessages ? '<div class="chart-box" id="cache-trend-chart" style="height:320px"></div>' : '<div class="empty-state">No message data.</div>'}
-  </div>
-
-  <div class="section">
-    <div class="section-title">Per-Model Token Usage</div>
-    ${data.models.length > 0 ? modelCardsStr : '<div class="empty-state">No model usage data in this session.</div>'}
-  </div>
-
   ${hasMessages ? `
-  <div class="section">
+  <div class="section" id="trends">
     <div class="section-title">Token &amp; Cost Trend Per Request <span class="sub">with 5-req moving average</span></div>
     <div class="chart-box" id="trend-chart"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Cache Hit Rate Trend</div>
+    <div class="chart-box" id="cache-trend-chart" style="height:320px"></div>
   </div>
 
   <div class="section">
@@ -6232,12 +7029,21 @@ ${BG_ANIMATION_HTML}
     <div class="chart-box" id="duration-chart" style="height:300px"></div>
   </div>` : ""}
 
+  <div class="section" id="models">
+    <div class="section-title">Per-Model Token Usage</div>
+    ${data.models.length > 0 ? modelCardsStr : '<div class="empty-state">No model usage data in this session.</div>'}
+  </div>
+
+  ${agentsStr}
+
+  ${reliabilityStr}
+
   ${apiCostStr}
 
   ${messageTableStr}
 
   <div class="footer">
-    Generated by opencode-usage-stat /session-usage &middot; Data: OpenCode V2 API
+    Generated by opencode-usage-stat /session-usage &middot; ${footerSourceHtml(data.source)}
   </div>
 </div>
 
@@ -6264,12 +7070,23 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 // src/total-usage-html.ts
+import { homedir as homedir8 } from "node:os";
 function sortModelsByUsage(models) {
   return [...models].filter((m) => m.totalTokens > 0).sort((a, b) => b.totalTokens - a.totalTokens);
 }
 function renderMeta(data) {
   const m = data.meta;
-  return `Usage Stat Report &middot; ${m.dateRange.start} \u2192 ${m.dateRange.end} &middot; generated ${m.generatedAt}`;
+  const prevRange = data.comparison?.previous ? data.comparison.previousRange : null;
+  const vs = prevRange ? ` &middot; vs ${escapeHtml(prevRange.start)} \u2192 ${escapeHtml(prevRange.end)}` : "";
+  return `Usage Stat Report &middot; ${escapeHtml(m.dateRange.start)} \u2192 ${escapeHtml(m.dateRange.end)}${vs} &middot; generated ${escapeHtml(m.generatedAt)}`;
+}
+function deltaHtml(change, polarity, data) {
+  const range = data.comparison?.previousRange;
+  if (!change || !data.comparison?.previous) return "";
+  const tone = change.direction === "flat" || polarity === "neutral" ? "neutral" : change.direction === "up" === (polarity === "up-good") ? "good" : "bad";
+  const rangeFull = range ? `${range.start} \u2192 ${range.end}` : "previous period";
+  const rangeShort = range ? fmtRangeShort(range.start, range.end) : "prev";
+  return `<div class="kpi-sub kpi-delta delta-${tone}" title="Compared with ${escapeHtml(rangeFull)}"><span>${escapeHtml(change.text)}</span><span class="delta-range">vs ${escapeHtml(rangeShort)}</span></div>`;
 }
 function renderSparkline(values, color) {
   if (values.length < 2) return "";
@@ -6313,37 +7130,47 @@ function renderKpiCards2(data) {
   const costPerSession = totalSessions > 0 ? s.totalCost / totalSessions : 0;
   const dailyTokensAsc = [...data.daily].reverse().map((d) => d.totalTokens);
   const dailyCostsAsc = [...data.daily].reverse().map((d) => d.totalCost);
+  const prev = data.comparison?.previous ?? null;
+  const hasHitRate = kpiInputSum + kpiCacheSum > 0;
+  const aborted = abortedCountOf(errors);
+  const errorSub = errors ? `${errors.failedCount} failed &middot; ${aborted} aborted` : "";
   return `
     <div class="kpi-row kpi-hero-row">
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Tokens</div>
         <div class="kpi-value" data-countup="${fmtTokens(s.totalTokens)}">${fmtTokens(s.totalTokens)}</div>
+        ${deltaHtml(relativeChange(s.totalTokens, prev?.totalTokens), "neutral", data)}
         ${renderSparkline(dailyTokensAsc, "#3f4a5c")}
       </div>
       <div class="kpi-card${isHighCache ? " kpi-glow" : ""}">
         <div class="kpi-label">Cache Hit Rate</div>
         <div class="kpi-value" style="color:${kpiHitColor}" data-countup="${hitRatePct}">${hitRatePct}</div>
+        ${deltaHtml(hasHitRate ? pointChange(kpiHitRate, prev?.cacheHitRate) : null, "up-good", data)}
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Requests</div>
         <div class="kpi-value" data-countup="${s.requestCount}">${s.requestCount}</div>
+        ${deltaHtml(relativeChange(s.requestCount, prev?.requestCount), "neutral", data)}
       </div>
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Cost</div>
         <div class="kpi-value" style="color:var(--tps)" data-countup="${fmtCost(s.totalCost)}">${fmtCost(s.totalCost)}</div>
         <div class="kpi-sub">${fmtCost(costPerSession)}/session</div>
+        ${deltaHtml(relativeChange(s.totalCost, prev?.totalCost), "up-bad", data)}
         ${renderSparkline(dailyCostsAsc, "#7a6840")}
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Error Rate</div>
         <div class="kpi-value" style="color:${errorColor}" data-countup="${errorRatePct}">${errorRatePct}</div>
-        <div class="kpi-sub">${errors ? errors.failedCount + " failed" : ""}</div>
+        <div class="kpi-sub" title="Aborted = interrupted by the user; not counted in the error rate">${errorSub}</div>
+        ${deltaHtml(errors ? pointChange(errors.errorRate, prev?.errorRate) : null, "up-bad", data)}
       </div>
     </div>
     <div class="kpi-row kpi-minor-row">
       <div class="kpi-card kpi-minor">
         <div class="kpi-label">Sessions</div>
         <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
+        ${deltaHtml(relativeChange(totalSessions, prev?.sessions), "neutral", data)}
       </div>
       <div class="kpi-card kpi-minor">
         <div class="kpi-label">Avg Daily Tokens</div>
@@ -6513,7 +7340,7 @@ function renderModelChart() {
 
 window.switchModelView = function(v) {
   modelView = v;
-  document.querySelectorAll('.view-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.view-btn[data-view]').forEach(function(b) { b.classList.remove('active'); });
   document.querySelector('[data-view="' + v + '"]').classList.add('active');
   renderModelChart();
 };`;
@@ -6564,10 +7391,10 @@ function renderProviderDonut() {
     }},
     legend: { type: 'scroll', orient: 'vertical', right: 8, top: 'center', textStyle: { color: '#a3a3ac', fontSize: 11 } },
     color: provDonutColors,
-    graphic: [
-      { type: 'text', left: '35%', top: '43%', silent: true, style: { text: isCost ? 'Total Cost' : 'Total Tokens', textAlign: 'center', fill: '#7d7d86', fontSize: 10, fontFamily: 'ui-monospace, Consolas, monospace' } },
-      { type: 'text', left: '35%', top: '50%', silent: true, style: { text: totalText, textAlign: 'center', fill: '#f2f2ef', fontSize: 20, fontWeight: 600, fontFamily: 'ui-monospace, Consolas, monospace' } }
-    ],
+    title: { text: '{l|' + (isCost ? 'TOTAL COST' : 'TOTAL TOKENS') + '}\\n{v|' + totalText + '}', left: '35%', top: '50%', textAlign: 'center', textVerticalAlign: 'middle', triggerEvent: false,
+      textStyle: { rich: {
+        l: { color: '#7d7d86', fontSize: 9, fontFamily: 'ui-monospace, Consolas, monospace', lineHeight: 18, align: 'center' },
+        v: { color: '#f2f2ef', fontSize: 20, fontWeight: 600, fontFamily: 'ui-monospace, Consolas, monospace', lineHeight: 26, align: 'center' } } } },
     series: [{ type: 'pie', radius: ['46%', '70%'], center: ['35%', '50%'], avoidLabelOverlap: false,
       itemStyle: { borderColor: '#131316', borderWidth: 2, borderRadius: 5 },
       label: { show: false }, labelLine: { show: false },
@@ -6606,15 +7433,15 @@ function renderApiCostSection2(data) {
   const totalApi = apiCost.totalApiCost ?? 0;
   const reported = apiCost.reportedCost;
   const diff = totalApi - reported;
-  const diffStr = diff > 1e-3 ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>` : `<span style="color:var(--cache)">${fmtCost(diff)}</span>`;
+  const diffStr = diff > 1e-3 ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>` : `<span style="color:var(--cache)">${diff < 0 ? "\u2212" + fmtCost(-diff) : fmtCost(diff)}</span>`;
   return `
-  <div class="section">
+  <div class="section" id="api-cost">
     <div class="section-title">API Equivalent Cost Analysis</div>
     <p style="font-size:12px;color:var(--text-dim);padding:4px 0 8px">
       For providers that don't report cost, API equivalent cost is estimated using official model pricing (models.dev) &times; token usage.
       <span style="color:var(--missing)">~</span> = MISSING model estimated at 94% hit rate.
     </p>
-    <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi-row kpi-api-row">
       <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : "-"}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
@@ -6650,7 +7477,7 @@ function renderProviderCards(data) {
   return cards + moreHint;
 }
 function renderModelAnalyticsSection(data) {
-  const usageRows = sortModelsByUsage(data.models).map((m) => {
+  const usageRows2 = sortModelsByUsage(data.models).map((m) => {
     const isMissing = isMissingCache(m.requests, m.cacheRead, m.cacheWrite);
     const hitRate = cacheHitRate(m.inputTokens, m.cacheRead, m.cacheWrite);
     const hitColor = isMissing ? "var(--missing)" : hitRate >= 0.85 ? "var(--cache)" : hitRate >= 0.7 ? "var(--tps)" : "var(--danger)";
@@ -6662,7 +7489,7 @@ function renderModelAnalyticsSection(data) {
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
       <td>${escapeHtml(m.provider)}</td>
-      <td data-sort="${m.requests}">${m.requests}</td>
+      <td class="cell-num" data-sort="${m.requests}">${m.requests}</td>
       <td data-sort="${m.sessions}">${m.sessions}</td>
       <td data-sort="${m.totalTokens}">${fmtTokens(m.totalTokens)}</td>
       <td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td>
@@ -6685,18 +7512,23 @@ function renderModelAnalyticsSection(data) {
     const rateColor = errors.errorRate >= 0.05 ? "var(--danger)" : "var(--tps)";
     const cellColor = errors.errorRate >= 0.05 ? "var(--danger)" : "var(--tps)";
     const errorRows = errors.byModel.filter((m) => m.failed > 0).map((m) => {
-      const modelRate = m.total > 0 ? (m.failed / m.total * 100).toFixed(1) + "%" : "-";
+      const aborted = m.aborted ?? 0;
+      const counted = Math.max(0, m.total - aborted);
+      const rate = counted > 0 ? m.failed / counted : null;
+      const modelRate = rate != null ? (rate * 100).toFixed(1) + "%" : "-";
+      const success = Math.max(0, counted - m.failed);
       return `<tr>
           <td>${escapeHtml(m.provider)}</td>
           <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
-          <td data-sort="${m.total}">${m.total}</td>
+          <td class="cell-num" data-sort="${m.total}">${m.total}</td>
           <td data-sort="${m.failed}" style="color:var(--danger)">${m.failed}</td>
-          <td data-sort="${m.total - m.failed}" style="color:var(--tps)">${m.total - m.failed}</td>
-          <td data-sort="${m.total > 0 ? m.failed / m.total : -1}" style="color:${cellColor}">${modelRate}</td>
+          <td data-sort="${aborted}" style="color:var(--text-dim)">${aborted}</td>
+          <td data-sort="${success}" style="color:var(--tps)">${success}</td>
+          <td data-sort="${rate ?? -1}" style="color:${cellColor}">${modelRate}</td>
         </tr>`;
     }).join("\n");
     errorTabBtn = `
-      <button class="tab-btn" data-mtab="errors" onclick="switchModelTab('errors')">
+      <button class="tab-btn" role="tab" aria-selected="false" data-mtab="errors" onclick="switchModelTab('errors')">
         Failed Requests <span style="color:var(--danger);margin-left:4px;font-size:0.85em">(${errors.failedCount})</span>
       </button>`;
     errorTabContent = `
@@ -6704,11 +7536,12 @@ function renderModelAnalyticsSection(data) {
       <p style="font-size:12px;color:${rateColor};padding:8px 0 6px">
         Overall error rate: <strong>${errorRatePct}</strong> &mdash;
         ${errors.failedCount} failed / ${errors.successCount + errors.failedCount} total
+        <span style="color:var(--text-faint)">&middot; ${abortedCountOf(errors)} user-aborted (excluded)</span>
       </p>
       <table id="errors-table" class="data-table">
         <thead><tr>
-          <th>Provider</th><th>Model</th><th class="sortable">Total</th>
-          <th class="sortable">Failed</th><th class="sortable">Success</th><th class="sortable">Error Rate</th>
+          <th>Provider</th><th>Model</th><th class="sortable cell-num">Total</th>
+          <th class="sortable">Failed</th><th class="sortable" title="Interrupted by the user; not an error">Aborted</th><th class="sortable">Success</th><th class="sortable">Error Rate</th>
         </tr></thead>
         <tbody>${errorRows}</tbody>
       </table>
@@ -6719,22 +7552,29 @@ function renderModelAnalyticsSection(data) {
       </div>
     </div>`;
   }
-  return `
-  <div class="section">
+  if (!usageRows2) {
+    return `
+  <div class="section" id="analytics">
     <div class="section-title">Model Analytics</div>
-    <div class="tab-bar">
-      <button class="tab-btn active" data-mtab="usage" onclick="switchModelTab('usage')">Usage Breakdown</button>
+    <div class="empty-state">No model usage in this period.</div>
+  </div>`;
+  }
+  return `
+  <div class="section" id="analytics">
+    <div class="section-title">Model Analytics</div>
+    <div class="tab-bar" role="tablist" aria-label="Model analytics views">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-mtab="usage" onclick="switchModelTab('usage')">Usage Breakdown</button>
       ${errorTabBtn}
     </div>
 
     <div id="model-tab-usage" class="tab-content active">
       <table id="usage-table" class="data-table">
         <thead><tr>
-          <th>Model</th><th>Provider</th><th class="sortable">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
+          <th>Model</th><th>Provider</th><th class="sortable cell-num">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
           <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th><th class="sortable">Cache R</th><th class="sortable">Cache W</th>
           <th class="sortable" title="Cache Read / (Input + Cache Read); Input includes cache write">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing \xD7 token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
         </tr></thead>
-        <tbody>${usageRows}</tbody>
+        <tbody>${usageRows2}</tbody>
       </table>
       <div class="pagination-ctrl" id="usage-table-ctrl">
         <button class="page-btn" id="usage-table-prev">Prev</button>
@@ -6758,16 +7598,23 @@ function renderSessionTable(data) {
       <td data-sort="${s.outputTokens}">${fmtTokens(s.outputTokens)}</td>
       <td data-sort="${s.cacheRead}">${fmtTokens(s.cacheRead)}</td>
       <td data-sort="${s.totalCost}">${fmtCost(s.totalCost)}</td>
-      <td>${escapeHtml(s.title)}</td>
+      <td class="cell-left session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</td>
     </tr>`;
   }).join("\n");
+  if (data.sessions.length === 0) {
+    return `
+  <div class="section" id="sessions">
+    <div class="section-title">Recent Sessions</div>
+    <div class="empty-state">No sessions in this period.</div>
+  </div>`;
+  }
   return `
-  <div class="section">
+  <div class="section" id="sessions">
     <div class="section-title">Recent Sessions <span class="sub">(${data.sessions.length} sessions, click headers to sort)</span></div>
     <table id="sessions-table" class="data-table">
       <thead><tr>
         <th class="sortable">Day</th><th>Provider</th><th>Model</th><th class="sortable">Req</th><th class="sortable">Total</th>
-        <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Cache</th><th class="sortable">Cost</th><th>Title</th>
+        <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Cache</th><th class="sortable">Cost</th><th class="cell-left">Title</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -6951,6 +7798,152 @@ function initCostTrend() {
   chart.resize();
 }`;
 }
+var PROJECT_LIMIT = 12;
+function projectLabel(directory, projectId) {
+  const full = directory || projectId || "(unknown)";
+  const short = directory ? shortenHome(directory, homedir8()) : full;
+  const name = !directory ? full : short === "~" ? "~ (home)" : pathBasename(short);
+  return { name, path: middleEllipsis(short, 58), full };
+}
+function renderProjectsPanel(data) {
+  const projects = (data.projects ?? []).filter((p) => p.totalTokens > 0 || p.totalCost > 0 || p.sessions > 0);
+  if (projects.length === 0) return "";
+  const views = [
+    { key: "tokens", label: "Tokens", pick: (p) => p.totalTokens, show: (p) => fmtTokens(p.totalTokens), meta: (p) => `${fmtCost(p.totalCost)} \xB7 ${p.sessions} sess` },
+    { key: "cost", label: "Cost", pick: (p) => p.totalCost, show: (p) => fmtCost(p.totalCost), meta: (p) => `${fmtTokens(p.totalTokens)} \xB7 ${p.sessions} sess` },
+    { key: "sessions", label: "Sessions", pick: (p) => p.sessions, show: (p) => `${p.sessions} sess`, meta: (p) => `${fmtTokens(p.totalTokens)} \xB7 ${p.requests} req` }
+  ];
+  const lists = views.map((v, i) => {
+    const rows = [...projects].sort((a, b) => v.pick(b) - v.pick(a)).slice(0, PROJECT_LIMIT).map((p) => {
+      const l = projectLabel(p.directory, p.projectId);
+      return { label: l.name, sub: l.path === l.name || l.path === "~" ? void 0 : l.path, title: l.full, value: v.pick(p), display: v.show(p), meta: v.meta(p) };
+    });
+    return `<div class="pv-list" data-pv-group="projects" data-pv="${v.key}"${i === 0 ? "" : " hidden"}>${barListHtml(rows, `Projects by ${v.label.toLowerCase()}`)}</div>`;
+  }).join("");
+  const buttons = views.map((v, i) => `<button class="view-btn${i === 0 ? " active" : ""}" data-pv-group="projects" data-pv="${v.key}" aria-pressed="${i === 0}" onclick="switchPanelView('projects','${v.key}')">${v.label}</button>`).join("");
+  const more = projects.length > PROJECT_LIMIT ? `<div class="panel-note"><span class="note-faint">Top ${PROJECT_LIMIT} of ${projects.length} directories</span></div>` : "";
+  return panelHtml("Projects", `<div class="view-btn-bar">${buttons}</div>${lists}${more}`, { sub: `${projects.length} director${projects.length === 1 ? "y" : "ies"}` });
+}
+function renderAgentsPanel2(data) {
+  const agents = (data.agents ?? []).filter((a) => a.totalTokens > 0 || a.requests > 0);
+  const kinds = data.sessionKinds;
+  const kindsTotal = kinds ? kinds.root.totalTokens + kinds.child.totalTokens : 0;
+  if (agents.length === 0 && kindsTotal <= 0) return "";
+  let split = "";
+  if (kinds && kindsTotal > 0) {
+    const rootPct = kinds.root.totalTokens / kindsTotal;
+    const childPct = 1 - rootPct;
+    const costTotal = kinds.root.totalCost + kinds.child.totalCost;
+    const col = (cls, label, k, pct2) => `
+        <div>
+          <div class="split-key"><span class="legend-dot ${cls}"></span>${label}</div>
+          <div class="split-val">${fmtPercent(pct2)} <span>&middot; ${fmtTokens(k.totalTokens)}</span></div>
+          <div class="split-val"><span>${fmtCost(k.totalCost)}${costTotal > 0 ? ` (${fmtPercent(k.totalCost / costTotal)})` : ""} &middot; ${k.sessions} sess &middot; ${k.requests} req</span></div>
+        </div>`;
+    split = `
+      <div class="split-row-label">Main sessions vs sub-agents &middot; token share</div>
+      <div class="split-bar" role="img" aria-label="Main sessions ${fmtPercent(rootPct)}, sub-agent sessions ${fmtPercent(childPct)} of tokens">
+        <span class="split-seg root" style="width:${(rootPct * 100).toFixed(2)}%"></span><span class="split-seg child" style="width:${(childPct * 100).toFixed(2)}%"></span>
+      </div>
+      <div class="split-legend">${col("root", "Main", kinds.root, rootPct)}${col("child", "Sub-agent", kinds.child, childPct)}</div>`;
+  }
+  const list = agents.length > 0 ? barListHtml([...agents].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 10).map((a) => ({
+    label: a.agent || "(none)",
+    sub: `${a.sessions} sess \xB7 ${a.requests} req`,
+    value: a.totalTokens,
+    display: fmtTokens(a.totalTokens),
+    meta: fmtCost(a.totalCost),
+    tone: "accent"
+  })), "Usage by agent") : "";
+  const body = list + (list && split ? `<div style="height:16px"></div>` : "") + split;
+  const sub = agents.length > 10 ? `top 10 of ${agents.length} agents` : agents.length > 0 ? `${agents.length} agent${agents.length === 1 ? "" : "s"}` : void 0;
+  return panelHtml("Agents", body, { sub });
+}
+function renderWorkspaceSection(data) {
+  const projects = renderProjectsPanel(data);
+  const agents = renderAgentsPanel2(data);
+  if (!projects && !agents) return "";
+  return `
+  <div class="section" id="workspaces">
+    <div class="section-title">Projects &amp; Agents</div>
+    <div class="panel-grid">${projects}${agents}</div>
+  </div>`;
+}
+var LATENCY_LIMIT = 20;
+function renderLatencyTable(data) {
+  const all = (data.modelLatency ?? []).filter((m) => m.samples > 0);
+  const rows = [...all].sort((a, b) => b.samples - a.samples).slice(0, LATENCY_LIMIT);
+  if (rows.length === 0) return "";
+  const maxP90 = Math.max(...rows.map((r) => r.p90Ms), 1);
+  const body = rows.map((m) => {
+    const p90w = Math.min(100, m.p90Ms / maxP90 * 100);
+    const p50l = Math.min(100, m.p50Ms / maxP90 * 100);
+    return `<tr>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
+      <td class="cell-left">${escapeHtml(m.provider)}</td>
+      <td class="cell-num" data-sort="${m.samples}">${m.samples}</td>
+      <td data-sort="${m.p50Ms}">${fmtDuration(m.p50Ms)}</td>
+      <td data-sort="${m.p90Ms}">${fmtDuration(m.p90Ms)}</td>
+      <td data-sort="${m.avgMs}">${fmtDuration(m.avgMs)}</td>
+      <td class="range-cell" aria-hidden="true"><div class="range-track"><span class="range-fill" style="width:${p90w.toFixed(1)}%"></span><span class="range-p50" style="left:${p50l.toFixed(1)}%"></span></div></td>
+    </tr>`;
+  }).join("\n");
+  return `
+    <div class="section-title" style="margin-top:16px">Request Duration by Model <span class="sub">completed &minus; created &middot; bar = 0&ndash;p90, tick = p50${all.length > LATENCY_LIMIT ? ` &middot; top ${LATENCY_LIMIT} of ${all.length} by samples` : ""}</span></div>
+    <table id="latency-table" class="data-table">
+      <thead><tr><th>Model</th><th class="cell-left">Provider</th><th class="sortable cell-num">Samples</th><th class="sortable">p50</th><th class="sortable">p90</th><th class="sortable">Avg</th><th class="cell-left">Spread</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+    <div class="pagination-ctrl" id="latency-table-ctrl">
+      <button class="page-btn" id="latency-table-prev">Prev</button>
+      <span class="page-info" id="latency-table-info"></span>
+      <button class="page-btn" id="latency-table-next">Next</button>
+    </div>`;
+}
+function renderReliabilitySection2(data) {
+  const types = errorTypesPanelHtml(data.errors);
+  const reasons = finishReasonsPanelHtml(data.errors);
+  const latency = renderLatencyTable(data);
+  if (!types && !reasons && !latency) return "";
+  return `
+  <div class="section" id="reliability">
+    <div class="section-title">Reliability &amp; Latency</div>
+    ${types || reasons ? `<div class="panel-grid">${types}${reasons}</div>` : ""}
+    ${latency}
+  </div>`;
+}
+function renderCacheSavingsPanel(data) {
+  const cs = data.cacheSavings;
+  if (!cs) return "";
+  const priced = (cs.byModel ?? []).filter((m) => m.saved != null && m.saved > 0);
+  if (cs.estimatedSavedCost == null && priced.length === 0) return "";
+  const total = cs.estimatedSavedCost ?? priced.reduce((s, m) => s + (m.saved ?? 0), 0);
+  const unpriced = (cs.byModel ?? []).filter((m) => m.saved == null && m.cacheRead > 0).length;
+  const list = barListHtml([...priced].sort((a, b) => (b.saved ?? 0) - (a.saved ?? 0)).slice(0, 8).map((m) => ({
+    label: m.model,
+    sub: m.provider,
+    title: `${m.provider} / ${m.model}`,
+    value: m.saved ?? 0,
+    display: `~${fmtCost(m.saved ?? 0)}`,
+    meta: `${fmtTokens(m.cacheRead)} cached`,
+    tone: "good"
+  })), "Estimated cache savings by model");
+  const note = `<div class="panel-note"><span class="note-faint">Cache-read tokens &times; (input price &minus; cache-read price), official pricing.${unpriced > 0 ? ` ${unpriced} model${unpriced > 1 ? "s" : ""} without pricing not included.` : ""}</span></div>`;
+  return panelHtml("Cache Savings", `<div class="panel-figure">~${fmtCost(total)}<span class="panel-figure-sub">saved by prompt caching</span></div>${list}${note}`, {
+    badge: "Estimate",
+    badgeTitle: "Estimated from official model pricing; not a billed amount"
+  });
+}
+function renderEfficiencySection(data) {
+  const savings = renderCacheSavingsPanel(data);
+  const overhead = overheadPanelHtml(data.overhead, { showSessions: true });
+  if (!savings && !overhead) return "";
+  return `
+  <div class="section" id="efficiency">
+    <div class="section-title">Efficiency</div>
+    <div class="panel-grid">${savings}${overhead}</div>
+  </div>`;
+}
 function renderInsightsSection(data) {
   const insights = [];
   const apiTotal = data.apiCost?.totalApiCost;
@@ -6983,6 +7976,32 @@ function renderInsightsSection(data) {
       value: `<span class="accent">${escapeHtml(top.model)}</span> \xB7 ${fmtTokens(top.totalTokens)} (${sharePct}% of tokens)`
     });
   }
+  const saved = data.cacheSavings?.estimatedSavedCost;
+  if (saved != null && saved > 0) {
+    insights.push({
+      icon: "\u21BA",
+      title: "Prompt caching saved (estimate)",
+      value: `<span class="accent">~${fmtCost(saved)}</span> vs. paying full input price`
+    });
+  }
+  const topProject = (data.projects ?? [])[0];
+  if (topProject && topProject.totalTokens > 0) {
+    const l = projectLabel(topProject.directory, topProject.projectId);
+    const total = data.summary.totalTokens;
+    insights.push({
+      icon: "\u25A3",
+      title: "Busiest project",
+      value: `<span class="accent" title="${escapeHtml(l.full)}">${escapeHtml(l.name)}</span> \xB7 ${fmtTokens(topProject.totalTokens)}${total > 0 ? ` (${(topProject.totalTokens / total * 100).toFixed(1)}%)` : ""} \xB7 ${topProject.sessions} sessions`
+    });
+  }
+  const truncated = finishReasonCount(data.errors, "length");
+  if (truncated > 0) {
+    insights.push({
+      icon: "\u2702",
+      title: "Truncated outputs",
+      value: `<span class="accent">${truncated}</span> response${truncated > 1 ? "s" : ""} hit the output token limit`
+    });
+  }
   if (insights.length === 0) return "";
   const cards = insights.map((ins) => `
     <div class="insight-card">
@@ -6993,9 +8012,9 @@ function renderInsightsSection(data) {
       </div>
     </div>`).join("\n");
   return `
-  <div class="section">
+  <div class="section" id="insights">
     <div class="section-title">Insights</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px">
       ${cards}
     </div>
   </div>`;
@@ -7016,6 +8035,19 @@ function generateTotalUsageHtml(data) {
   const heatmapJs = calendarVisible ? renderHeatmapInit(data) : "";
   const hourlyHeatmapJs = (data.hourlyHeatmap ?? []).length > 0 ? renderHourlyHeatmapInit(data) : "";
   const costTrendJs = data.daily.length > 0 ? renderCostTrendInit(data) : "";
+  const insightsStr = renderInsightsSection(data);
+  const workspaceStr = renderWorkspaceSection(data);
+  const reliabilityStr = renderReliabilitySection2(data);
+  const efficiencyStr = renderEfficiencySection(data);
+  const nav = [{ id: "overview", label: "Overview" }];
+  if (insightsStr) nav.push({ id: "insights", label: "Insights" });
+  nav.push({ id: "models", label: "Models" }, { id: "timeline", label: "Timeline" }, { id: "providers", label: "Providers" });
+  if (workspaceStr) nav.push({ id: "workspaces", label: "Projects" });
+  if (reliabilityStr) nav.push({ id: "reliability", label: "Reliability" });
+  if (efficiencyStr) nav.push({ id: "efficiency", label: "Efficiency" });
+  nav.push({ id: "analytics", label: "Analytics" });
+  if (apiCostStr) nav.push({ id: "api-cost", label: "API Cost" });
+  nav.push({ id: "sessions", label: "Sessions" });
   const jsonData = jsonForScript(data);
   return `<!DOCTYPE html>
 <html lang="en">
@@ -7027,8 +8059,6 @@ ${HTML_HEAD_SHARED}
 <style>
 ${BG_ANIMATION_CSS}
 ${SHARED_CSS}
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -7041,11 +8071,15 @@ ${BG_ANIMATION_HTML}
     <div class="meta">${metaStr}</div>
   </div>
 
+  ${sectionNavHtml(nav)}
+
+  <div id="overview" class="anchor">
   ${kpiStr}
+  </div>
 
-  ${renderInsightsSection(data)}
+  ${insightsStr}
 
-  <div class="section">
+  <div class="section" id="models">
     <div class="section-title">Model Comparison Matrix</div>
     ${modelChartVisible ? `
     <div class="view-btn-bar">
@@ -7057,13 +8091,13 @@ ${BG_ANIMATION_HTML}
     <div class="chart-box" id="model-chart" style="height:520px"></div>` : '<div class="empty-state">No model usage data in this period.</div>'}
   </div>
 
-  <div class="section">
+  <div class="section" id="timeline">
     <div class="section-title">Usage Timeline</div>
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="daily" onclick="switchTab('daily')">Daily Trend</button>
-      ${calendarVisible ? `<button class="tab-btn" data-tab="heatmap" onclick="switchTab('heatmap')">Calendar Heatmap</button>` : ""}
-      ${hourlyHeatmapJs ? `<button class="tab-btn" data-tab="hourly" onclick="switchTab('hourly')">Activity Hours</button>` : ""}
-      ${costTrendJs ? `<button class="tab-btn" data-tab="cost" onclick="switchTab('cost')">Cost Trend</button>` : ""}
+    <div class="tab-bar" role="tablist" aria-label="Timeline views">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="daily" onclick="switchTab('daily')">Daily Trend</button>
+      ${calendarVisible ? `<button class="tab-btn" role="tab" aria-selected="false" data-tab="heatmap" onclick="switchTab('heatmap')">Calendar Heatmap</button>` : ""}
+      ${hourlyHeatmapJs ? `<button class="tab-btn" role="tab" aria-selected="false" data-tab="hourly" onclick="switchTab('hourly')">Activity Hours</button>` : ""}
+      ${costTrendJs ? `<button class="tab-btn" role="tab" aria-selected="false" data-tab="cost" onclick="switchTab('cost')">Cost Trend</button>` : ""}
     </div>
     <div id="tab-daily" class="tab-content active">
       <div class="chart-box" id="daily-chart"></div>
@@ -7073,21 +8107,27 @@ ${BG_ANIMATION_HTML}
     ${costTrendJs ? `<div id="tab-cost" class="tab-content"><div class="chart-box" id="cost-trend-chart"></div></div>` : ""}
   </div>
 
-  <div class="two-col" style="margin-bottom:28px">
+  <div class="two-col provider-layout anchor" id="providers" style="margin-bottom:28px">
     <div class="section" style="margin-bottom:0">
       <div class="section-title">Provider Summary</div>
-      <div class="provider-row">${providerStr}</div>
+      ${providerStr ? `<div class="provider-row">${providerStr}</div>` : '<div class="empty-state">No provider data.</div>'}
     </div>
-    <div class="section" style="margin-bottom:0">
+    <div class="section provider-share" style="margin-bottom:0">
       <div class="section-title">Share by Provider</div>
       ${data.providers.length > 0 ? `
       <div class="view-btn-bar" id="prov-view-bar" style="margin-bottom:4px">
         <button class="view-btn${data.providers.some((p) => p.totalCost > 0) ? " active" : ""}" data-pview="cost" onclick="switchProviderView('cost')">Cost</button>
         <button class="view-btn${data.providers.some((p) => p.totalCost > 0) ? "" : " active"}" data-pview="tokens" onclick="switchProviderView('tokens')">Tokens</button>
       </div>
-      <div class="chart-box" id="provider-donut" style="height:280px"></div>` : '<div class="empty-state">No provider data.</div>'}
+      <div class="chart-box" id="provider-donut"></div>` : '<div class="empty-state">No provider data.</div>'}
     </div>
   </div>
+
+  ${workspaceStr}
+
+  ${reliabilityStr}
+
+  ${efficiencyStr}
 
   ${modelAnalyticsStr}
 
@@ -7096,7 +8136,7 @@ ${BG_ANIMATION_HTML}
   ${sessionTableStr}
 
   <div class="footer">
-    Generated by opencode-usage-stat &middot; Data: OpenCode V2 API &middot; Export:
+    Generated by opencode-usage-stat &middot; ${footerSourceHtml(data.meta.source)} &middot; Export:
     <a href="javascript:void(0)" onclick="downloadJSON()">JSON</a>
   </div>
 </div>
@@ -7121,9 +8161,10 @@ window.ensureTabChart = function(name) {
 
 window.switchTab = function(name) {
   document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
-  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(el) { el.classList.remove('active'); el.setAttribute('aria-selected', 'false'); });
   document.getElementById('tab-' + name).classList.add('active');
-  document.querySelector('[data-tab="' + name + '"]').classList.add('active');
+  var tabBtn = document.querySelector('[data-tab="' + name + '"]');
+  tabBtn.classList.add('active'); tabBtn.setAttribute('aria-selected', 'true');
   window.ensureTabChart(name);
   setTimeout(function() {
     if (name === 'daily' && window.__charts && window.__charts.daily) window.__charts.daily.resize();
@@ -7134,12 +8175,20 @@ window.switchTab = function(name) {
 };
 
 window.switchModelTab = function(name) {
-  document.querySelectorAll('[data-mtab]').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('[data-mtab]').forEach(function(el) { el.classList.remove('active'); el.setAttribute('aria-selected', 'false'); });
   ['model-tab-usage', 'model-tab-errors'].forEach(function(id) { var el = document.getElementById(id); if (el) el.classList.remove('active'); });
   var activeTab = document.getElementById('model-tab-' + name);
   if (activeTab) activeTab.classList.add('active');
   var activeBtn = document.querySelector('[data-mtab="' + name + '"]');
-  if (activeBtn) activeBtn.classList.add('active');
+  if (activeBtn) { activeBtn.classList.add('active'); activeBtn.setAttribute('aria-selected', 'true'); }
+};
+
+window.switchPanelView = function(group, view) {
+  document.querySelectorAll('[data-pv-group="' + group + '"]').forEach(function(el) {
+    var on = el.getAttribute('data-pv') === view;
+    if (el.tagName === 'BUTTON') { el.classList.toggle('active', on); el.setAttribute('aria-pressed', String(on)); }
+    else el.hidden = !on;
+  });
 };
 
 window.downloadJSON = function() {
@@ -7167,7 +8216,9 @@ document.addEventListener('DOMContentLoaded', function() {
   makeSortable('errors-table');
   makeSortable('sessions-table');
   makeSortable('api-cost-table');
+  makeSortable('latency-table');
   initPaginator('usage-table', 15);
+  initPaginator('latency-table', 10);
   initPaginator('errors-table', 15);
   initPaginator('sessions-table', 15);
   initPaginator('api-cost-table', 15);
@@ -7193,362 +8244,6 @@ function getDateRangeForScope(scope) {
   if (scope.kind === "30d") return getPresetRange("30d");
   if (scope.kind === "days" && scope.days) return parseDaysFilter(String(scope.days));
   return {};
-}
-async function buildCombinedData(context, filters = {}) {
-  const report = await getUsageReport(filters);
-  const hourlyHeatmap = await getHourlyHeatmap(filters);
-  const logs = readLogs(200);
-  const perfSummary = readPersistedStats();
-  const meta = {
-    generatedAt: nowString2(),
-    dateRange: {
-      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : "\u2014",
-      end: report.daily.length > 0 ? report.daily[0].day : "\u2014"
-    }
-  };
-  const apiCostByModel = report.models.map((m) => {
-    const est = estimateApiCost(
-      m.provider,
-      m.model,
-      m.requests,
-      m.inputTokens,
-      m.outputTokens,
-      m.reasoningTokens,
-      m.cacheRead,
-      m.cacheWrite
-    );
-    return {
-      provider: m.provider,
-      model: m.model,
-      requests: m.requests,
-      inputTokens: m.inputTokens,
-      outputTokens: m.outputTokens,
-      reasoningTokens: m.reasoningTokens,
-      cacheRead: m.cacheRead,
-      cacheWrite: m.cacheWrite,
-      reportedCost: m.totalCost,
-      apiEquivCost: est.cost,
-      estimated: est.estimated,
-      pricingProvider: est.pricingProvider
-    };
-  });
-  const apiTotal = apiCostByModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0);
-  const apiCost = {
-    totalApiCost: apiTotal > 0 ? apiTotal : null,
-    reportedCost: report.summary.totalCost,
-    byModel: apiCostByModel
-  };
-  return {
-    ...report,
-    meta,
-    apiCost,
-    errors: report.errors,
-    hourlyHeatmap,
-    perfLogs: logs,
-    perfSummary
-  };
-}
-async function fetchAllSessions2(client2) {
-  const all = [];
-  let cursor;
-  for (; ; ) {
-    const res = await client2.session.list({ limit: 500, cursor });
-    const page = res?.data;
-    if (!Array.isArray(page) || page.length === 0) break;
-    all.push(...page);
-    const next = res?.cursor?.next;
-    if (!next) break;
-    cursor = next;
-  }
-  return all;
-}
-async function fetchAllMessages2(client2, sessionID) {
-  const all = [];
-  let cursor;
-  for (; ; ) {
-    const res = await client2.message.list({ sessionID, limit: 200, order: cursor ? void 0 : "asc", cursor });
-    const page = res?.data;
-    if (!Array.isArray(page) || page.length === 0) break;
-    all.push(...page);
-    const next = res?.cursor?.next;
-    if (!next) break;
-    cursor = next;
-  }
-  return all;
-}
-function asAssistant2(m, sessionID) {
-  if (!m || typeof m !== "object" || m.type !== "assistant") return null;
-  const a = m;
-  const tokens = a.tokens;
-  if (!tokens || typeof tokens !== "object") return null;
-  const input = tokens.input ?? 0;
-  const output = tokens.output ?? 0;
-  const reasoning = tokens.reasoning ?? 0;
-  const cacheRead = tokens.cache?.read ?? 0;
-  const cacheWrite = tokens.cache?.write ?? 0;
-  const total = input + output + reasoning + cacheRead + cacheWrite;
-  return {
-    sessionID,
-    providerID: a.model?.providerID ?? "unknown",
-    modelID: a.model?.id ?? "unknown",
-    messageID: a.id,
-    created: a.time?.created ?? 0,
-    cost: a.cost ?? 0,
-    tokens: { input, output, reasoning, cacheRead, cacheWrite, total }
-  };
-}
-async function loadAssistantsSince(sinceMs) {
-  const client2 = getV2Client();
-  if (!client2) throw new Error("Usage Stat client is not initialized (setV2Client not called)");
-  const sessions = await fetchAllSessions2(client2);
-  const sessionsById = new Map(sessions.map((s) => [s.id, s]));
-  const assistants = [];
-  const batchSize = 8;
-  for (let i = 0; i < sessions.length; i += batchSize) {
-    const batch = sessions.slice(i, i + batchSize);
-    const results = await Promise.all(batch.map(async (s) => {
-      try {
-        return await fetchAllMessages2(client2, s.id);
-      } catch {
-        return null;
-      }
-    }));
-    for (let j = 0; j < batch.length; j++) {
-      const msgs = results[j];
-      if (!msgs) continue;
-      for (const m of msgs) {
-        const a = asAssistant2(m, batch[j].id);
-        if (!a || a.created < sinceMs) continue;
-        assistants.push(a);
-      }
-    }
-  }
-  return { assistants, sessionsById };
-}
-function summarize2(assistants) {
-  const models = /* @__PURE__ */ new Set();
-  const providers = /* @__PURE__ */ new Set();
-  let totalTokens = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  let totalCost = 0;
-  for (const a of assistants) {
-    const t2 = a.tokens;
-    totalTokens += t2.total;
-    inputTokens += t2.input;
-    outputTokens += t2.output;
-    reasoningTokens += t2.reasoning;
-    cacheRead += t2.cacheRead;
-    cacheWrite += t2.cacheWrite;
-    totalCost += a.cost;
-    models.add(a.modelID);
-    providers.add(a.providerID);
-  }
-  const modelsArray = Array.from(models);
-  return {
-    model: modelsArray.length === 1 ? modelsArray[0] : "",
-    provider: providers.size === 1 ? Array.from(providers)[0] : "",
-    modelsUsed: modelsArray,
-    totalTokens,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheRead,
-    cacheWrite,
-    totalCost,
-    requestCount: assistants.length
-  };
-}
-function buildModelBreakdown(assistants) {
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const key = `${a.providerID}|${a.modelID}`;
-    const t2 = a.tokens;
-    let item = map.get(key);
-    if (!item) {
-      item = {
-        provider: a.providerID,
-        model: a.modelID,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalCost: 0
-      };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.cacheWrite += t2.cacheWrite;
-    item.totalCost += a.cost;
-    sessionSet.add(`${key}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [provider, model] = s.split("|");
-    const item = map.get(`${provider}|${model}`);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
-}
-function buildProviderBreakdown(assistants) {
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const key = a.providerID;
-    const t2 = a.tokens;
-    let item = map.get(key);
-    if (!item) {
-      item = {
-        provider: key,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0
-      };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    sessionSet.add(`${key}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [provider] = s.split("|");
-    const item = map.get(provider);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens);
-}
-function buildDailyBreakdown(assistants) {
-  const map = /* @__PURE__ */ new Map();
-  const sessionSet = /* @__PURE__ */ new Set();
-  for (const a of assistants) {
-    const day = toLocalDay2(a.created);
-    const t2 = a.tokens;
-    let item = map.get(day);
-    if (!item) {
-      item = {
-        day,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0
-      };
-      map.set(day, item);
-    }
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    sessionSet.add(`${day}|${a.sessionID}`);
-  }
-  for (const s of sessionSet) {
-    const [day] = s.split("|");
-    const item = map.get(day);
-    if (item) item.sessions++;
-  }
-  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, 90);
-}
-function buildSessionBreakdown(assistants, sessionsById) {
-  const map = /* @__PURE__ */ new Map();
-  for (const a of assistants) {
-    let item = map.get(a.sessionID);
-    if (!item) {
-      const s = sessionsById.get(a.sessionID);
-      item = {
-        sessionId: a.sessionID,
-        title: s?.title ?? "(untitled)",
-        provider: a.providerID,
-        model: a.modelID,
-        requests: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0,
-        day: toLocalDay2(a.created)
-      };
-      map.set(a.sessionID, item);
-    }
-    const t2 = a.tokens;
-    item.requests++;
-    item.totalTokens += t2.total;
-    item.inputTokens += t2.input;
-    item.outputTokens += t2.output;
-    item.reasoningTokens += t2.reasoning;
-    item.cacheRead += t2.cacheRead;
-    item.totalCost += a.cost;
-    const day = toLocalDay2(a.created);
-    if (day > item.day) item.day = day;
-  }
-  return Array.from(map.values()).sort((a, b) => a.day < b.day ? 1 : -1).slice(0, 15);
-}
-function buildErrorStats(assistants) {
-  let successCount = 0;
-  let failedCount = 0;
-  const byModelMap = /* @__PURE__ */ new Map();
-  for (const a of assistants) {
-    const key = `${a.providerID}|${a.modelID}`;
-    let row = byModelMap.get(key);
-    if (!row) {
-      row = { provider: a.providerID, model: a.modelID, failed: 0, total: 0 };
-      byModelMap.set(key, row);
-    }
-    row.total++;
-    if (a.tokens.total === 0) {
-      row.failed++;
-      failedCount++;
-    } else {
-      successCount++;
-    }
-  }
-  const byModel = Array.from(byModelMap.values()).sort((a, b) => b.failed - a.failed);
-  const errorRate = successCount + failedCount > 0 ? failedCount / (successCount + failedCount) : 0;
-  return { successCount, failedCount, errorRate, byModel };
-}
-function buildHourlyHeatmap(assistants) {
-  const map = /* @__PURE__ */ new Map();
-  for (const a of assistants) {
-    const d = new Date(a.created);
-    const key = `${d.getDay()}|${d.getHours()}`;
-    let item = map.get(key);
-    if (!item) {
-      item = { dow: d.getDay(), hour: d.getHours(), requests: 0, totalTokens: 0, totalCost: 0 };
-      map.set(key, item);
-    }
-    item.requests++;
-    item.totalTokens += a.tokens.total;
-    item.totalCost += a.cost;
-  }
-  return Array.from(map.values());
 }
 function buildApiCost(models, reportedCost) {
   const byModel = models.map((m) => {
@@ -7584,47 +8279,55 @@ function buildApiCost(models, reportedCost) {
     byModel
   };
 }
-async function buildRecentHoursReportData(context, hours) {
-  const sinceMs = Date.now() - Math.max(1, hours) * 36e5;
-  const { assistants, sessionsById } = await loadAssistantsSince(sinceMs);
-  const successful = assistants.filter((a) => a.tokens.total > 0);
-  const summary = summarize2(successful);
-  const models = buildModelBreakdown(successful);
-  const providers = buildProviderBreakdown(successful);
-  const daily = buildDailyBreakdown(successful);
-  const sessions = buildSessionBreakdown(successful, sessionsById);
-  const totalSessions = new Set(successful.map((a) => a.sessionID)).size;
-  const errors = buildErrorStats(assistants);
-  const hourlyHeatmap = buildHourlyHeatmap(successful);
-  const apiCost = buildApiCost(models, summary.totalCost);
+function toCombined(report, fallbackRange) {
   const meta = {
     generatedAt: nowString2(),
     dateRange: {
-      start: daily.length > 0 ? daily[daily.length - 1].day : toLocalDay2(sinceMs),
-      end: daily.length > 0 ? daily[0].day : toLocalDay2(Date.now())
-    }
+      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : fallbackRange.start,
+      end: report.daily.length > 0 ? report.daily[0].day : fallbackRange.end
+    },
+    source: report.source
   };
+  const { source: _source, ...rest } = report;
   return {
-    summary,
-    models,
-    providers,
-    daily,
-    sessions,
-    totalSessions,
-    errors,
+    ...rest,
     meta,
-    apiCost,
-    hourlyHeatmap,
+    apiCost: buildApiCost(report.models, report.summary.totalCost),
     perfLogs: readLogs(200),
-    perfSummary: readPersistedStats(),
-    filters: { startDate: toLocalDay2(sinceMs), endDate: toLocalDay2(Date.now()) }
+    perfSummary: readPersistedStats()
   };
+}
+async function buildCombinedData(context, filters = {}, onProgress) {
+  void context;
+  const report = await getPeriodReport(filters, void 0, onProgress);
+  return toCombined(report, { start: "\u2014", end: "\u2014" });
+}
+async function buildRecentHoursReportData(context, hours, onProgress) {
+  void context;
+  const now = Date.now();
+  const sinceMs = now - Math.max(1, hours) * 36e5;
+  const filters = { startDate: toLocalDay2(sinceMs), endDate: toLocalDay2(now) };
+  const report = await getPeriodReport(filters, { sinceMs }, onProgress);
+  return toCombined(report, { start: toLocalDay2(sinceMs), end: toLocalDay2(now) });
 }
 function kpiLine(label, value) {
   return `  ${label}: ${value}`;
 }
 function separator() {
   return "-".repeat(72);
+}
+function errorLines(e) {
+  const lines = [
+    kpiLine("Error Rate", `${(e.errorRate * 100).toFixed(2)}% (${e.failedCount} failed / ${e.successCount + e.failedCount} total)`),
+    kpiLine("Aborted", `${e.abortedCount ?? 0} (user interrupts, excluded from error rate)`)
+  ];
+  const types = (e.byType ?? []).filter((t2) => t2.type !== "aborted");
+  if (types.length > 0) lines.push(kpiLine("Error Types", types.map((t2) => `${t2.type}=${t2.count}`).join(", ")));
+  return lines;
+}
+function overheadLines(o) {
+  if (o.sessions === 0) return [kpiLine("Overhead (title/compaction, est.)", "none")];
+  return [kpiLine("Overhead (title/compaction, est.)", `${formatTokens(o.totalTokens)} tokens, ${formatCost(o.cost)} across ${o.sessions} sessions`)];
 }
 function renderPeriodTextReport(data) {
   const s = data.summary;
@@ -7649,9 +8352,13 @@ function renderPeriodTextReport(data) {
   lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)));
   lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)));
   if (apiCostTotal != null) lines.push(kpiLine("API Equiv Cost", formatCost(apiCostTotal)));
-  if (data.errors) {
-    const e = data.errors;
-    lines.push(kpiLine("Error Rate", `${(e.errorRate * 100).toFixed(2)}% (${e.failedCount} failed / ${e.successCount + e.failedCount} total)`));
+  if (data.meta.source) lines.push(kpiLine("Data Source", `${data.meta.source.source} (${data.meta.source.elapsedMs} ms)`));
+  if (data.errors) lines.push(...errorLines(data.errors));
+  if (data.overhead) lines.push(...overheadLines(data.overhead));
+  const prev = data.comparison?.previous;
+  if (prev && data.comparison?.previousRange) {
+    const r = data.comparison.previousRange;
+    lines.push(kpiLine("Previous Period", `${r.start} .. ${r.end}: ${formatTokens(prev.totalTokens)} tokens, ${prev.requestCount} req, ${formatCost(prev.totalCost)}`));
   }
   lines.push("");
   lines.push("Models");
@@ -7707,9 +8414,11 @@ function renderSessionTextReport(data) {
   lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)));
   lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)));
   if (data.apiCost.totalApiCost != null) lines.push(kpiLine("API Equiv Cost", formatCost(data.apiCost.totalApiCost)));
-  lines.push(kpiLine("Tokens/s", data.tps > 0 ? data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1) : "-"));
+  lines.push(kpiLine("Gen Tokens/s", data.tps > 0 ? data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1) : "-"));
   lines.push(kpiLine("Cost/Request", formatCost(data.costPerRequest)));
-  lines.push(kpiLine("Error Rate", `${(data.errors.errorRate * 100).toFixed(2)}% (${data.errors.failedCount} failed / ${data.errors.successCount + data.errors.failedCount} total)`));
+  if (data.source) lines.push(kpiLine("Data Source", `${data.source.source} (${data.source.elapsedMs} ms)`));
+  lines.push(...errorLines(data.errors));
+  if (data.overhead) lines.push(...overheadLines(data.overhead));
   lines.push("");
   lines.push("Models");
   if (data.models.length === 0) {
@@ -7735,13 +8444,13 @@ function toSessionJsonReport(data) {
 
 // src/commands.tsx
 import { execSync as execSync2, spawn } from "node:child_process";
-import { existsSync as existsSync8, mkdirSync, writeFileSync as writeFileSync4, readdirSync, statSync as statSync2, unlinkSync } from "node:fs";
-import { join as join8 } from "node:path";
-import { homedir as homedir6 } from "node:os";
+import { existsSync as existsSync10, mkdirSync, writeFileSync as writeFileSync5, readdirSync, statSync as statSync3, unlinkSync } from "node:fs";
+import { join as join10 } from "node:path";
+import { homedir as homedir9 } from "node:os";
 var REPORT_PREFIX = "usage-stat-";
 function ensureReportDir() {
-  const dir = join8(homedir6(), ".opencode", "reports");
-  if (!existsSync8(dir)) mkdirSync(dir, {
+  const dir = join10(homedir9(), ".opencode", "reports");
+  if (!existsSync10(dir)) mkdirSync(dir, {
     recursive: true
   });
   return dir;
@@ -7781,8 +8490,8 @@ function cleanupOldReports(dir) {
   try {
     const files = readdirSync(dir).filter((f) => f.startsWith(REPORT_PREFIX) && /\.(html|txt|json)$/.test(f)).map((f) => ({
       name: f,
-      path: join8(dir, f),
-      mtime: statSync2(join8(dir, f)).mtimeMs
+      path: join10(dir, f),
+      mtime: statSync3(join10(dir, f)).mtimeMs
     })).sort((a, b) => b.mtime - a.mtime);
     if (files.length > MAX_REPORTS) {
       for (const f of files.slice(MAX_REPORTS)) {
@@ -7808,137 +8517,77 @@ function currentSessionId(context) {
   }
   return void 0;
 }
-async function buildSessionData(context) {
-  const sessionId = currentSessionId(context);
-  if (!sessionId) throw new Error("No active session. Open a session first.");
-  const childIds = await getChildSessionIds(sessionId);
-  const allIds = [sessionId, ...childIds];
-  const filters = {
-    sessionIds: allIds
+function tr(key, fallback) {
+  const value = t(key);
+  return value === key ? fallback : value;
+}
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+var reportRunning = false;
+var PROGRESS_TOAST_INTERVAL_MS = 3e3;
+async function runReport(context, task) {
+  if (reportRunning) {
+    context.ui.toast.show({
+      message: tr("reportBusy", "A report is already being generated"),
+      variant: "warning"
+    });
+    return;
+  }
+  reportRunning = true;
+  context.ui.toast.show({
+    message: tr("reportGenerating", "Generating report\u2026"),
+    variant: "info"
+  });
+  let lastToast = Date.now();
+  const onProgress = (done, total) => {
+    const now = Date.now();
+    if (done >= total || now - lastToast < PROGRESS_TOAST_INTERVAL_MS) return;
+    lastToast = now;
+    const message = tr("reportProgress", "Read {done}/{total} sessions").replace("{done}", String(done)).replace("{total}", String(total));
+    context.ui.toast.show({
+      message,
+      variant: "info"
+    });
   };
-  const [summary, models, messages, errors, sessionTitle] = await Promise.all([getSummary(filters), getModelBreakdown(filters), getMessageDetails(sessionId), getErrorStats(filters), getSessionTitle(sessionId)]);
-  const data = await buildSessionReportData(sessionId, sessionTitle, childIds.length, summary, models, messages, errors);
-  return data;
-}
-async function showHtmlReport(context, filters = {}) {
   try {
-    const data = await buildCombinedData(context, filters);
-    const html = generateTotalUsageHtml(data);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
-    writeFileSync4(filePath, html, "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `Report: ${filePath}`,
-      variant: "info"
-    });
-    openInBrowser(filePath);
+    await task(onProgress);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     context.ui.toast.show({
-      message: `Error: ${msg}`,
+      message: `Error: ${errorMessage(err)}`,
       variant: "error"
     });
+  } finally {
+    reportRunning = false;
   }
 }
-async function showTextReport(context, filters = {}) {
-  try {
-    const data = await buildCombinedData(context, filters);
-    const text = renderPeriodTextReport(data);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`);
-    writeFileSync4(filePath, text, "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `Text report: ${filePath}`,
-      variant: "info"
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
+async function buildSessionData(context, onProgress, sessionID) {
+  const sessionId = sessionID ?? currentSessionId(context);
+  if (!sessionId) throw new Error("No active session. Open a session first.");
+  const input = await getSessionReportInput(sessionId, onProgress);
+  return await buildSessionReportData(input);
 }
-async function showJsonReport(context, filters = {}) {
-  try {
-    const data = await buildCombinedData(context, filters);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`);
-    writeFileSync4(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `JSON: ${filePath}`,
-      variant: "info"
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
+function writeReportFile(context, kind, ext, content, label, open = false) {
+  const dir = ensureReportDir();
+  const filePath = join10(dir, `${REPORT_PREFIX}${kind}-${dateTimeStamp()}.${ext}`);
+  writeFileSync5(filePath, content, "utf-8");
+  cleanupOldReports(dir);
+  context.ui.toast.show({
+    message: `${label}: ${filePath}`,
+    variant: "info"
+  });
+  if (open) openInBrowser(filePath);
 }
-async function showHtmlSessionReport(context) {
-  try {
-    const data = await buildSessionData(context);
-    const html = generateSessionUsageHtml(data);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`);
-    writeFileSync4(filePath, html, "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `Report: ${filePath}`,
-      variant: "info"
-    });
-    openInBrowser(filePath);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
+function writeSessionReport(context, data, format) {
+  if (format === "html") writeReportFile(context, "session", "html", generateSessionUsageHtml(data), "Report", true);
+  else if (format === "text") writeReportFile(context, "session", "txt", renderSessionTextReport(data), "Text report");
+  else writeReportFile(context, "session", "json", JSON.stringify(toSessionJsonReport(data), null, 2), "JSON");
 }
-async function showTextSessionReport(context) {
-  try {
-    const data = await buildSessionData(context);
-    const text = renderSessionTextReport(data);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.txt`);
-    writeFileSync4(filePath, text, "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `Text report: ${filePath}`,
-      variant: "info"
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
-}
-async function showJsonSessionReport(context) {
-  try {
-    const data = await buildSessionData(context);
-    const dir = ensureReportDir();
-    const filePath = join8(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.json`);
-    writeFileSync4(filePath, JSON.stringify(toSessionJsonReport(data), null, 2), "utf-8");
-    cleanupOldReports(dir);
-    context.ui.toast.show({
-      message: `JSON: ${filePath}`,
-      variant: "info"
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
+async function generateSessionHtmlReport(context, sessionID) {
+  await runReport(context, async (onProgress) => {
+    const data = await buildSessionData(context, onProgress, sessionID);
+    writeSessionReport(context, data, "html");
+  });
 }
 async function showRangeMenu(context) {
   const choice = await context.ui.dialog.select({
@@ -8000,68 +8649,22 @@ async function showFormatMenu(context) {
   });
   return choice;
 }
-async function writePeriodReportData(context, data, format) {
-  if (format === "html") {
-    const html = generateTotalUsageHtml(data);
-    const dir2 = ensureReportDir();
-    const filePath2 = join8(dir2, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`);
-    writeFileSync4(filePath2, html, "utf-8");
-    cleanupOldReports(dir2);
-    context.ui.toast.show({
-      message: `Report: ${filePath2}`,
-      variant: "info"
-    });
-    openInBrowser(filePath2);
-    return;
-  }
-  if (format === "text") {
-    const text = renderPeriodTextReport(data);
-    const dir2 = ensureReportDir();
-    const filePath2 = join8(dir2, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`);
-    writeFileSync4(filePath2, text, "utf-8");
-    cleanupOldReports(dir2);
-    context.ui.toast.show({
-      message: `Text report: ${filePath2}`,
-      variant: "info"
-    });
-    return;
-  }
-  const dir = ensureReportDir();
-  const filePath = join8(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`);
-  writeFileSync4(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8");
-  cleanupOldReports(dir);
-  context.ui.toast.show({
-    message: `JSON: ${filePath}`,
-    variant: "info"
-  });
+function writePeriodReportData(context, data, format) {
+  if (format === "html") writeReportFile(context, "total", "html", generateTotalUsageHtml(data), "Report", true);
+  else if (format === "text") writeReportFile(context, "text", "txt", renderPeriodTextReport(data), "Text report");
+  else writeReportFile(context, "json", "json", JSON.stringify(toPeriodJsonReport(data), null, 2), "JSON");
 }
 async function generatePeriodReport(context, scope, format) {
-  try {
-    if (scope.kind === "5h") {
-      const data = await buildRecentHoursReportData(context, 5);
-      await writePeriodReportData(context, data, format);
-      return;
-    }
-    const filters = getDateRangeForScope(scope);
-    if (format === "html") {
-      await showHtmlReport(context, filters);
-    } else if (format === "text") {
-      await showTextReport(context, filters);
-    } else {
-      await showJsonReport(context, filters);
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    context.ui.toast.show({
-      message: `Error: ${msg}`,
-      variant: "error"
-    });
-  }
+  await runReport(context, async (onProgress) => {
+    const data = scope.kind === "5h" ? await buildRecentHoursReportData(context, 5, onProgress) : await buildCombinedData(context, getDateRangeForScope(scope), onProgress);
+    writePeriodReportData(context, data, format);
+  });
 }
 async function generateSessionReport(context, format) {
-  if (format === "html") await showHtmlSessionReport(context);
-  else if (format === "text") await showTextSessionReport(context);
-  else await showJsonSessionReport(context);
+  await runReport(context, async (onProgress) => {
+    const data = await buildSessionData(context, onProgress);
+    writeSessionReport(context, data, format);
+  });
 }
 async function showUsageMenu(context) {
   try {
@@ -8254,6 +8857,705 @@ function registerCommands(context) {
       }
     }]
   }));
+}
+
+// src/sidebar.tsx
+var DEFAULT_CONFIG = {
+  sidebar: {
+    showPerformance: true,
+    showPricing: true,
+    showTrend: true
+  },
+  language: "auto"
+};
+function hitRateColor(rate, colors) {
+  if (rate >= 85) return colors.green;
+  if (rate >= 70) return colors.amber;
+  return colors.red;
+}
+var COLLAPSE_INITIAL = {
+  global: false,
+  models: {}
+};
+function loadConfig(context) {
+  const base = {
+    sidebar: {
+      ...DEFAULT_CONFIG.sidebar
+    },
+    language: DEFAULT_CONFIG.language
+  };
+  try {
+    const pluginCfg = context.options;
+    if (pluginCfg?.sidebar) Object.assign(base.sidebar, pluginCfg.sidebar);
+    if (pluginCfg?.language) base.language = pluginCfg.language;
+  } catch {
+  }
+  return base;
+}
+function UsageStatPanel(props) {
+  const {
+    context,
+    perfTracker
+  } = props;
+  const optionConfig = loadConfig(context);
+  let settings = null;
+  try {
+    const [store] = getSettingsStore(context);
+    settings = store;
+    migrateLegacySettings(context);
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, settings will not persist:", err);
+  }
+  const showPerformance = () => settings ? settings.showPerformance : optionConfig.sidebar.showPerformance;
+  const showPricing = () => settings ? settings.showPricing : optionConfig.sidebar.showPricing;
+  const showTrend = () => settings ? settings.showTrend : optionConfig.sidebar.showTrend;
+  setLanguage(settings ? settings.language : optionConfig.language);
+  createEffect2(() => setLanguage(settings ? settings.language : optionConfig.language));
+  const t2 = (key) => {
+    void settings?.language;
+    return t(key);
+  };
+  const isEnglish = (str2) => /^[a-zA-Z\s\.\/]+$/.test(str2);
+  let storedCollapse = null;
+  let collapseMutate = null;
+  try {
+    const [store, mutate] = context.storage.store("usage-stat-collapse", {
+      initial: COLLAPSE_INITIAL
+    });
+    storedCollapse = store;
+    collapseMutate = mutate;
+  } catch (err) {
+    console.warn("[opencode-usage-stat] storage unavailable, collapse state will not persist:", err);
+  }
+  const [localCollapse, setLocalCollapse] = createSignal2({});
+  function toggleGlobal() {
+    const next = !(localCollapse().global ?? storedCollapse?.global ?? false);
+    setLocalCollapse((prev) => ({
+      ...prev,
+      global: next
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.global = next;
+    }).catch(() => {
+    });
+  }
+  function toggleModel(key) {
+    const current = localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false;
+    const next = !current;
+    setLocalCollapse((prev) => ({
+      ...prev,
+      models: {
+        ...prev.models,
+        [key]: next
+      }
+    }));
+    if (collapseMutate) void collapseMutate((draft) => {
+      draft.models[key] = next;
+    }).catch(() => {
+    });
+  }
+  const isPanelCollapsed = () => localCollapse().global ?? storedCollapse?.global ?? false;
+  const isModelCollapsed = (key) => (localCollapse().models?.[key] ?? storedCollapse?.models[key] ?? false) === true;
+  const [panelWidth, setPanelWidth] = createSignal2(38);
+  let outerBoxRef = null;
+  const colors = resolveThemeColors(context.theme);
+  const primaryColor = () => colors.primary;
+  const mutedColor = () => colors.muted;
+  const dimColor = () => colors.dim;
+  const greenColor = () => colors.green;
+  const borderColor = () => colors.border;
+  const missingColor = () => colors.purple;
+  const modelStats = createMemo2(() => {
+    const map = /* @__PURE__ */ new Map();
+    const msgs = props.allTokenMessages();
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const key = `${msg.providerID}/${msg.modelID}`;
+      let e = map.get(key);
+      if (!e) {
+        e = {
+          providerID: msg.providerID,
+          modelID: msg.modelID,
+          totalInput: 0,
+          totalOutput: 0,
+          totalReasoning: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalCost: 0,
+          requestCount: 0,
+          lastMessageIndex: -1
+        };
+        map.set(key, e);
+      }
+      e.totalInput += msg.inputTokens;
+      e.totalOutput += msg.outputTokens;
+      e.totalReasoning += msg.reasoningTokens;
+      e.cacheRead += msg.cacheRead;
+      e.cacheWrite += msg.cacheWrite;
+      e.totalCost += msg.cost;
+      e.requestCount++;
+      e.lastMessageIndex = i;
+    }
+    return Array.from(map.entries()).filter(([, s]) => s.totalInput + s.totalOutput + s.totalReasoning + s.cacheRead + s.cacheWrite > 0).sort((a, b) => b[1].lastMessageIndex - a[1].lastMessageIndex);
+  });
+  const messageTotals = createMemo2(() => {
+    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, r = 0, c = 0;
+    for (const [, s] of modelStats()) {
+      i += s.totalInput;
+      o += s.totalOutput;
+      ir += s.totalReasoning;
+      cr += s.cacheRead;
+      cw += s.cacheWrite;
+      r += s.requestCount;
+      c += s.totalCost;
+    }
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: r,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw
+    };
+  });
+  const sessionTotals = createMemo2(() => {
+    void props.revision();
+    const selected = context.data.session.get(props.sessionID);
+    if (!selected) return messageTotals();
+    const family = selected.parentID ? [props.sessionID] : context.data.session.family(props.sessionID).length > 0 ? context.data.session.family(props.sessionID) : [props.sessionID];
+    let i = 0, o = 0, ir = 0, cr = 0, cw = 0, c = 0;
+    for (const sessionID of family) {
+      const session = context.data.session.get(sessionID);
+      if (!session) continue;
+      i += session.tokens.input;
+      o += session.tokens.output;
+      ir += session.tokens.reasoning;
+      cr += session.tokens.cache.read;
+      cw += session.tokens.cache.write;
+      c += session.cost;
+    }
+    return {
+      totalInput: i,
+      totalOutput: o,
+      totalReasoning: ir,
+      totalCacheRead: cr,
+      totalCacheWrite: cw,
+      totalRequests: messageTotals().totalRequests,
+      totalCost: c,
+      totalTokens: i + o + ir + cr + cw
+    };
+  });
+  const overhead = createMemo2(() => {
+    const s = sessionTotals();
+    const m = messageTotals();
+    return {
+      tokens: Math.max(0, s.totalTokens - m.totalTokens),
+      cost: Math.max(0, s.totalCost - m.totalCost)
+    };
+  });
+  const overheadText = () => {
+    const o = overhead();
+    const base = `+ ${t2("overhead")} ${formatTokens(o.tokens)}`;
+    const withCost = showPricing() && o.cost >= 5e-3 ? `${base} \xB7 ${formatCost(o.cost)}` : base;
+    return truncateToWidth(withCost, rowWidth());
+  };
+  const globalHitRate = createMemo2(() => {
+    let i = 0, cr = 0;
+    for (const [, s] of modelStats()) {
+      if (isMissingCache(s.requestCount, s.cacheRead, s.cacheWrite)) continue;
+      i += totalInputTokens(s.totalInput, s.cacheWrite);
+      cr += s.cacheRead;
+    }
+    const denom = i + cr;
+    return denom > 0 ? cr / denom * 100 : -1;
+  });
+  const modelHitRate = createMemo2(() => {
+    return modelStats().map(([key, stat]) => {
+      const denom = totalInputTokens(stat.totalInput, stat.cacheWrite) + stat.cacheRead;
+      if (denom === 0) return {
+        key,
+        rate: 0,
+        msgs: []
+      };
+      const msgs = [];
+      for (const msg of props.allTokenMessages()) {
+        if (`${msg.providerID}/${msg.modelID}` !== key) continue;
+        msgs.push(msg);
+      }
+      return {
+        key,
+        rate: cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100,
+        msgs
+      };
+    });
+  });
+  const modelTrend = createMemo2(() => {
+    return modelHitRate().map(({
+      key,
+      msgs
+    }) => {
+      if (msgs.length < 6) return {
+        key,
+        trend: null
+      };
+      const sumSlice = (start, end) => {
+        let sumCache = 0, sumTotal = 0;
+        for (let i = start; i < end && i < msgs.length; i++) {
+          sumCache += msgs[i].cacheRead;
+          sumTotal += totalInputTokens(msgs[i].inputTokens, msgs[i].cacheWrite) + msgs[i].cacheRead;
+        }
+        return {
+          sumCache,
+          sumTotal
+        };
+      };
+      const n = msgs.length;
+      const recent = sumSlice(n - 3, n);
+      const prev = sumSlice(n - 6, n - 3);
+      const rateRecent = recent.sumTotal > 0 ? recent.sumCache / recent.sumTotal * 100 : 0;
+      const ratePrev = prev.sumTotal > 0 ? prev.sumCache / prev.sumTotal * 100 : 0;
+      return {
+        key,
+        trend: rateRecent - ratePrev
+      };
+    });
+  });
+  const [partVersion, setPartVersion] = createSignal2(0);
+  const perfStats = createMemo2(() => {
+    void props.allTokenMessages();
+    void partVersion();
+    void props.revision();
+    return perfTracker.getSessionStats();
+  });
+  onCleanup2(() => {
+  });
+  const innerWidth = () => panelWidth() - 2;
+  const rowWidth = () => panelWidth() - 4;
+  const divider = () => {
+    const w = innerWidth();
+    if (w <= 2) return "\u2500".repeat(w);
+    return " " + "\u2500".repeat(w - 2) + " ";
+  };
+  const toggle = {
+    global: toggleGlobal,
+    model: toggleModel
+  };
+  return (() => {
+    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text"), _el$4 = _$createTextNode2(` `), _el$5 = _$createElement2("box"), _el$6 = _$createElement2("text"), _el$7 = _$createElement2("text");
+    _$insertNode2(_el$, _el$2);
+    _$use((el) => {
+      outerBoxRef = el;
+    }, _el$);
+    _$setProp2(_el$, "onSizeChange", () => {
+      if (outerBoxRef) setPanelWidth(outerBoxRef.width);
+    });
+    _$setProp2(_el$, "flexDirection", "column");
+    _$setProp2(_el$, "border", true);
+    _$setProp2(_el$, "borderStyle", "rounded");
+    _$insertNode2(_el$2, _el$3);
+    _$insertNode2(_el$2, _el$5);
+    _$setProp2(_el$2, "flexDirection", "row");
+    _$setProp2(_el$2, "justifyContent", "space-between");
+    _$setProp2(_el$2, "paddingX", 1);
+    _$insertNode2(_el$3, _el$4);
+    _$insert2(_el$3, () => isPanelCollapsed() ? "\u25B6" : "\u25BE", _el$4);
+    _$insert2(_el$3, () => t2("panelTitle"), null);
+    _$insertNode2(_el$5, _el$6);
+    _$insertNode2(_el$5, _el$7);
+    _$setProp2(_el$5, "flexDirection", "row");
+    _$insert2(_el$6, (() => {
+      var _c$ = _$memo2(() => !!isPanelCollapsed());
+      return () => _c$() ? formatTokens(sessionTotals().totalTokens) : "";
+    })(), null);
+    _$insert2(_el$6, (() => {
+      var _c$2 = _$memo2(() => globalHitRate() >= 0);
+      return () => _c$2() ? (() => {
+        var _el$15 = _$createElement2("span");
+        _$insert2(_el$15, (() => {
+          var _c$3 = _$memo2(() => !!isPanelCollapsed());
+          return () => _c$3() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`;
+        })());
+        _$effect2((_$p) => _$setProp2(_el$15, "style", {
+          fg: hitRateColor(globalHitRate(), colors)
+        }, _$p));
+        return _el$15;
+      })() : "";
+    })(), null);
+    _$insertNode2(_el$7, _$createTextNode2(`\u25A4`));
+    _$setProp2(_el$7, "marginLeft", 1);
+    _$setProp2(_el$7, "onMouseDown", (event) => {
+      event.stopPropagation();
+      void generateSessionHtmlReport(context, props.sessionID || void 0).catch((err) => {
+        console.warn("[opencode-usage-stat] session report failed:", err);
+      });
+    });
+    _$insert2(_el$, _$createComponent2(ProviderUsageBlocks, {
+      context,
+      get sessionID() {
+        return props.sessionID;
+      },
+      get panelWidth() {
+        return panelWidth();
+      }
+    }), null);
+    _$insert2(_el$, _$createComponent2(Show2, {
+      get when() {
+        return !isPanelCollapsed();
+      },
+      get children() {
+        return [(() => {
+          var _el$9 = _$createElement2("text");
+          _$insert2(_el$9, divider);
+          _$effect2((_$p) => _$setProp2(_el$9, "fg", borderColor(), _$p));
+          return _el$9;
+        })(), (() => {
+          var _el$0 = _$createElement2("box");
+          _$setProp2(_el$0, "flexDirection", "row");
+          _$setProp2(_el$0, "paddingX", 1);
+          _$insert2(_el$0, _$createComponent2(For2, {
+            get each() {
+              return [{
+                val: formatTokens(sessionTotals().totalTokens),
+                lbl: t2("total")
+              }, {
+                val: sessionTotals().totalRequests.toString(),
+                lbl: t2("requests")
+              }, {
+                val: formatTokens(totalInputTokens(sessionTotals().totalInput, sessionTotals().totalCacheWrite)),
+                lbl: t2("input")
+              }, {
+                val: formatTokens(sessionTotals().totalOutput),
+                lbl: t2("output")
+              }];
+            },
+            children: (item, idx) => {
+              const colW = () => {
+                const totalW = panelWidth() - 4;
+                const base = Math.floor(totalW / 4);
+                return idx() === 3 ? totalW - base * 3 : base;
+              };
+              return (() => {
+                var _el$16 = _$createElement2("box"), _el$17 = _$createElement2("text"), _el$18 = _$createElement2("text");
+                _$insertNode2(_el$16, _el$17);
+                _$insertNode2(_el$16, _el$18);
+                _$setProp2(_el$16, "flexDirection", "column");
+                _$insert2(_el$17, () => centerAlign(item.val, colW()));
+                _$insert2(_el$18, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                _$effect2((_p$) => {
+                  var _v$8 = colW(), _v$9 = primaryColor(), _v$0 = dimColor();
+                  _v$8 !== _p$.e && (_p$.e = _$setProp2(_el$16, "width", _v$8, _p$.e));
+                  _v$9 !== _p$.t && (_p$.t = _$setProp2(_el$17, "fg", _v$9, _p$.t));
+                  _v$0 !== _p$.a && (_p$.a = _$setProp2(_el$18, "fg", _v$0, _p$.a));
+                  return _p$;
+                }, {
+                  e: void 0,
+                  t: void 0,
+                  a: void 0
+                });
+                return _el$16;
+              })();
+            }
+          }));
+          return _el$0;
+        })(), _$createComponent2(Show2, {
+          get when() {
+            return _$memo2(() => !!showPricing())() && sessionTotals().totalCost > 0;
+          },
+          get children() {
+            var _el$1 = _$createElement2("box"), _el$10 = _$createElement2("text"), _el$11 = _$createTextNode2(`: `), _el$12 = _$createElement2("span");
+            _$insertNode2(_el$1, _el$10);
+            _$setProp2(_el$1, "flexDirection", "row");
+            _$setProp2(_el$1, "justifyContent", "center");
+            _$setProp2(_el$1, "marginTop", 1);
+            _$insertNode2(_el$10, _el$11);
+            _$insertNode2(_el$10, _el$12);
+            _$insert2(_el$10, () => t2("cost"), _el$11);
+            _$insert2(_el$12, () => formatCost(sessionTotals().totalCost));
+            _$effect2((_p$) => {
+              var _v$ = mutedColor(), _v$2 = {
+                fg: greenColor()
+              };
+              _v$ !== _p$.e && (_p$.e = _$setProp2(_el$10, "fg", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$12, "style", _v$2, _p$.t));
+              return _p$;
+            }, {
+              e: void 0,
+              t: void 0
+            });
+            return _el$1;
+          }
+        }), _$createComponent2(For2, {
+          get each() {
+            return modelStats();
+          },
+          children: ([key, stat]) => {
+            const isExpanded = () => !isModelCollapsed(key);
+            const hitRate = cacheHitRate(stat.totalInput, stat.cacheRead, stat.cacheWrite) * 100;
+            const isMissing = isMissingCache(stat.requestCount, stat.cacheRead, stat.cacheWrite);
+            const modelTotalTokens = stat.totalInput + stat.totalOutput + stat.totalReasoning + stat.cacheRead + stat.cacheWrite;
+            const trendStr = () => {
+              if (!showTrend()) return "";
+              const td = modelTrend().find((h) => h.key === key);
+              if (!td?.trend || td.trend === 0) return "";
+              return td.trend > 0 ? ` ${t2("trendUp")}${td.trend.toFixed(1)}%` : ` ${t2("trendDown")}${Math.abs(td.trend).toFixed(1)}%`;
+            };
+            const trendColor = () => (modelTrend().find((h) => h.key === key)?.trend ?? 0) >= 0 ? colors.green : colors.red;
+            const MAX_PROVIDER_WIDTH = 12;
+            const providerDisplay = truncateToWidth(stat.providerID, MAX_PROVIDER_WIDTH);
+            let fullTitle = `${providerDisplay}/${stat.modelID}`;
+            if (visualWidth(fullTitle) > 22) {
+              const parts = fullTitle.split("/");
+              if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`;
+            }
+            const modelHeaderRight = () => isExpanded() ? `\xD7${stat.requestCount} \u25BE` : `${formatTokens(modelTotalTokens)} \u25B6`;
+            const shortTitle = () => truncateToWidth(fullTitle, Math.max(4, rowWidth() - 2 - visualWidth(modelHeaderRight()) - 1));
+            const targetW = () => Math.max(visualWidth(`${t2("distLabel")}:`), visualWidth(`${t2("cost")}:`)) + 1;
+            const paddedDistPrefix = () => {
+              const label = `${t2("distLabel")}:`;
+              return label + " ".repeat(targetW() - visualWidth(label));
+            };
+            const paddedCostPrefix = () => {
+              const label = `${t2("cost")}:`;
+              return label + " ".repeat(targetW() - visualWidth(label));
+            };
+            const distRate = () => isMissing ? ` ${t2("missing")}` : ` ${hitRate.toFixed(1)}%`;
+            const distWidth = () => distBarWidth(rowWidth(), targetW(), distRate() + trendStr(), showTrend());
+            const dist = () => distSegments({
+              cacheRead: isMissing ? 0 : stat.cacheRead,
+              input: totalInputTokens(stat.totalInput, stat.cacheWrite),
+              output: stat.totalOutput + stat.totalReasoning
+            }, distWidth());
+            return (() => {
+              var _el$19 = _$createElement2("box"), _el$20 = _$createElement2("box"), _el$21 = _$createElement2("text"), _el$22 = _$createElement2("span"), _el$24 = _$createTextNode2(` `), _el$25 = _$createElement2("span"), _el$26 = _$createElement2("text");
+              _$insertNode2(_el$19, _el$20);
+              _$setProp2(_el$19, "flexDirection", "column");
+              _$setProp2(_el$19, "marginTop", 1);
+              _$insertNode2(_el$20, _el$21);
+              _$insertNode2(_el$20, _el$26);
+              _$setProp2(_el$20, "flexDirection", "row");
+              _$setProp2(_el$20, "justifyContent", "space-between");
+              _$setProp2(_el$20, "onMouseDown", () => toggle.model(key));
+              _$setProp2(_el$20, "paddingX", 1);
+              _$insertNode2(_el$21, _el$22);
+              _$insertNode2(_el$21, _el$24);
+              _$insertNode2(_el$21, _el$25);
+              _$insertNode2(_el$22, _$createTextNode2(`\u25CF`));
+              _$insert2(_el$25, shortTitle);
+              _$insert2(_el$26, modelHeaderRight);
+              _$insert2(_el$19, _$createComponent2(Show2, {
+                get when() {
+                  return isExpanded();
+                },
+                get children() {
+                  var _el$27 = _$createElement2("box"), _el$28 = _$createElement2("box"), _el$29 = _$createElement2("box"), _el$30 = _$createElement2("text"), _el$31 = _$createElement2("span"), _el$32 = _$createElement2("span"), _el$33 = _$createElement2("span"), _el$34 = _$createElement2("span");
+                  _$insertNode2(_el$27, _el$28);
+                  _$insertNode2(_el$27, _el$30);
+                  _$setProp2(_el$27, "flexDirection", "column");
+                  _$setProp2(_el$27, "paddingX", 1);
+                  _$insertNode2(_el$28, _el$29);
+                  _$setProp2(_el$28, "flexDirection", "column");
+                  _$setProp2(_el$28, "border", true);
+                  _$setProp2(_el$28, "borderStyle", "rounded");
+                  _$setProp2(_el$29, "flexDirection", "row");
+                  _$insert2(_el$29, _$createComponent2(For2, {
+                    get each() {
+                      return [{
+                        val: formatTokens(modelTotalTokens),
+                        lbl: t2("total")
+                      }, {
+                        val: formatTokens(totalInputTokens(stat.totalInput, stat.cacheWrite)),
+                        lbl: t2("input")
+                      }, {
+                        val: formatTokens(stat.totalOutput),
+                        lbl: t2("output")
+                      }];
+                    },
+                    children: (item, idx) => {
+                      const colW = () => {
+                        const totalW = panelWidth() - 6;
+                        const base = Math.floor(totalW / 3);
+                        return idx() === 2 ? totalW - base * 2 : base;
+                      };
+                      return (() => {
+                        var _el$45 = _$createElement2("box"), _el$46 = _$createElement2("text"), _el$47 = _$createElement2("text");
+                        _$insertNode2(_el$45, _el$46);
+                        _$insertNode2(_el$45, _el$47);
+                        _$setProp2(_el$45, "flexDirection", "column");
+                        _$insert2(_el$46, () => centerAlign(item.val, colW()));
+                        _$insert2(_el$47, () => centerAlign(isEnglish(item.lbl) ? item.lbl.toUpperCase() : item.lbl, colW()));
+                        _$effect2((_p$) => {
+                          var _v$23 = colW(), _v$24 = primaryColor(), _v$25 = dimColor();
+                          _v$23 !== _p$.e && (_p$.e = _$setProp2(_el$45, "width", _v$23, _p$.e));
+                          _v$24 !== _p$.t && (_p$.t = _$setProp2(_el$46, "fg", _v$24, _p$.t));
+                          _v$25 !== _p$.a && (_p$.a = _$setProp2(_el$47, "fg", _v$25, _p$.a));
+                          return _p$;
+                        }, {
+                          e: void 0,
+                          t: void 0,
+                          a: void 0
+                        });
+                        return _el$45;
+                      })();
+                    }
+                  }));
+                  _$insertNode2(_el$30, _el$31);
+                  _$insertNode2(_el$30, _el$32);
+                  _$insertNode2(_el$30, _el$33);
+                  _$insertNode2(_el$30, _el$34);
+                  _$insert2(_el$30, paddedDistPrefix, _el$31);
+                  _$insert2(_el$31, () => "\u2588".repeat(dist().cache));
+                  _$insert2(_el$32, () => "\u2588".repeat(dist().input));
+                  _$insert2(_el$33, () => "\u2588".repeat(dist().output));
+                  _$insert2(_el$34, distRate);
+                  _$insert2(_el$30, (() => {
+                    var _c$4 = _$memo2(() => !!trendStr());
+                    return () => _c$4() ? (() => {
+                      var _el$48 = _$createElement2("span");
+                      _$insert2(_el$48, trendStr);
+                      _$effect2((_$p) => _$setProp2(_el$48, "style", {
+                        fg: trendColor()
+                      }, _$p));
+                      return _el$48;
+                    })() : null;
+                  })(), null);
+                  _$insert2(_el$27, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!showPerformance())() && !!perfStats().models[key];
+                    },
+                    get children() {
+                      var _el$35 = _$createElement2("text"), _el$36 = _$createTextNode2(` `), _el$37 = _$createElement2("span"), _el$38 = _$createTextNode2(`  `), _el$39 = _$createTextNode2(` `), _el$40 = _$createElement2("span"), _el$41 = _$createTextNode2(`  `), _el$42 = _$createTextNode2(` `), _el$43 = _$createElement2("span");
+                      _$insertNode2(_el$35, _el$36);
+                      _$insertNode2(_el$35, _el$37);
+                      _$insertNode2(_el$35, _el$38);
+                      _$insertNode2(_el$35, _el$39);
+                      _$insertNode2(_el$35, _el$40);
+                      _$insertNode2(_el$35, _el$41);
+                      _$insertNode2(_el$35, _el$42);
+                      _$insertNode2(_el$35, _el$43);
+                      _$setProp2(_el$35, "marginTop", 1);
+                      _$insert2(_el$35, () => t2("ttft"), _el$36);
+                      _$insert2(_el$37, () => formatDuration(perfStats().models[key]?.avgTTFT ?? null));
+                      _$insert2(_el$35, () => t2("tps"), _el$39);
+                      _$insert2(_el$40, () => perfStats().models[key]?.avgTPS?.toFixed(1) ?? "\u2014");
+                      _$insert2(_el$35, () => t2("lat"), _el$42);
+                      _$insert2(_el$43, () => formatDuration(perfStats().models[key]?.avgLatency ?? null));
+                      _$effect2((_p$) => {
+                        var _v$1 = mutedColor(), _v$10 = {
+                          fg: primaryColor()
+                        }, _v$11 = {
+                          fg: primaryColor()
+                        }, _v$12 = {
+                          fg: primaryColor()
+                        };
+                        _v$1 !== _p$.e && (_p$.e = _$setProp2(_el$35, "fg", _v$1, _p$.e));
+                        _v$10 !== _p$.t && (_p$.t = _$setProp2(_el$37, "style", _v$10, _p$.t));
+                        _v$11 !== _p$.a && (_p$.a = _$setProp2(_el$40, "style", _v$11, _p$.a));
+                        _v$12 !== _p$.o && (_p$.o = _$setProp2(_el$43, "style", _v$12, _p$.o));
+                        return _p$;
+                      }, {
+                        e: void 0,
+                        t: void 0,
+                        a: void 0,
+                        o: void 0
+                      });
+                      return _el$35;
+                    }
+                  }), null);
+                  _$insert2(_el$27, _$createComponent2(Show2, {
+                    get when() {
+                      return _$memo2(() => !!showPricing())() && stat.totalCost > 0;
+                    },
+                    get children() {
+                      var _el$44 = _$createElement2("text");
+                      _$insert2(_el$44, paddedCostPrefix, null);
+                      _$insert2(_el$44, () => formatCost(stat.totalCost), null);
+                      _$effect2((_$p) => _$setProp2(_el$44, "fg", mutedColor(), _$p));
+                      return _el$44;
+                    }
+                  }), null);
+                  _$effect2((_p$) => {
+                    var _v$13 = borderColor(), _v$14 = mutedColor(), _v$15 = {
+                      fg: colors.distCache
+                    }, _v$16 = {
+                      fg: colors.distInput
+                    }, _v$17 = {
+                      fg: colors.distOutput
+                    }, _v$18 = {
+                      fg: isMissing ? missingColor() : hitRateColor(hitRate, colors)
+                    };
+                    _v$13 !== _p$.e && (_p$.e = _$setProp2(_el$28, "borderColor", _v$13, _p$.e));
+                    _v$14 !== _p$.t && (_p$.t = _$setProp2(_el$30, "fg", _v$14, _p$.t));
+                    _v$15 !== _p$.a && (_p$.a = _$setProp2(_el$31, "style", _v$15, _p$.a));
+                    _v$16 !== _p$.o && (_p$.o = _$setProp2(_el$32, "style", _v$16, _p$.o));
+                    _v$17 !== _p$.i && (_p$.i = _$setProp2(_el$33, "style", _v$17, _p$.i));
+                    _v$18 !== _p$.n && (_p$.n = _$setProp2(_el$34, "style", _v$18, _p$.n));
+                    return _p$;
+                  }, {
+                    e: void 0,
+                    t: void 0,
+                    a: void 0,
+                    o: void 0,
+                    i: void 0,
+                    n: void 0
+                  });
+                  return _el$27;
+                }
+              }), null);
+              _$effect2((_p$) => {
+                var _v$19 = mutedColor(), _v$20 = {
+                  fg: isMissing ? missingColor() : hitRateColor(hitRate, colors)
+                }, _v$21 = {
+                  fg: primaryColor()
+                }, _v$22 = mutedColor();
+                _v$19 !== _p$.e && (_p$.e = _$setProp2(_el$21, "fg", _v$19, _p$.e));
+                _v$20 !== _p$.t && (_p$.t = _$setProp2(_el$22, "style", _v$20, _p$.t));
+                _v$21 !== _p$.a && (_p$.a = _$setProp2(_el$25, "style", _v$21, _p$.a));
+                _v$22 !== _p$.o && (_p$.o = _$setProp2(_el$26, "fg", _v$22, _p$.o));
+                return _p$;
+              }, {
+                e: void 0,
+                t: void 0,
+                a: void 0,
+                o: void 0
+              });
+              return _el$19;
+            })();
+          }
+        }), _$createComponent2(Show2, {
+          get when() {
+            return _$memo2(() => modelStats().length > 0)() && overhead().tokens > 0;
+          },
+          get children() {
+            var _el$13 = _$createElement2("box"), _el$14 = _$createElement2("text");
+            _$insertNode2(_el$13, _el$14);
+            _$setProp2(_el$13, "paddingX", 1);
+            _$setProp2(_el$13, "marginTop", 1);
+            _$insert2(_el$14, overheadText);
+            _$effect2((_$p) => _$setProp2(_el$14, "fg", dimColor(), _$p));
+            return _el$13;
+          }
+        })];
+      }
+    }), null);
+    _$effect2((_p$) => {
+      var _v$3 = borderColor(), _v$4 = toggle.global, _v$5 = primaryColor(), _v$6 = mutedColor(), _v$7 = mutedColor();
+      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$, "borderColor", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$2, "onMouseDown", _v$4, _p$.t));
+      _v$5 !== _p$.a && (_p$.a = _$setProp2(_el$3, "fg", _v$5, _p$.a));
+      _v$6 !== _p$.o && (_p$.o = _$setProp2(_el$6, "fg", _v$6, _p$.o));
+      _v$7 !== _p$.i && (_p$.i = _$setProp2(_el$7, "fg", _v$7, _p$.i));
+      return _p$;
+    }, {
+      e: void 0,
+      t: void 0,
+      a: void 0,
+      o: void 0,
+      i: void 0
+    });
+    return _el$;
+  })();
 }
 
 // src/token-messages.ts

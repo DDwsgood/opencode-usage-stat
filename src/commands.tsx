@@ -11,24 +11,9 @@
 // never shows up in prompt completion.
 
 import type { Context } from "@opencode-ai/plugin/tui/context"
-import {
-  getChildSessionIds,
-  getSummary,
-  getModelBreakdown,
-  getMessageDetails,
-  getErrorStats,
-  getSessionTitle,
-  setV2Client,
-} from "./queries.js"
-import type {
-  UsageFilters,
-  CombinedReportData,
-  SessionTokenData,
-  ModelBreakdownItem,
-  MessageRow,
-  ErrorStats,
-} from "./formatter.js"
-import { parseDaysFilter } from "./formatter.js"
+import { getSessionReportInput, setV2Client } from "./queries.js"
+import type { ProgressFn } from "./queries.js"
+import type { CombinedReportData } from "./formatter.js"
 import { t, setLanguage } from "./i18n.js"
 import type { SupportedLanguage } from "./i18n.js"
 import { getSettingsStore, migrateLegacySettings, DEFAULT_SETTINGS } from "./settings.js"
@@ -108,121 +93,78 @@ function currentSessionId(context: Context): string | undefined {
   return undefined
 }
 
-async function buildSessionData(context: Context): Promise<SessionReportView> {
-  const sessionId = currentSessionId(context)
+/** t() returns the key itself when a translation is missing. */
+function tr(key: string, fallback: string): string {
+  const value = t(key)
+  return value === key ? fallback : value
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+let reportRunning = false
+const PROGRESS_TOAST_INTERVAL_MS = 3_000
+
+/**
+ * Single-flight wrapper for every report: immediate "generating" toast, a
+ * throttled progress toast (only the API fallback reports progress), and a
+ * busy toast when a report is already running.
+ */
+async function runReport(context: Context, task: (onProgress: ProgressFn) => Promise<void>): Promise<void> {
+  if (reportRunning) {
+    context.ui.toast.show({ message: tr("reportBusy", "A report is already being generated"), variant: "warning" })
+    return
+  }
+  reportRunning = true
+  context.ui.toast.show({ message: tr("reportGenerating", "Generating report…"), variant: "info" })
+  let lastToast = Date.now()
+  const onProgress: ProgressFn = (done, total) => {
+    const now = Date.now()
+    if (done >= total || now - lastToast < PROGRESS_TOAST_INTERVAL_MS) return
+    lastToast = now
+    const message = tr("reportProgress", "Read {done}/{total} sessions")
+      .replace("{done}", String(done))
+      .replace("{total}", String(total))
+    context.ui.toast.show({ message, variant: "info" })
+  }
+  try {
+    await task(onProgress)
+  } catch (err) {
+    context.ui.toast.show({ message: `Error: ${errorMessage(err)}`, variant: "error" })
+  } finally {
+    reportRunning = false
+  }
+}
+
+async function buildSessionData(context: Context, onProgress?: ProgressFn, sessionID?: string): Promise<SessionReportView> {
+  const sessionId = sessionID ?? currentSessionId(context)
   if (!sessionId) throw new Error("No active session. Open a session first.")
-  const childIds = await getChildSessionIds(sessionId)
-  const allIds = [sessionId, ...childIds]
-  const filters: UsageFilters = { sessionIds: allIds }
-
-  const [summary, models, messages, errors, sessionTitle] = await Promise.all([
-    getSummary(filters) as Promise<SessionTokenData>,
-    getModelBreakdown(filters) as Promise<ModelBreakdownItem[]>,
-    getMessageDetails(sessionId) as Promise<MessageRow[]>,
-    getErrorStats(filters) as Promise<ErrorStats>,
-    getSessionTitle(sessionId) as Promise<string>,
-  ])
-
-  const data = await buildSessionReportData(
-    sessionId,
-    sessionTitle,
-    childIds.length,
-    summary,
-    models,
-    messages,
-    errors,
-  )
-  return data
+  const input = await getSessionReportInput(sessionId, onProgress)
+  return await buildSessionReportData(input)
 }
 
-async function showHtmlReport(context: Context, filters: UsageFilters = {}): Promise<void> {
-  try {
-    const data = await buildCombinedData(context, filters)
-    const html = generateTotalUsageHtml(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`)
-    writeFileSync(filePath, html, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" })
-    openInBrowser(filePath)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
+function writeReportFile(context: Context, kind: string, ext: "html" | "txt" | "json", content: string, label: string, open = false): void {
+  const dir = ensureReportDir()
+  const filePath = join(dir, `${REPORT_PREFIX}${kind}-${dateTimeStamp()}.${ext}`)
+  writeFileSync(filePath, content, "utf-8")
+  cleanupOldReports(dir)
+  context.ui.toast.show({ message: `${label}: ${filePath}`, variant: "info" })
+  if (open) openInBrowser(filePath)
 }
 
-async function showTextReport(context: Context, filters: UsageFilters = {}): Promise<void> {
-  try {
-    const data = await buildCombinedData(context, filters)
-    const text = renderPeriodTextReport(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`)
-    writeFileSync(filePath, text, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
+function writeSessionReport(context: Context, data: SessionReportView, format: ReportFormat): void {
+  if (format === "html") writeReportFile(context, "session", "html", generateSessionUsageHtml(data), "Report", true)
+  else if (format === "text") writeReportFile(context, "session", "txt", renderSessionTextReport(data), "Text report")
+  else writeReportFile(context, "session", "json", JSON.stringify(toSessionJsonReport(data), null, 2), "JSON")
 }
 
-async function showJsonReport(context: Context, filters: UsageFilters = {}): Promise<void> {
-  try {
-    const data = await buildCombinedData(context, filters)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`)
-    writeFileSync(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
-}
-
-async function showHtmlSessionReport(context: Context): Promise<void> {
-  try {
-    const data = await buildSessionData(context)
-    const html = generateSessionUsageHtml(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.html`)
-    writeFileSync(filePath, html, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" })
-    openInBrowser(filePath)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
-}
-
-async function showTextSessionReport(context: Context): Promise<void> {
-  try {
-    const data = await buildSessionData(context)
-    const text = renderSessionTextReport(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.txt`)
-    writeFileSync(filePath, text, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
-}
-
-async function showJsonSessionReport(context: Context): Promise<void> {
-  try {
-    const data = await buildSessionData(context)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}session-${dateTimeStamp()}.json`)
-    writeFileSync(filePath, JSON.stringify(toSessionJsonReport(data), null, 2), "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
+/** Generate and open the HTML report for the current (or given) session. Re-entrant calls only toast. */
+export async function generateSessionHtmlReport(context: Context, sessionID?: string): Promise<void> {
+  await runReport(context, async onProgress => {
+    const data = await buildSessionData(context, onProgress, sessionID)
+    writeSessionReport(context, data, "html")
+  })
 }
 
 async function showRangeMenu(context: Context): Promise<ReportScope | undefined> {
@@ -262,59 +204,26 @@ async function showFormatMenu(context: Context): Promise<ReportFormat | undefine
   return choice
 }
 
-async function writePeriodReportData(context: Context, data: CombinedReportData, format: ReportFormat): Promise<void> {
-  if (format === "html") {
-    const html = generateTotalUsageHtml(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}total-${dateTimeStamp()}.html`)
-    writeFileSync(filePath, html, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Report: ${filePath}`, variant: "info" })
-    openInBrowser(filePath)
-    return
-  }
-  if (format === "text") {
-    const text = renderPeriodTextReport(data)
-    const dir = ensureReportDir()
-    const filePath = join(dir, `${REPORT_PREFIX}text-${dateTimeStamp()}.txt`)
-    writeFileSync(filePath, text, "utf-8")
-    cleanupOldReports(dir)
-    context.ui.toast.show({ message: `Text report: ${filePath}`, variant: "info" })
-    return
-  }
-  const dir = ensureReportDir()
-  const filePath = join(dir, `${REPORT_PREFIX}json-${dateTimeStamp()}.json`)
-  writeFileSync(filePath, JSON.stringify(toPeriodJsonReport(data), null, 2), "utf-8")
-  cleanupOldReports(dir)
-  context.ui.toast.show({ message: `JSON: ${filePath}`, variant: "info" })
+function writePeriodReportData(context: Context, data: CombinedReportData, format: ReportFormat): void {
+  if (format === "html") writeReportFile(context, "total", "html", generateTotalUsageHtml(data), "Report", true)
+  else if (format === "text") writeReportFile(context, "text", "txt", renderPeriodTextReport(data), "Text report")
+  else writeReportFile(context, "json", "json", JSON.stringify(toPeriodJsonReport(data), null, 2), "JSON")
 }
 
 async function generatePeriodReport(context: Context, scope: ReportScope, format: ReportFormat): Promise<void> {
-  try {
-    if (scope.kind === "5h") {
-      const data = await buildRecentHoursReportData(context, 5)
-      await writePeriodReportData(context, data, format)
-      return
-    }
-
-    const filters = getDateRangeForScope(scope)
-    if (format === "html") {
-      await showHtmlReport(context, filters)
-    } else if (format === "text") {
-      await showTextReport(context, filters)
-    } else {
-      await showJsonReport(context, filters)
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    context.ui.toast.show({ message: `Error: ${msg}`, variant: "error" })
-  }
+  await runReport(context, async onProgress => {
+    const data = scope.kind === "5h"
+      ? await buildRecentHoursReportData(context, 5, onProgress)
+      : await buildCombinedData(context, getDateRangeForScope(scope), onProgress)
+    writePeriodReportData(context, data, format)
+  })
 }
 
 async function generateSessionReport(context: Context, format: ReportFormat): Promise<void> {
-  if (format === "html") await showHtmlSessionReport(context)
-  else if (format === "text") await showTextSessionReport(context)
-  else await showJsonSessionReport(context)
+  await runReport(context, async onProgress => {
+    const data = await buildSessionData(context, onProgress)
+    writeSessionReport(context, data, format)
+  })
 }
 
 async function showUsageMenu(context: Context): Promise<void> {

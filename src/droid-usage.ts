@@ -21,6 +21,7 @@ import type { ProviderUsageResult, UsageWindow } from "./provider-usage.js"
 import { PROVIDER_TIMEOUT_MS, toNumber } from "./provider-usage.js"
 import { formatTokens } from "./formatter.js"
 import { readSecureProviderJson } from "./credentials.js"
+import { getFactoryKeyringCredential, jwtExpiresAtMs } from "./factory-keyring.js"
 
 export const DROID_PLUGIN_ID = "opencode-droid-v2"
 export const DROID_PROVIDER_NAME = "Droid (Factory)"
@@ -89,15 +90,23 @@ export interface DroidAccountQuota {
 }
 export type DroidAccountQuotaSource = () => Promise<DroidAccountQuota | null>
 
-// ── Factory account quota (official web endpoint + saved web credential) ──
+// ── Factory account quota (official web endpoint + auto-rotated credential) ──
 //
 // The opencode-droid-v2 usage RPC only carries per-session tracked FSC; the
 // account-level subscription windows come from the same endpoint the official
 // app.factory.ai frontend calls ($Ge hook → GET /api/billing/limits
 // on api.factory.ai, Authorization: Bearer <token> or Cookie + X-Factory-Org-Id).
-// The CLI keyring (~/.factory/auth.v2.keyring) is encrypted and never read.
-// The only accepted credential is a saved web cookie/access token in the
-// plugin's secure JSON store — read-only, never refreshed or persisted.
+//
+// Credential resolution order:
+//   1. Factory CLI keyring (~/.factory/auth.v2.keyring) — the AES-256-GCM file
+//      the `droid` CLI keeps fresh. We decrypt it through the same keytar
+//      module the CLI ships, use the access token while it is valid, and
+//      rotate an expired one through WorkOS, writing the new pair back so the
+//      CLI never sees a revoked refresh token (see factory-keyring.ts).
+//      FACTORY_DISABLE_KEYRING opts this source out.
+//   2. Saved web cookie/access token in the plugin's secure JSON store —
+//      read-only fallback (the saved token is never refreshed or persisted;
+//      a 24 h WorkOS JWT saved there expires within a day).
 
 export const FACTORY_USAGE_URL = "https://api.factory.ai/api/billing/limits"
 
@@ -242,15 +251,35 @@ export async function fetchFactorySubscriptionUsage(
 }
 
 /**
- * Account-quota source for checkDroidUsage: re-reads the secure JSON on every
- * call (so a freshly saved credential is picked up without a restart) and
- * returns null when no credential exists. Fetch failures propagate so the
+ * Account-quota source for checkDroidUsage: resolves a credential on every
+ * call — the Factory CLI keyring first (self-refreshing, so a freshly expired
+ * access token is rotated on the spot), then the secure JSON as fallback. A
+ * keyring present but unrefreshable counts as a request failure; with no
+ * credential at all the source returns null. Fetch failures propagate so the
  * caller can distinguish "not configured" from "failed".
  */
 export function makeFactoryAccountQuotaSource(fetchImpl: FetchLike = fetch): DroidAccountQuotaSource {
   return async () => {
-    const credential = resolveFactoryUsageCredential()
-    if (!credential) return null
+    let keyringError: unknown = null
+    let credential: FactoryUsageCredential | null = null
+    try {
+      credential = await getFactoryKeyringCredential({ fetchImpl })
+    } catch (error) {
+      keyringError = error
+    }
+    if (!credential) {
+      const saved = resolveFactoryUsageCredential()
+      // A saved JWT access token is only useful while unexpired — sending a
+      // provably dead one guarantees a 401, so treat it as absent. Cookies and
+      // non-JWT tokens have no readable expiry and are tried as-is.
+      if (saved && (saved.cookie || (saved.accessToken && (jwtExpiresAtMs(saved.accessToken) ?? Infinity) > Date.now()))) {
+        credential = saved
+      }
+    }
+    if (!credential) {
+      if (keyringError) throw keyringError
+      return null
+    }
     return fetchFactorySubscriptionUsage(credential, fetchImpl)
   }
 }
@@ -528,7 +557,7 @@ export async function checkDroidUsage(
     if (trackedError) reasons.push(trackedError)
     else if (!query) reasons.push("usage RPC unavailable on this host")
     if (quotaState === "failed") reasons.push("account usage request failed")
-    else if (quotaState === "missing") reasons.push("no saved Factory web credential")
+    else if (quotaState === "missing") reasons.push("no Factory credential (no CLI keyring, no saved web credential)")
     return fail(query != null || quotaState !== "none", reasons.join(" · ") || "no usage data available")
   }
 
@@ -548,7 +577,7 @@ export async function checkDroidUsage(
       valueLabel: quotaState === "failed"
         ? "unknown (request failed)"
         : quotaState === "missing"
-          ? "unavailable — no saved web credential"
+          ? "unavailable — no CLI keyring or saved web credential"
           : "unavailable — session-tracked",
     })
   }

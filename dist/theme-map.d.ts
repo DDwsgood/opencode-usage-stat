@@ -10,5 +10,11 @@ export interface ThemeColorMap {
     purple: RGBA;
     cyan: RGBA;
     border: RGBA;
+    /** Dist bar: cache read (hit). */
+    distCache: RGBA;
+    /** Dist bar: uncached input + cache write. */
+    distInput: RGBA;
+    /** Dist bar: output + reasoning. */
+    distOutput: RGBA;
 }
 export declare function resolveThemeColors(theme: ResolvedTheme): ThemeColorMap;

@@ -1,5 +1,6 @@
 import type { Context } from "@opencode-ai/plugin/tui/context";
-import type { UsageFilters, CombinedReportData, ApiCostAnalysis, SessionTokenData, ModelBreakdownItem, MessageRow, ErrorStats } from "./formatter.js";
+import type { ProgressFn } from "./queries.js";
+import type { UsageFilters, CombinedReportData, ApiCostAnalysis, SessionTokenData, ModelBreakdownItem, MessageRow, ErrorStats, OverheadStats, AgentBreakdownItem, SessionBreakdownItem, ReportSourceMeta } from "./formatter.js";
 export type ReportFormat = "html" | "text" | "json";
 export type ReportScopeKind = "session" | "5h" | "7d" | "30d" | "all" | "days";
 export interface ReportScope {
@@ -20,6 +21,7 @@ export interface SessionReportView {
     sessionDurationMs: number;
     firstMessageTime: number | null;
     lastMessageTime: number | null;
+    /** Generation speed: Σ(output+reasoning) / Σ(completed−created) over completed requests. */
     tps: number;
     costPerRequest: number;
     p50Duration: number;
@@ -28,13 +30,18 @@ export interface SessionReportView {
     avgDuration: number;
     peakTokens: number;
     peakTokensIndex: number;
+    overhead?: OverheadStats;
+    agents?: AgentBreakdownItem[];
+    childSessions?: SessionBreakdownItem[];
+    source?: ReportSourceMeta;
 }
 /** Returns the date-range filter for non-session scopes. */
 export declare function getDateRangeForScope(scope: ReportScope): UsageFilters;
+export declare function buildApiCost(models: ModelBreakdownItem[], reportedCost: number): ApiCostAnalysis;
 /** Build the cumulative (total) report data for a date-range scope. */
-export declare function buildCombinedData(context: Context, filters?: UsageFilters): Promise<CombinedReportData>;
+export declare function buildCombinedData(context: Context, filters?: UsageFilters, onProgress?: ProgressFn): Promise<CombinedReportData>;
 /** Build a CombinedReportData covering the last N hours. */
-export declare function buildRecentHoursReportData(context: Context, hours: number): Promise<CombinedReportData>;
+export declare function buildRecentHoursReportData(context: Context, hours: number, onProgress?: ProgressFn): Promise<CombinedReportData>;
 /** Plain-text summary for cumulative/date-range reports. */
 export declare function renderPeriodTextReport(data: CombinedReportData): string;
 /** Plain-text summary for the current-session report. */

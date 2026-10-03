@@ -330,7 +330,7 @@ test("checkDroidUsage without credential reports quota unavailable, not failed",
   )
   assert.equal(result.ok, true)
   const quota = result.windows?.find(w => w.label === "Account quota")
-  assert.match(quota?.valueLabel ?? "", /no saved web credential/)
+  assert.match(quota?.valueLabel ?? "", /no CLI keyring or saved web credential/)
 })
 
 test("checkDroidUsage marks family sums partial when member sessions lack records", async () => {
@@ -620,25 +620,32 @@ test("resolveFactoryUsageCredential reads the secure provider JSON only", () => 
 
 test("makeFactoryAccountQuotaSource returns null without a saved credential", async () => {
   const previous = process.env.XDG_CONFIG_HOME
+  const previousFactoryHome = process.env.FACTORY_HOME_OVERRIDE
   const dir = mkdtempSync(join(tmpdir(), "droid-nocred-"))
   try {
     process.env.XDG_CONFIG_HOME = dir
+    // Isolate from the developer's real CLI keyring (no file there).
+    process.env.FACTORY_HOME_OVERRIDE = join(dir, "no-factory")
     const source = makeFactoryAccountQuotaSource(factoryFetch(200, factoryPayload()))
     assert.equal(await source(), null)
   } finally {
     if (previous === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previous
+    if (previousFactoryHome === undefined) delete process.env.FACTORY_HOME_OVERRIDE
+    else process.env.FACTORY_HOME_OVERRIDE = previousFactoryHome
   }
 })
 
 test("makeFactoryAccountQuotaSource fetches with the saved credential", async () => {
   const previous = process.env.XDG_CONFIG_HOME
+  const previousFactoryHome = process.env.FACTORY_HOME_OVERRIDE
   const dir = mkdtempSync(join(tmpdir(), "droid-cred-"))
   mkdirSync(join(dir, "opencode", "usage-stat"), { recursive: true })
   writeFileSync(join(dir, "opencode", "usage-stat", "droid.json"), JSON.stringify({ accessToken: "at-9", organizationId: "o" }))
   const seen: { url?: string; init?: RequestInit } = {}
   try {
     process.env.XDG_CONFIG_HOME = dir
+    process.env.FACTORY_HOME_OVERRIDE = join(dir, "no-factory")
     const source = makeFactoryAccountQuotaSource(factoryFetch(200, factoryPayload(), seen))
     const quota = await source()
     assert.ok(quota)
@@ -647,5 +654,7 @@ test("makeFactoryAccountQuotaSource fetches with the saved credential", async ()
   } finally {
     if (previous === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previous
+    if (previousFactoryHome === undefined) delete process.env.FACTORY_HOME_OVERRIDE
+    else process.env.FACTORY_HOME_OVERRIDE = previousFactoryHome
   }
 })

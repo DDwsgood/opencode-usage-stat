@@ -91,6 +91,11 @@ const zh: Record<string, string> = {
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
   codex: "Codex",
+  reportGenerating: "正在生成报告…",
+  reportProgress: "已读取 {done}/{total} 个会话",
+  reportBusy: "报告正在生成中",
+  distLabel: "分布",
+  overhead: "额外开销",
 }
 
 const en: Record<string, string> = {
@@ -183,6 +188,11 @@ const en: Record<string, string> = {
   opencodeGo: "OpenCode Go",
   deepseek: "DeepSeek",
   codex: "Codex",
+  reportGenerating: "Generating report…",
+  reportProgress: "Read {done}/{total} sessions",
+  reportBusy: "A report is already being generated",
+  distLabel: "Dist",
+  overhead: "overhead",
 }
 
 let currentLang: SupportedLanguage = detectLanguage()

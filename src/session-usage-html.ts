@@ -2,16 +2,22 @@
 // Enhanced dashboard with duration analysis, cache trend,
 // auto-generated insights, and animated background.
 
-import type { ModelBreakdownItem, MessageRow, SessionTokenData, ApiCostAnalysis, ApiCostModelItem, ErrorStats } from "./formatter.js"
+import type {
+  ModelBreakdownItem, MessageRow, SessionTokenData, ApiCostAnalysis, ApiCostModelItem, ErrorStats,
+  OverheadStats, AgentBreakdownItem, SessionBreakdownItem, ReportSourceMeta, SessionReportInput,
+} from "./formatter.js"
 import { isMissingCache, cacheHitRate, totalInputTokens } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
 import {
   fmtTokens, fmtCost, fmtPercent, fmtTime, fmtDateTime, fmtDuration, escapeHtml, nowString, percentile, jsonForScript,
+  barListHtml, panelHtml, sectionNavHtml, errorTypesPanelHtml, finishReasonsPanelHtml, overheadPanelHtml,
+  footerSourceHtml, abortedCountOf, finishReasonCount, finishReasonMeta,
   HTML_HEAD_SHARED, BG_ANIMATION_HTML, BG_ANIMATION_CSS, BG_PARTICLE_JS, SHARED_CSS, SHARED_JS,
 } from "./html-common.js"
+import type { NavItem } from "./html-common.js"
 import { modelIconImg } from "./model-icons.js"
 
-interface SessionReportData {
+export interface SessionReportData {
   sessionId: string
   sessionTitle: string
   subagentCount: number
@@ -21,11 +27,19 @@ interface SessionReportData {
   apiCost: ApiCostAnalysis
   errors: ErrorStats
   generatedAt: string
+  overhead?: OverheadStats
+  agents?: AgentBreakdownItem[]
+  childSessions?: SessionBreakdownItem[]
+  source?: ReportSourceMeta
   // Computed fields
   sessionDurationMs: number
   firstMessageTime: number | null
   lastMessageTime: number | null
+  /** Generation speed: Σ(output + reasoning) / Σ(completed − created), completed requests only. */
   tps: number
+  /** Numerator/denominator of `tps`; optional so callers holding only the contract fields still type-check. */
+  genTokens?: number
+  genTimeMs?: number
   costPerRequest: number
   p50Duration: number
   p90Duration: number
@@ -33,6 +47,19 @@ interface SessionReportData {
   avgDuration: number
   peakTokens: number
   peakTokensIndex: number
+}
+
+/** Σ(output + reasoning) over Σ(completed − created) seconds; only requests with a positive duration count. */
+export function generationSpeed(messages: Pick<MessageRow, "outputTokens" | "reasoningTokens" | "timeCreated" | "timeCompleted">[]): { tps: number; tokens: number; timeMs: number } {
+  let tokens = 0, timeMs = 0
+  for (const m of messages) {
+    if (!m.timeCompleted) continue
+    const d = m.timeCompleted - m.timeCreated
+    if (!(d > 0)) continue
+    tokens += m.outputTokens + m.reasoningTokens
+    timeMs += d
+  }
+  return { tps: timeMs > 0 ? tokens / (timeMs / 1000) : 0, tokens, timeMs }
 }
 
 function renderKpiCards(data: SessionReportData): string {
@@ -82,10 +109,10 @@ function renderKpiCards(data: SessionReportData): string {
         <div class="kpi-label">Avg Tok/Req</div>
         <div class="kpi-value" data-countup="${fmtTokens(Math.round(avgTokensPerReq))}">${fmtTokens(Math.round(avgTokensPerReq))}</div>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Tokens/s</div>
+      <div class="kpi-card" title="Output + reasoning tokens divided by the summed duration (completed − created) of completed requests">
+        <div class="kpi-label">Gen Tokens/s</div>
         <div class="kpi-value" data-countup="${tpsStr}">${tpsStr}</div>
-        <div class="kpi-sub">${fmtDuration(data.sessionDurationMs)} span</div>
+        <div class="kpi-sub">${(data.genTimeMs ?? 0) > 0 ? `${fmtTokens(data.genTokens ?? 0)} out in ${fmtDuration(data.genTimeMs ?? 0)}` : data.tps > 0 ? 'output + reasoning' : 'no completed requests'}</div>
       </div>
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Reported Cost</div>
@@ -107,7 +134,7 @@ function renderKpiCards(data: SessionReportData): string {
       <div class="kpi-card">
         <div class="kpi-label">Error Rate</div>
         <div class="kpi-value" style="color:${errorColor}" data-countup="${errorRatePct}">${errorRatePct}</div>
-        <div class="kpi-sub">${data.errors.failedCount} failed</div>
+        <div class="kpi-sub" title="Aborted = interrupted by the user; not counted in the error rate">${data.errors.failedCount} failed &middot; ${abortedCountOf(data.errors)} aborted</div>
       </div>
     </div>`
 }
@@ -178,7 +205,29 @@ function renderModelCards(data: SessionReportData): string {
   return cards
 }
 
+function statusChip(msg: MessageRow): string {
+  if (msg.errorType === "aborted") return `<span class="status-chip tone-muted" title="Interrupted by the user">aborted</span>`
+  if (msg.finish === "error" || (msg.errorType && msg.errorType !== "aborted")) {
+    const t = msg.errorType || "error"
+    return `<span class="status-chip tone-danger" title="${escapeHtml(t)}">${escapeHtml(t.length > 22 ? t.slice(0, 21) + "\u2026" : t)}</span>`
+  }
+  if (!msg.finish) return msg.timeCompleted ? '-' : `<span class="status-chip tone-muted">running</span>`
+  const meta = finishReasonMeta(msg.finish)
+  const tone = meta.tone === "warn" ? "tone-warn" : ""
+  return `<span class="status-chip ${tone}"${meta.hint ? ` title="${escapeHtml(meta.hint)}"` : ""}>${escapeHtml(msg.finish)}</span>`
+}
+
 function renderMessageTable(data: SessionReportData): string {
+  if (data.messages.length === 0) {
+    return `
+  <div class="section" id="requests">
+    <div class="section-title">Per-Request Breakdown</div>
+    <div class="empty-state">No requests recorded in this session.</div>
+  </div>`
+  }
+  const agentSet = new Set(data.messages.map(m => m.agent).filter((a): a is string => !!a))
+  const showAgent = agentSet.size > 1 || data.messages.some(m => m.isChild)
+  const showStatus = data.messages.some(m => m.finish !== undefined || m.errorType !== undefined)
   const rows = data.messages.map((msg, i) => {
     const isMissing = isMissingCache(1, msg.cacheRead, msg.cacheWrite)
     const hitRate = cacheHitRate(msg.inputTokens, msg.cacheRead, msg.cacheWrite)
@@ -188,10 +237,14 @@ function renderMessageTable(data: SessionReportData): string {
     const duration = msg.timeCompleted ? msg.timeCompleted - msg.timeCreated : null
     const durColor = duration != null && duration > data.p90Duration ? 'var(--danger)' : 'var(--text)'
 
+    const agentCell = showAgent
+      ? `<td class="cell-left">${escapeHtml(msg.agent || '-')}${msg.isChild ? ' <span class="status-chip" title="Request from a sub-agent session">sub</span>' : ''}</td>`
+      : ''
     return `<tr>
       <td data-sort="${i + 1}">${i + 1}</td>
       <td data-sort="${msg.timeCreated}">${fmtTime(msg.timeCreated)}</td>
       <td><div class="model-cell">${modelIconImg(msg.model, 16)}<span class="model-name-text" title="${escapeHtml(msg.model)}">${escapeHtml(msg.model)}</span></div></td>
+      ${agentCell}
       <td data-sort="${msg.totalTokens}">${fmtTokens(msg.totalTokens)}</td>
       <td data-sort="${totalInputTokens(msg.inputTokens, msg.cacheWrite)}">${fmtTokens(totalInputTokens(msg.inputTokens, msg.cacheWrite))}</td>
       <td data-sort="${msg.outputTokens}">${fmtTokens(msg.outputTokens)}</td>
@@ -200,19 +253,20 @@ function renderMessageTable(data: SessionReportData): string {
       <td data-sort="${msg.cacheWrite}">${fmtTokens(msg.cacheWrite)}</td>
       <td data-sort="${isMissing ? -1 : hitRate}" style="color:${hitColor};font-weight:600">${hitDisplay}</td>
       <td data-sort="${duration ?? -1}" style="color:${durColor}">${fmtDuration(duration)}</td>
+      ${showStatus ? `<td>${statusChip(msg)}</td>` : ''}
       <td data-sort="${msg.cost}">${fmtCost(msg.cost)}</td>
     </tr>`
   }).join("\n")
 
   return `
-  <div class="section">
+  <div class="section" id="requests">
     <div class="section-title">Per-Request Breakdown <span class="sub">(${data.messages.length} requests, click headers to sort)</span></div>
     <table id="messages-table" class="data-table">
       <thead><tr>
-        <th class="sortable">#</th><th class="sortable">Time</th><th>Model</th><th class="sortable">Total</th>
+        <th class="sortable">#</th><th class="sortable">Time</th><th>Model</th>${showAgent ? '<th class="sortable cell-left">Agent</th>' : ''}<th class="sortable">Total</th>
         <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th>
         <th class="sortable">Cache R</th><th class="sortable">Cache W</th>
-        <th class="sortable">Hit Rate</th><th class="sortable">Duration</th><th class="sortable">Cost</th>
+        <th class="sortable">Hit Rate</th><th class="sortable">Duration</th>${showStatus ? '<th class="sortable" title="Finish reason / error type">Status</th>' : ''}<th class="sortable">Cost</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -403,16 +457,16 @@ function renderApiCostSection(data: SessionReportData): string {
   const diff = totalApi - reported
   const diffStr = diff > 0.001
     ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>`
-    : `<span style="color:var(--cache)">${fmtCost(diff)}</span>`
+    : `<span style="color:var(--cache)">${diff < 0 ? '\u2212' + fmtCost(-diff) : fmtCost(diff)}</span>`
 
   return `
-  <div class="section">
+  <div class="section" id="api-cost">
     <div class="section-title">API Equivalent Cost Analysis</div>
     <p style="font-size:12px;color:var(--text-dim);padding:4px 0 8px">
       For providers that don't report cost, API equivalent cost is estimated using official model pricing (models.dev) &times; token usage.
       <span style="color:var(--missing)">~</span> = MISSING model (upstream no cache data) estimated at 94% hit rate.
     </p>
-    <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi-row kpi-api-row">
       <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : '-'}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
@@ -488,11 +542,27 @@ function renderInsights(data: SessionReportData): string {
   }
 
   // Error insight
+  const aborted = abortedCountOf(data.errors)
   if (data.errors.failedCount > 0) {
     insights.push({
       icon: '!', bg: 'rgba(223,123,131,0.15)',
       title: 'Errors detected',
-      value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests`,
+      value: `<span class="accent">${data.errors.failedCount} failed</span> out of ${data.errors.successCount + data.errors.failedCount} requests${aborted > 0 ? ` · ${aborted} user-aborted` : ''}`,
+    })
+  } else if (aborted > 0) {
+    insights.push({
+      icon: '\u25A0', bg: 'rgba(168,160,187,0.15)',
+      title: 'User interrupts',
+      value: `<span class="accent">${aborted}</span> request${aborted > 1 ? 's' : ''} aborted by the user (not errors)`,
+    })
+  }
+
+  const truncated = finishReasonCount(data.errors, "length")
+  if (truncated > 0) {
+    insights.push({
+      icon: '\u2702', bg: 'rgba(208,183,125,0.15)',
+      title: 'Truncated outputs',
+      value: `<span class="accent">${truncated}</span> response${truncated > 1 ? 's' : ''} hit the output token limit`,
     })
   }
 
@@ -508,23 +578,91 @@ function renderInsights(data: SessionReportData): string {
     </div>`).join("\n")
 
   return `
-  <div class="section">
+  <div class="section" id="insights">
     <div class="section-title">Smart Insights</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px">
       ${cards}
     </div>
   </div>`
 }
 
-export async function buildSessionReportData(
-  sessionId: string,
-  sessionTitle: string,
-  subagentCount: number,
-  summary: SessionTokenData,
-  models: ModelBreakdownItem[],
-  messages: MessageRow[],
-  errors: ErrorStats,
-): Promise<SessionReportData> {
+function renderAgentsPanel(data: SessionReportData): string {
+  const agents = (data.agents ?? []).filter(a => a.totalTokens > 0 || a.requests > 0)
+  if (agents.length === 0) return ""
+  const list = barListHtml([...agents].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 10).map(a => ({
+    label: a.agent || "(none)",
+    sub: `${a.requests} req${a.sessions > 1 ? ` \u00b7 ${a.sessions} sessions` : ""}`,
+    value: a.totalTokens,
+    display: fmtTokens(a.totalTokens),
+    meta: fmtCost(a.totalCost),
+    tone: "accent" as const,
+  })), "Usage by agent")
+  const sub = agents.length > 10 ? `top 10 of ${agents.length} agents` : `${agents.length} agent${agents.length === 1 ? "" : "s"}`
+  return panelHtml("Agents", list, { sub })
+}
+
+const CHILD_SESSION_LIMIT = 12
+
+function renderChildSessionsPanel(data: SessionReportData): string {
+  const children = (data.childSessions ?? []).filter(c => c.totalTokens > 0 || c.requests > 0)
+  if (children.length === 0) return ""
+  const childTokens = children.reduce((s, c) => s + c.totalTokens, 0)
+  const childCost = children.reduce((s, c) => s + c.totalCost, 0)
+  // summary covers the root session plus all children, so the root share is the remainder.
+  const rootTokens = Math.max(0, data.summary.totalTokens - childTokens)
+  const all = rootTokens + childTokens
+  const rootPct = all > 0 ? rootTokens / all : 0
+  const split = all > 0 ? `
+      <div class="split-row-label">This session vs sub-agents &middot; token share</div>
+      <div class="split-bar" role="img" aria-label="Main session ${fmtPercent(rootPct)}, sub-agent sessions ${fmtPercent(1 - rootPct)} of tokens">
+        <span class="split-seg root" style="width:${(rootPct * 100).toFixed(2)}%"></span><span class="split-seg child" style="width:${((1 - rootPct) * 100).toFixed(2)}%"></span>
+      </div>
+      <div class="split-legend">
+        <div><div class="split-key"><span class="legend-dot root"></span>Main</div><div class="split-val">${fmtPercent(rootPct)} <span>&middot; ${fmtTokens(rootTokens)} &middot; ${fmtCost(Math.max(0, data.summary.totalCost - childCost))}</span></div></div>
+        <div><div class="split-key"><span class="legend-dot child"></span>Sub-agents</div><div class="split-val">${fmtPercent(1 - rootPct)} <span>&middot; ${fmtTokens(childTokens)} &middot; ${fmtCost(childCost)}</span></div></div>
+      </div>
+      <div style="height:16px"></div>` : ""
+  const sorted = [...children].sort((a, b) => b.totalTokens - a.totalTokens)
+  const list = barListHtml(sorted.slice(0, CHILD_SESSION_LIMIT).map(c => ({
+    label: c.title || c.sessionId,
+    sub: `${c.model || "-"} \u00b7 ${c.requests} req`,
+    title: `${c.title || "(untitled)"} \u2014 ${c.sessionId}`,
+    value: c.totalTokens,
+    display: fmtTokens(c.totalTokens),
+    meta: fmtCost(c.totalCost),
+    tone: "accent" as const,
+  })), "Sub-agent sessions by tokens")
+  const more = children.length > CHILD_SESSION_LIMIT
+    ? `<div class="panel-note"><span class="note-faint">Top ${CHILD_SESSION_LIMIT} of ${children.length} sub-agent sessions</span></div>`
+    : ""
+  return panelHtml("Sub-agent Sessions", split + list + more, { sub: `${children.length} session${children.length === 1 ? "" : "s"}` })
+}
+
+function renderAgentsSection(data: SessionReportData): string {
+  const agents = renderAgentsPanel(data)
+  const children = renderChildSessionsPanel(data)
+  if (!agents && !children) return ""
+  return `
+  <div class="section" id="agents">
+    <div class="section-title">Agents &amp; Sub-agents</div>
+    <div class="panel-grid">${children}${agents}</div>
+  </div>`
+}
+
+function renderReliabilitySection(data: SessionReportData): string {
+  const types = errorTypesPanelHtml(data.errors)
+  const reasons = finishReasonsPanelHtml(data.errors)
+  const overhead = overheadPanelHtml(data.overhead)
+  if (!types && !reasons && !overhead) return ""
+  return `
+  <div class="section" id="reliability">
+    <div class="section-title">Outcomes &amp; Overhead</div>
+    <div class="panel-grid">${types}${reasons}${overhead}</div>
+  </div>`
+}
+
+export async function buildSessionReportData(input: SessionReportInput): Promise<SessionReportData> {
+  const { sessionId, sessionTitle, subagentCount, summary, models, messages, errors } = input
   // API equivalent cost analysis
   const apiCostByModel: ApiCostModelItem[] = models.map(m => {
     const est = estimateApiCost(
@@ -552,8 +690,7 @@ export async function buildSessionReportData(
   const firstMsg = messages.length > 0 ? messages[0].timeCreated : null
   const lastMsg = messages.length > 0 ? messages[messages.length - 1].timeCreated : null
   const sessionDurationMs = firstMsg && lastMsg ? lastMsg - firstMsg : 0
-  const durationSec = sessionDurationMs / 1000
-  const tps = durationSec > 0 ? summary.totalTokens / durationSec : 0
+  const gen = generationSpeed(messages)
   const costPerRequest = summary.requestCount > 0 ? summary.totalCost / summary.requestCount : 0
 
   // Duration statistics
@@ -582,10 +719,16 @@ export async function buildSessionReportData(
     apiCost,
     errors,
     generatedAt: nowString(),
+    overhead: input.overhead,
+    agents: input.agents,
+    childSessions: input.childSessions,
+    source: input.source,
     sessionDurationMs,
     firstMessageTime: firstMsg,
     lastMessageTime: lastMsg,
-    tps,
+    tps: gen.tps,
+    genTokens: gen.tokens,
+    genTimeMs: gen.timeMs,
     costPerRequest,
     p50Duration,
     p90Duration,
@@ -602,6 +745,8 @@ export function generateSessionUsageHtml(data: SessionReportData): string {
   const messageTableStr = renderMessageTable(data)
   const apiCostStr = renderApiCostSection(data)
   const insightsStr = renderInsights(data)
+  const agentsStr = renderAgentsSection(data)
+  const reliabilityStr = renderReliabilitySection(data)
   const trendJs = data.messages.length > 0 ? renderTrendChartInit(data) : ""
   const durationJs = data.messages.length > 0 ? renderDurationChartInit(data) : ""
   const cacheJs = data.messages.length > 0 ? renderCacheTrendInit(data) : ""
@@ -611,6 +756,15 @@ export function generateSessionUsageHtml(data: SessionReportData): string {
   const firstTimeStr = data.firstMessageTime ? (showDates ? fmtDateTime(data.firstMessageTime) : fmtTime(data.firstMessageTime)) : '-'
   const lastTimeStr = data.lastMessageTime ? (showDates ? fmtDateTime(data.lastMessageTime) : fmtTime(data.lastMessageTime)) : '-'
   const durationStr = fmtDuration(data.sessionDurationMs)
+
+  const nav: NavItem[] = [{ id: "overview", label: "Overview" }]
+  if (insightsStr) nav.push({ id: "insights", label: "Insights" })
+  if (hasMessages) nav.push({ id: "trends", label: "Trends" })
+  nav.push({ id: "models", label: "Models" })
+  if (agentsStr) nav.push({ id: "agents", label: "Agents" })
+  if (reliabilityStr) nav.push({ id: "reliability", label: "Outcomes" })
+  if (apiCostStr) nav.push({ id: "api-cost", label: "API Cost" })
+  nav.push({ id: "requests", label: "Requests" })
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -633,27 +787,26 @@ ${BG_ANIMATION_HTML}
       <div class="session-info">Session: ${escapeHtml(data.sessionId)} &middot; ${escapeHtml(data.sessionTitle)}${data.subagentCount > 0 ? ` &middot; <span style="color:var(--input)">+${data.subagentCount} subagent${data.subagentCount > 1 ? 's' : ''}</span>` : ''}</div>
       <div class="session-info" style="margin-top:2px">Timeline: ${firstTimeStr} \u2192 ${lastTimeStr} &middot; Duration: ${durationStr}</div>
     </div>
-    <div class="header-right">Generated: ${data.generatedAt}</div>
+    <div class="header-right">Generated: ${escapeHtml(data.generatedAt)}</div>
   </div>
 
+  ${sectionNavHtml(nav)}
+
+  <div id="overview" class="anchor">
   ${kpiStr}
+  </div>
 
   ${insightsStr}
 
-  <div class="section">
-    <div class="section-title">Cache Hit Rate Trend</div>
-    ${hasMessages ? '<div class="chart-box" id="cache-trend-chart" style="height:320px"></div>' : '<div class="empty-state">No message data.</div>'}
-  </div>
-
-  <div class="section">
-    <div class="section-title">Per-Model Token Usage</div>
-    ${data.models.length > 0 ? modelCardsStr : '<div class="empty-state">No model usage data in this session.</div>'}
-  </div>
-
   ${hasMessages ? `
-  <div class="section">
+  <div class="section" id="trends">
     <div class="section-title">Token &amp; Cost Trend Per Request <span class="sub">with 5-req moving average</span></div>
     <div class="chart-box" id="trend-chart"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Cache Hit Rate Trend</div>
+    <div class="chart-box" id="cache-trend-chart" style="height:320px"></div>
   </div>
 
   <div class="section">
@@ -661,12 +814,21 @@ ${BG_ANIMATION_HTML}
     <div class="chart-box" id="duration-chart" style="height:300px"></div>
   </div>` : ''}
 
+  <div class="section" id="models">
+    <div class="section-title">Per-Model Token Usage</div>
+    ${data.models.length > 0 ? modelCardsStr : '<div class="empty-state">No model usage data in this session.</div>'}
+  </div>
+
+  ${agentsStr}
+
+  ${reliabilityStr}
+
   ${apiCostStr}
 
   ${messageTableStr}
 
   <div class="footer">
-    Generated by opencode-usage-stat /session-usage &middot; Data: OpenCode V2 API
+    Generated by opencode-usage-stat /session-usage &middot; ${footerSourceHtml(data.source)}
   </div>
 </div>
 

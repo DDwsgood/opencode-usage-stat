@@ -78,12 +78,61 @@ export interface SessionBreakdownItem {
   day: string
 }
 
+export interface ErrorTypeItem { type: string; count: number }
+export interface FinishReasonItem { reason: string; count: number }
+
+/**
+ * Request outcome stats. A message whose `finish` is missing and that has no
+ * `time.completed` is still in progress and is excluded from every bucket.
+ */
 export interface ErrorStats {
+  /** Completed and finish !== "error". */
   successCount: number
+  /** finish === "error" and error.type !== "aborted", regardless of tokens. */
   failedCount: number
+  /** error.type === "aborted" (user interrupt); excluded from errorRate. */
+  abortedCount: number
+  /** failed / (success + failed) */
   errorRate: number
-  byModel: Array<{ provider: string; model: string; failed: number; total: number }>
+  byModel: Array<{ provider: string; model: string; failed: number; aborted: number; total: number }>
+  /** Includes the aborted row; sorted by count desc. */
+  byType: ErrorTypeItem[]
+  finishReasons: FinishReasonItem[]
 }
+
+/**
+ * Usage not attached to assistant messages (title generation, compaction) =
+ * session-level totals − Σ assistant usage of that session, floored at 0 per
+ * field. Derived estimate.
+ */
+export interface OverheadStats {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cacheRead: number
+  cacheWrite: number
+  totalTokens: number
+  cost: number
+  /** Sessions with overhead > 0. */
+  sessions: number
+}
+
+export interface ProjectBreakdownItem { directory: string; projectId: string; sessions: number; requests: number; totalTokens: number; totalCost: number }
+export interface AgentBreakdownItem { agent: string; sessions: number; requests: number; totalTokens: number; totalCost: number }
+export interface SessionKindTotals { sessions: number; requests: number; totalTokens: number; totalCost: number }
+/** child = sessions with a parent_id. */
+export interface SessionKindSplit { root: SessionKindTotals; child: SessionKindTotals }
+/** Latency = time.completed − time.created. */
+export interface ModelLatencyItem { provider: string; model: string; samples: number; p50Ms: number; p90Ms: number; avgMs: number }
+export interface CacheSavings {
+  /** Σ cacheRead × (input price − cache_read price); estimate. */
+  estimatedSavedCost: number | null
+  byModel: Array<{ provider: string; model: string; cacheRead: number; saved: number | null }>
+}
+export interface PeriodSnapshot { totalTokens: number; totalCost: number; requestCount: number; sessions: number; cacheHitRate: number | null; errorRate: number }
+/** previous = null for the all-history range. */
+export interface PeriodComparison { previous: PeriodSnapshot | null; previousRange: { start: string; end: string } | null }
+export interface ReportSourceMeta { source: "sqlite" | "api"; elapsedMs: number }
 
 export interface HourlyHeatmapItem {
   dow: number
@@ -129,6 +178,7 @@ export interface ApiCostAnalysis {
 export interface HtmlReportMeta {
   generatedAt: string
   dateRange: { start: string; end: string }
+  source?: ReportSourceMeta
 }
 
 export interface CombinedReportData {
@@ -145,6 +195,14 @@ export interface CombinedReportData {
   hourlyHeatmap?: HourlyHeatmapItem[]
   perfLogs?: LogEntry[]
   perfSummary?: ModelPerfStats[]
+  overhead?: OverheadStats
+  /** Sorted by totalTokens desc, at most 20. */
+  projects?: ProjectBreakdownItem[]
+  agents?: AgentBreakdownItem[]
+  sessionKinds?: SessionKindSplit
+  modelLatency?: ModelLatencyItem[]
+  cacheSavings?: CacheSavings
+  comparison?: PeriodComparison
 }
 
 /** Per-message row for detailed session breakdown */
@@ -161,6 +219,27 @@ export interface MessageRow {
   cost: number
   timeCreated: number
   timeCompleted: number | null
+  sessionId?: string
+  agent?: string
+  finish?: string | null
+  errorType?: string | null
+  isChild?: boolean
+}
+
+/** Input for session-usage-html.ts buildSessionReportData. */
+export interface SessionReportInput {
+  sessionId: string
+  sessionTitle: string
+  subagentCount: number
+  summary: SessionTokenData
+  models: ModelBreakdownItem[]
+  messages: MessageRow[]
+  errors: ErrorStats
+  overhead?: OverheadStats
+  agents?: AgentBreakdownItem[]
+  /** Per-child-session totals. */
+  childSessions?: SessionBreakdownItem[]
+  source?: ReportSourceMeta
 }
 
 /**

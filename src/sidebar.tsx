@@ -5,6 +5,7 @@ import { createSignal, createMemo, createEffect, For, Show, onCleanup } from "so
 import type { JSX } from "solid-js"
 import type { Context } from "@opencode-ai/plugin/tui/context"
 import { RGBA } from "@opentui/core"
+import type { MouseEvent as TuiMouseEvent } from "@opentui/core"
 import { formatTokens, formatCost, formatDuration, isMissingCache, totalInputTokens, cacheHitRate } from "./formatter.js"
 import { t as baseT, setLanguage } from "./i18n.js"
 import type { PerfTracker } from "./perf-tracker.js"
@@ -14,6 +15,9 @@ import type { ThemeColorMap } from "./theme-map.js"
 import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore, migrateLegacySettings } from "./settings.js"
 import type { UsageStatSettings, LanguageSetting } from "./settings.js"
+import { centerAlign, truncateToWidth, visualWidth } from "./text-width.js"
+import { distBarWidth, distSegments } from "./tui-layout.js"
+import { generateSessionHtmlReport } from "./commands.js"
 
 export interface SidebarConfig {
   sidebar: {
@@ -31,44 +35,10 @@ const DEFAULT_CONFIG: SidebarConfig = {
 
 export { formatTokens, formatCost }
 
-function progressBarWidth(percent: number, width: number): number {
-  if (percent >= 100) return width
-  return Math.floor((percent / 100) * width)
-}
-function progressFilled(percent: number, width: number): string {
-  return "█".repeat(Math.max(0, progressBarWidth(percent, width)))
-}
-function progressRemaining(percent: number, width: number): string {
-  return "░".repeat(Math.max(0, width - progressBarWidth(percent, width)))
-}
-
-function getVisualWidth(str: string): number {
-  let w = 0
-  for (const c of str) {
-    const code = c.codePointAt(0) ?? 0
-    if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3040 && code <= 0x30FF) ||
-      (code >= 0xAC00 && code <= 0xD7A3) || (code >= 0x1100 && code <= 0x11FF) ||
-      (code >= 0x2E80 && code <= 0x2EFF)) {
-      w += 2
-    } else {
-      w += 1
-    }
-  }
-  return w
-}
-
-function centerAlign(text: string, width: number): string {
-  const visualW = getVisualWidth(text)
-  if (visualW >= width) return text
-  const left = Math.floor((width - visualW) / 2)
-  const right = width - visualW - left
-  return " ".repeat(left) + text + " ".repeat(right)
-}
-
-function hitRateColor(rate: number): RGBA {
-  if (rate >= 85) return RGBA.fromInts(76, 175, 80, 255)
-  if (rate >= 70) return RGBA.fromInts(255, 193, 7, 255)
-  return RGBA.fromInts(244, 67, 54, 255)
+function hitRateColor(rate: number, colors: ThemeColorMap): RGBA {
+  if (rate >= 85) return colors.green
+  if (rate >= 70) return colors.amber
+  return colors.red
 }
 
 /**
@@ -251,6 +221,24 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
     }
   })
 
+  // The header totals are session-level (they include title generation,
+  // compaction, etc.), while model blocks sum assistant messages. The
+  // difference is surfaced as one dim line so the blocks add up to TOTAL.
+  const overhead = createMemo(() => {
+    const s = sessionTotals()
+    const m = messageTotals()
+    return {
+      tokens: Math.max(0, s.totalTokens - m.totalTokens),
+      cost: Math.max(0, s.totalCost - m.totalCost),
+    }
+  })
+  const overheadText = () => {
+    const o = overhead()
+    const base = `+ ${t("overhead")} ${formatTokens(o.tokens)}`
+    const withCost = showPricing() && o.cost >= 0.005 ? `${base} · ${formatCost(o.cost)}` : base
+    return truncateToWidth(withCost, rowWidth())
+  }
+
   const globalHitRate = createMemo(() => {
     let i = 0, cr = 0
     for (const [, s] of modelStats()) {
@@ -307,7 +295,8 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
 
   // ── Layout ──
   const innerWidth = () => panelWidth() - 2
-  const barWidth = () => Math.max(8, innerWidth() - 19)
+  // Rows inside paddingX={1} under the outer border.
+  const rowWidth = () => panelWidth() - 4
   const divider = () => {
     const w = innerWidth()
     if (w <= 2) return "─".repeat(w)
@@ -333,18 +322,33 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
       {/* Header */}
       <box flexDirection="row" justifyContent="space-between" onMouseDown={toggle.global} paddingX={1}>
         <text fg={primaryColor()}>{isPanelCollapsed() ? "▶" : "▾"} {t("panelTitle")}</text>
-        <text fg={mutedColor()}>
-          {isPanelCollapsed() ? formatTokens(sessionTotals().totalTokens) : ""}
-          {globalHitRate() >= 0 ? (
-            <span style={{ fg: hitRateColor(globalHitRate()) } as any}>
-              {isPanelCollapsed() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`}
-            </span>
-          ) : ""}
-        </text>
+        <box flexDirection="row">
+          <text fg={mutedColor()}>
+            {isPanelCollapsed() ? formatTokens(sessionTotals().totalTokens) : ""}
+            {globalHitRate() >= 0 ? (
+              <span style={{ fg: hitRateColor(globalHitRate(), colors) } as any}>
+                {isPanelCollapsed() ? ` (${globalHitRate().toFixed(1)}% hit)` : `${globalHitRate().toFixed(1)}% hit`}
+              </span>
+            ) : ""}
+          </text>
+          {/* Report button: stops propagation so it never toggles the panel. */}
+          <text
+            fg={mutedColor()}
+            marginLeft={1}
+            onMouseDown={(event: TuiMouseEvent) => {
+              event.stopPropagation()
+              void generateSessionHtmlReport(context, props.sessionID || undefined).catch((err: unknown) => {
+                console.warn("[opencode-usage-stat] session report failed:", err)
+              })
+            }}
+          >
+            ▤
+          </text>
+        </box>
       </box>
 
       {/* Provider Usage reveals collapsed after quota changes in this TUI session. */}
-      <ProviderUsageBlocks context={context} sessionID={props.sessionID} />
+      <ProviderUsageBlocks context={context} sessionID={props.sessionID} panelWidth={panelWidth()} />
 
       <Show when={!isPanelCollapsed()}>
         <text fg={borderColor()}>{divider()}</text>
@@ -393,42 +397,47 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
               if (!td?.trend || td.trend === 0) return ""
               return td.trend > 0 ? ` ${t("trendUp")}${td.trend.toFixed(1)}%` : ` ${t("trendDown")}${Math.abs(td.trend).toFixed(1)}%`
             }
-            const trendColor = () => ((modelTrend().find(h => h.key === key)?.trend ?? 0) >= 0 ? RGBA.fromInts(63, 185, 80, 255) : RGBA.fromInts(244, 67, 54, 255))
+            const trendColor = () => ((modelTrend().find(h => h.key === key)?.trend ?? 0) >= 0 ? colors.green : colors.red)
 
-            const MAX_PROVIDER_LEN = 12
-            let providerDisplay = stat.providerID
-            if (providerDisplay.length > MAX_PROVIDER_LEN) providerDisplay = providerDisplay.slice(0, MAX_PROVIDER_LEN - 1) + "…"
+            const MAX_PROVIDER_WIDTH = 12
+            const providerDisplay = truncateToWidth(stat.providerID, MAX_PROVIDER_WIDTH)
             let fullTitle = `${providerDisplay}/${stat.modelID}`
-            if (fullTitle.length > 22) {
+            if (visualWidth(fullTitle) > 22) {
               const parts = fullTitle.split("/")
               if (parts.length >= 3) fullTitle = `${parts[0]}/${parts[parts.length - 1]}`
             }
-            const maxNameLen = Math.max(8, innerWidth() - 12)
-            const shortTitle = fullTitle.length > maxNameLen ? fullTitle.slice(0, maxNameLen - 1) + "…" : fullTitle
 
             const modelHeaderRight = () => isExpanded()
               ? `×${stat.requestCount} ▾`
               : `${formatTokens(modelTotalTokens)} ▶`
+            // "● " + title, at least one space, then the right-hand text.
+            const shortTitle = () =>
+              truncateToWidth(fullTitle, Math.max(4, rowWidth() - 2 - visualWidth(modelHeaderRight()) - 1))
 
-            const targetW = () => Math.max(getVisualWidth(`${t("cache")}:`), getVisualWidth(`${t("cost")}:`))
-            const paddedCachePrefix = () => {
-              const label = `${t("cache")}:`
-              return label + " ".repeat(targetW() - getVisualWidth(label))
+            // "Dist:" and "Cost:" share one padded width so their values line up.
+            const targetW = () => Math.max(visualWidth(`${t("distLabel")}:`), visualWidth(`${t("cost")}:`)) + 1
+            const paddedDistPrefix = () => {
+              const label = `${t("distLabel")}:`
+              return label + " ".repeat(targetW() - visualWidth(label))
             }
             const paddedCostPrefix = () => {
               const label = `${t("cost")}:`
-              return label + " ".repeat(targetW() - getVisualWidth(label))
+              return label + " ".repeat(targetW() - visualWidth(label))
             }
-            // Reserve room for the trend suffix so narrow panels don't overflow (3.3).
-            const trendBudget = () => showTrend() ? 7 : 0
-            const modelBarWidth = () => Math.max(8, (panelWidth() - 4) - targetW() - 11 - trendBudget())
+            const distRate = () => (isMissing ? ` ${t("missing")}` : ` ${hitRate.toFixed(1)}%`)
+            const distWidth = () => distBarWidth(rowWidth(), targetW(), distRate() + trendStr(), showTrend())
+            const dist = () => distSegments({
+              cacheRead: isMissing ? 0 : stat.cacheRead,
+              input: totalInputTokens(stat.totalInput, stat.cacheWrite),
+              output: stat.totalOutput + stat.totalReasoning,
+            }, distWidth())
 
             return (
               <box flexDirection="column" marginTop={1}>
                 <box flexDirection="row" justifyContent="space-between" onMouseDown={() => toggle.model(key)} paddingX={1}>
                   <text fg={mutedColor()}>
-                    <span style={{ fg: isMissing ? missingColor() : hitRateColor(hitRate) } as any}>●</span>{" "}
-                    <span style={{ fg: primaryColor() } as any}>{shortTitle}</span>
+                    <span style={{ fg: isMissing ? missingColor() : hitRateColor(hitRate, colors) } as any}>●</span>{" "}
+                    <span style={{ fg: primaryColor() } as any}>{shortTitle()}</span>
                   </text>
                   <text fg={mutedColor()}>{modelHeaderRight()}</text>
                 </box>
@@ -460,14 +469,11 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
                     </box>
 
                     <text fg={mutedColor()}>
-                      {paddedCachePrefix()}
-                      {isMissing ? (
-                        <span style={{ fg: missingColor() } as any}>{progressRemaining(0, modelBarWidth())}{" "}{t("missing")}</span>
-                      ) : (
-                        <span style={{ fg: hitRateColor(hitRate) } as any}>
-                          {progressFilled(hitRate, modelBarWidth())}{progressRemaining(hitRate, modelBarWidth())}{" "}{hitRate.toFixed(1)}%
-                        </span>
-                      )}
+                      {paddedDistPrefix()}
+                      <span style={{ fg: colors.distCache } as any}>{"█".repeat(dist().cache)}</span>
+                      <span style={{ fg: colors.distInput } as any}>{"█".repeat(dist().input)}</span>
+                      <span style={{ fg: colors.distOutput } as any}>{"█".repeat(dist().output)}</span>
+                      <span style={{ fg: isMissing ? missingColor() : hitRateColor(hitRate, colors) } as any}>{distRate()}</span>
                       {trendStr() ? <span style={{ fg: trendColor() } as any}>{trendStr()}</span> : null}
                     </text>
 
@@ -488,6 +494,12 @@ export function UsageStatPanel(props: UsageStatPanelProps) {
             )
           }}
         </For>
+
+        <Show when={modelStats().length > 0 && overhead().tokens > 0}>
+          <box paddingX={1} marginTop={1}>
+            <text fg={dimColor()}>{overheadText()}</text>
+          </box>
+        </Show>
       </Show>
     </box>
   )

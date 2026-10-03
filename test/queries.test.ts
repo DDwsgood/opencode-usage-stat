@@ -13,7 +13,12 @@ import {
   getErrorStats,
   getHourlyHeatmap,
   getUsageReport,
+  getPeriodReport,
+  getSessionReportInput,
+  clearQueryCache,
 } from "../src/queries.js"
+import { setUsageDbPathOverride } from "../src/sqlite-source.js"
+import { setPricingCacheForTest } from "../src/pricing.js"
 import type { UsageFilters } from "../src/formatter.js"
 
 // Minimal structural types mirroring the V2 @opencode-ai/client projections.
@@ -61,6 +66,8 @@ interface Client {
   }
 }
 
+const messageListCalls: string[] = []
+
 function makeClient(sessions: Sess[], messagesBySession: Record<string, Msg[]>): Client {
   const byId = new Map(sessions.map(s => [s.id, s]))
   return {
@@ -84,6 +91,7 @@ function makeClient(sessions: Sess[], messagesBySession: Record<string, Msg[]>):
     },
     message: {
       async list({ sessionID, limit = 1000, order = "asc", cursor }: { sessionID: string; limit?: number; order?: "asc" | "desc"; cursor?: string }) {
+        messageListCalls.push(sessionID)
         let msgs = [...(messagesBySession[sessionID] ?? [])]
         if (order === "desc") msgs.reverse()
         let page = msgs
@@ -104,14 +112,19 @@ function makeClient(sessions: Sess[], messagesBySession: Record<string, Msg[]>):
   }
 }
 
-function assistantMsg(id: string, providerID: string, modelID: string, over: Partial<{ cost: number; timeCreated: number; timeCompleted: number }> & Partial<Tokens> = {}): Msg {
+type MsgOver = Partial<{ cost: number; timeCreated: number; timeCompleted: number; finish: string | null; errorType: string; agent: string }> & Partial<Tokens>
+
+function assistantMsg(id: string, providerID: string, modelID: string, over: MsgOver = {}): Msg {
+  const created = over.timeCreated ?? 1700000000000
   return {
     id,
     type: "assistant",
-    agent: "primary",
+    agent: over.agent ?? "primary",
     model: { providerID, id: modelID },
     cost: over.cost ?? 0,
-    time: { created: over.timeCreated ?? 1700000000000, completed: over.timeCompleted ?? undefined },
+    time: { created, completed: over.finish === null ? undefined : over.timeCompleted ?? created + 1000 },
+    ...(over.finish === null ? {} : { finish: over.finish ?? "stop" }),
+    ...(over.errorType ? { error: { type: over.errorType, message: "x" } } : {}),
     tokens: {
       input: over.input ?? 40,
       output: over.output ?? 60,
@@ -142,7 +155,9 @@ const s2 = session("s2", "Child Session", 1700000200000, "s1")
 const messages: Record<string, Msg[]> = {
   s1: [
     assistantMsg("m1", "openai", "gpt-4o", { timeCreated: 1700000000000, input: 100, output: 200, cache: { read: 50, write: 10 }, cost: 0.01 }),
-    assistantMsg("m2", "anthropic", "claude-sonnet", { timeCreated: 1700000005000, input: 0, output: 0 }), // failed: zero tokens
+    assistantMsg("m2", "anthropic", "claude-sonnet", { timeCreated: 1700000005000, input: 0, output: 0, finish: "error", errorType: "provider.internal" }), // failed
+    assistantMsg("m2a", "anthropic", "claude-sonnet", { timeCreated: 1700000006000, input: 0, output: 0, finish: "error", errorType: "aborted" }), // user abort
+    assistantMsg("m2p", "anthropic", "claude-sonnet", { timeCreated: 1700000007000, input: 0, output: 0, finish: null }), // still running
     assistantMsg("m3", "anthropic", "claude-sonnet", { timeCreated: 1700000010000, input: 20, output: 80, cache: { read: 5, write: 2 }, cost: 0.02 }),
   ],
   s2: [
@@ -151,6 +166,9 @@ const messages: Record<string, Msg[]> = {
 }
 
 before(() => {
+  // Keep these API-path tests away from the real ~/.local/share/opencode/opencode.db.
+  setUsageDbPathOverride(null)
+  setPricingCacheForTest({})
   setV2Client(makeClient([s1, s2], messages) as never)
 })
 
@@ -221,10 +239,44 @@ test("getMessageDetails returns per-request rows for session + children", async 
   assert.equal(rows[2].model, "claude-sonnet")
 })
 
-test("getErrorStats counts failed (zero-token) assistant messages", async () => {
+test("getErrorStats classifies by finish/error.type; aborted and in-progress are not errors", async () => {
   const errors = await getErrorStats({ sessionId: "s1" })
   assert.equal(errors.successCount, 2)
   assert.equal(errors.failedCount, 1) // m2
+  assert.equal(errors.abortedCount, 1) // m2a
+  assert.equal(errors.errorRate, 1 / 3)
+  assert.deepEqual(errors.byType.map(t => t.type).sort(), ["aborted", "provider.internal"])
+  const claude = errors.byModel.find(m => m.model === "claude-sonnet")!
+  assert.deepEqual([claude.failed, claude.aborted, claude.total], [1, 1, 3]) // m2p pending excluded
+  assert.equal(errors.finishReasons.find(f => f.reason === "error")?.count, 2)
+})
+
+test("API fallback: session report loads only the family and reports source=api", async () => {
+  clearQueryCache()
+  messageListCalls.length = 0
+  const input = await getSessionReportInput("s2")
+  assert.deepEqual([...new Set(messageListCalls)], ["s2"])
+  assert.equal(input.source?.source, "api")
+  assert.equal(input.subagentCount, 0)
+  assert.equal(input.summary.requestCount, 1)
+})
+
+test("API fallback: per-session projections are reused while the session is unchanged", async () => {
+  clearQueryCache()
+  await getPeriodReport({})
+  messageListCalls.length = 0
+  // A different window misses the dataset cache but hits the per-session row cache.
+  await getPeriodReport({}, { sinceMs: 1 })
+  assert.equal(messageListCalls.length, 0)
+})
+
+test("API fallback: date ranges skip sessions last updated before the window", async () => {
+  clearQueryCache()
+  messageListCalls.length = 0
+  // The previous (comparison) window starts at 1700000050000, still after s1's last update.
+  const report = await getPeriodReport({}, { sinceMs: 1700000150000, untilMs: 1700000250000 })
+  assert.deepEqual([...new Set(messageListCalls)], ["s2"])
+  assert.equal(report.summary.requestCount, 1)
 })
 
 test("getHourlyHeatmap buckets by weekday+hour", async () => {

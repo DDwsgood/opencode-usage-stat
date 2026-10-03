@@ -4,17 +4,8 @@
 // summaries, reusing the existing queries/aggregation layer where possible.
 
 import type { Context } from "@opencode-ai/plugin/tui/context"
-import type {
-  OpenCodeClient,
-  SessionInfo,
-  SessionMessageInfo,
-  SessionMessageAssistant,
-} from "@opencode-ai/client"
-import {
-  getUsageReport,
-  getHourlyHeatmap,
-  getV2Client,
-} from "./queries.js"
+import { getPeriodReport } from "./queries.js"
+import type { PeriodReport, ProgressFn } from "./queries.js"
 import type {
   UsageFilters,
   CombinedReportData,
@@ -23,12 +14,12 @@ import type {
   HtmlReportMeta,
   SessionTokenData,
   ModelBreakdownItem,
-  ProviderBreakdownItem,
-  DailyBreakdownItem,
-  SessionBreakdownItem,
   MessageRow,
   ErrorStats,
-  HourlyHeatmapItem,
+  OverheadStats,
+  AgentBreakdownItem,
+  SessionBreakdownItem,
+  ReportSourceMeta,
 } from "./formatter.js"
 import { formatTokens, formatCost, formatFilters, getPresetRange, parseDaysFilter, totalInputTokens } from "./formatter.js"
 import { estimateApiCost } from "./pricing.js"
@@ -57,6 +48,7 @@ export interface SessionReportView {
   sessionDurationMs: number
   firstMessageTime: number | null
   lastMessageTime: number | null
+  /** Generation speed: Σ(output+reasoning) / Σ(completed−created) over completed requests. */
   tps: number
   costPerRequest: number
   p50Duration: number
@@ -65,6 +57,10 @@ export interface SessionReportView {
   avgDuration: number
   peakTokens: number
   peakTokensIndex: number
+  overhead?: OverheadStats
+  agents?: AgentBreakdownItem[]
+  childSessions?: SessionBreakdownItem[]
+  source?: ReportSourceMeta
 }
 
 function nowString(): string {
@@ -88,399 +84,7 @@ export function getDateRangeForScope(scope: ReportScope): UsageFilters {
   return {}
 }
 
-/** Build the cumulative (total) report data for a date-range scope. */
-export async function buildCombinedData(context: Context, filters: UsageFilters = {}): Promise<CombinedReportData> {
-  const report = await getUsageReport(filters)
-  const hourlyHeatmap = await getHourlyHeatmap(filters)
-  const logs = readLogs(200)
-  const perfSummary = readPersistedStats()
-
-  const meta: HtmlReportMeta = {
-    generatedAt: nowString(),
-    dateRange: {
-      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : "—",
-      end: report.daily.length > 0 ? report.daily[0].day : "—",
-    },
-  }
-
-  const apiCostByModel: ApiCostModelItem[] = report.models.map(m => {
-    const est = estimateApiCost(
-      m.provider, m.model, m.requests,
-      m.inputTokens, m.outputTokens, m.reasoningTokens,
-      m.cacheRead, m.cacheWrite,
-    )
-    return {
-      provider: m.provider,
-      model: m.model,
-      requests: m.requests,
-      inputTokens: m.inputTokens,
-      outputTokens: m.outputTokens,
-      reasoningTokens: m.reasoningTokens,
-      cacheRead: m.cacheRead,
-      cacheWrite: m.cacheWrite,
-      reportedCost: m.totalCost,
-      apiEquivCost: est.cost,
-      estimated: est.estimated,
-      pricingProvider: est.pricingProvider,
-    }
-  })
-  const apiTotal = apiCostByModel.reduce((sum, m) => sum + (m.apiEquivCost ?? 0), 0)
-  const apiCost: ApiCostAnalysis = {
-    totalApiCost: apiTotal > 0 ? apiTotal : null,
-    reportedCost: report.summary.totalCost,
-    byModel: apiCostByModel,
-  }
-
-  return {
-    ...report,
-    meta,
-    apiCost,
-    errors: report.errors,
-    hourlyHeatmap,
-    perfLogs: logs,
-    perfSummary,
-  }
-}
-
-// ── Last-N-hours data assembly ──
-// query.ts only exposes day-granularity filters, so the 5h scope needs a small
-// direct read from the same V2 client. It keeps the same report contract.
-
-interface RawAssistant {
-  sessionID: string
-  providerID: string
-  modelID: string
-  messageID: string
-  created: number
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cacheRead: number
-    cacheWrite: number
-    total: number
-  }
-}
-
-async function fetchAllSessions(client: OpenCodeClient): Promise<SessionInfo[]> {
-  const all: SessionInfo[] = []
-  let cursor: string | undefined
-  for (;;) {
-    const res = await client.session.list({ limit: 500, cursor })
-    const page = res?.data
-    if (!Array.isArray(page) || page.length === 0) break
-    all.push(...page)
-    const next = res?.cursor?.next
-    if (!next) break
-    cursor = next
-  }
-  return all
-}
-
-async function fetchAllMessages(client: OpenCodeClient, sessionID: string): Promise<SessionMessageInfo[]> {
-  const all: SessionMessageInfo[] = []
-  let cursor: string | undefined
-  for (;;) {
-    // The message cursor encodes its own order; combining cursor with order is rejected by the server.
-    const res = await client.message.list({ sessionID, limit: 200, order: cursor ? undefined : "asc", cursor })
-    const page = res?.data
-    if (!Array.isArray(page) || page.length === 0) break
-    all.push(...page)
-    const next = res?.cursor?.next
-    if (!next) break
-    cursor = next
-  }
-  return all
-}
-
-function asAssistant(m: SessionMessageInfo | undefined, sessionID: string): RawAssistant | null {
-  if (!m || typeof m !== "object" || m.type !== "assistant") return null
-  const a = m as SessionMessageAssistant
-  const tokens = a.tokens
-  if (!tokens || typeof tokens !== "object") return null
-  const input = tokens.input ?? 0
-  const output = tokens.output ?? 0
-  const reasoning = tokens.reasoning ?? 0
-  const cacheRead = tokens.cache?.read ?? 0
-  const cacheWrite = tokens.cache?.write ?? 0
-  const total = input + output + reasoning + cacheRead + cacheWrite
-  return {
-    sessionID,
-    providerID: a.model?.providerID ?? "unknown",
-    modelID: a.model?.id ?? "unknown",
-    messageID: a.id,
-    created: a.time?.created ?? 0,
-    cost: a.cost ?? 0,
-    tokens: { input, output, reasoning, cacheRead, cacheWrite, total },
-  }
-}
-
-async function loadAssistantsSince(sinceMs: number): Promise<{ assistants: RawAssistant[]; sessionsById: Map<string, SessionInfo> }> {
-  const client = getV2Client()
-  if (!client) throw new Error("Usage Stat client is not initialized (setV2Client not called)")
-
-  const sessions = await fetchAllSessions(client)
-  const sessionsById = new Map(sessions.map(s => [s.id, s]))
-  const assistants: RawAssistant[] = []
-  const batchSize = 8
-  for (let i = 0; i < sessions.length; i += batchSize) {
-    const batch = sessions.slice(i, i + batchSize)
-    const results = await Promise.all(batch.map(async s => {
-      try {
-        return await fetchAllMessages(client, s.id)
-      } catch {
-        return null // skip sessions we cannot read
-      }
-    }))
-    for (let j = 0; j < batch.length; j++) {
-      const msgs = results[j]
-      if (!msgs) continue
-      for (const m of msgs) {
-        const a = asAssistant(m, batch[j].id)
-        if (!a || a.created < sinceMs) continue
-        assistants.push(a)
-      }
-    }
-  }
-  return { assistants, sessionsById }
-}
-
-function summarize(assistants: RawAssistant[]): SessionTokenData {
-  const models = new Set<string>()
-  const providers = new Set<string>()
-  let totalTokens = 0
-  let inputTokens = 0
-  let outputTokens = 0
-  let reasoningTokens = 0
-  let cacheRead = 0
-  let cacheWrite = 0
-  let totalCost = 0
-  for (const a of assistants) {
-    const t = a.tokens
-    totalTokens += t.total
-    inputTokens += t.input
-    outputTokens += t.output
-    reasoningTokens += t.reasoning
-    cacheRead += t.cacheRead
-    cacheWrite += t.cacheWrite
-    totalCost += a.cost
-    models.add(a.modelID)
-    providers.add(a.providerID)
-  }
-  const modelsArray = Array.from(models)
-  return {
-    model: modelsArray.length === 1 ? modelsArray[0] : "",
-    provider: providers.size === 1 ? Array.from(providers)[0] : "",
-    modelsUsed: modelsArray,
-    totalTokens,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheRead,
-    cacheWrite,
-    totalCost,
-    requestCount: assistants.length,
-  }
-}
-
-function buildModelBreakdown(assistants: RawAssistant[]): ModelBreakdownItem[] {
-  const map = new Map<string, ModelBreakdownItem>()
-  const sessionSet = new Set<string>()
-  for (const a of assistants) {
-    const key = `${a.providerID}|${a.modelID}`
-    const t = a.tokens
-    let item = map.get(key)
-    if (!item) {
-      item = {
-        provider: a.providerID,
-        model: a.modelID,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalCost: 0,
-      }
-      map.set(key, item)
-    }
-    item.requests++
-    item.totalTokens += t.total
-    item.inputTokens += t.input
-    item.outputTokens += t.output
-    item.reasoningTokens += t.reasoning
-    item.cacheRead += t.cacheRead
-    item.cacheWrite += t.cacheWrite
-    item.totalCost += a.cost
-    sessionSet.add(`${key}|${a.sessionID}`)
-  }
-  for (const s of sessionSet) {
-    const [provider, model] = s.split("|")
-    const item = map.get(`${provider}|${model}`)
-    if (item) item.sessions++
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens)
-}
-
-function buildProviderBreakdown(assistants: RawAssistant[]): ProviderBreakdownItem[] {
-  const map = new Map<string, ProviderBreakdownItem>()
-  const sessionSet = new Set<string>()
-  for (const a of assistants) {
-    const key = a.providerID
-    const t = a.tokens
-    let item = map.get(key)
-    if (!item) {
-      item = {
-        provider: key,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0,
-      }
-      map.set(key, item)
-    }
-    item.requests++
-    item.totalTokens += t.total
-    item.inputTokens += t.input
-    item.outputTokens += t.output
-    item.reasoningTokens += t.reasoning
-    item.cacheRead += t.cacheRead
-    item.totalCost += a.cost
-    sessionSet.add(`${key}|${a.sessionID}`)
-  }
-  for (const s of sessionSet) {
-    const [provider] = s.split("|")
-    const item = map.get(provider)
-    if (item) item.sessions++
-  }
-  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens)
-}
-
-function buildDailyBreakdown(assistants: RawAssistant[]): DailyBreakdownItem[] {
-  const map = new Map<string, DailyBreakdownItem>()
-  const sessionSet = new Set<string>()
-  for (const a of assistants) {
-    const day = toLocalDay(a.created)
-    const t = a.tokens
-    let item = map.get(day)
-    if (!item) {
-      item = {
-        day,
-        requests: 0,
-        sessions: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0,
-      }
-      map.set(day, item)
-    }
-    item.requests++
-    item.totalTokens += t.total
-    item.inputTokens += t.input
-    item.outputTokens += t.output
-    item.reasoningTokens += t.reasoning
-    item.cacheRead += t.cacheRead
-    item.totalCost += a.cost
-    sessionSet.add(`${day}|${a.sessionID}`)
-  }
-  for (const s of sessionSet) {
-    const [day] = s.split("|")
-    const item = map.get(day)
-    if (item) item.sessions++
-  }
-  return Array.from(map.values()).sort((a, b) => (a.day < b.day ? 1 : -1)).slice(0, 90)
-}
-
-function buildSessionBreakdown(assistants: RawAssistant[], sessionsById: Map<string, SessionInfo>): SessionBreakdownItem[] {
-  const map = new Map<string, SessionBreakdownItem>()
-  for (const a of assistants) {
-    let item = map.get(a.sessionID)
-    if (!item) {
-      const s = sessionsById.get(a.sessionID)
-      item = {
-        sessionId: a.sessionID,
-        title: s?.title ?? "(untitled)",
-        provider: a.providerID,
-        model: a.modelID,
-        requests: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cacheRead: 0,
-        totalCost: 0,
-        day: toLocalDay(a.created),
-      }
-      map.set(a.sessionID, item)
-    }
-    const t = a.tokens
-    item.requests++
-    item.totalTokens += t.total
-    item.inputTokens += t.input
-    item.outputTokens += t.output
-    item.reasoningTokens += t.reasoning
-    item.cacheRead += t.cacheRead
-    item.totalCost += a.cost
-    const day = toLocalDay(a.created)
-    if (day > item.day) item.day = day
-  }
-  return Array.from(map.values())
-    .sort((a, b) => (a.day < b.day ? 1 : -1))
-    .slice(0, 15)
-}
-
-function buildErrorStats(assistants: RawAssistant[]): ErrorStats {
-  let successCount = 0
-  let failedCount = 0
-  const byModelMap = new Map<string, { provider: string; model: string; failed: number; total: number }>()
-  for (const a of assistants) {
-    const key = `${a.providerID}|${a.modelID}`
-    let row = byModelMap.get(key)
-    if (!row) {
-      row = { provider: a.providerID, model: a.modelID, failed: 0, total: 0 }
-      byModelMap.set(key, row)
-    }
-    row.total++
-    if (a.tokens.total === 0) {
-      row.failed++
-      failedCount++
-    } else {
-      successCount++
-    }
-  }
-  const byModel = Array.from(byModelMap.values()).sort((a, b) => b.failed - a.failed)
-  const errorRate = successCount + failedCount > 0 ? failedCount / (successCount + failedCount) : 0
-  return { successCount, failedCount, errorRate, byModel }
-}
-
-function buildHourlyHeatmap(assistants: RawAssistant[]): HourlyHeatmapItem[] {
-  const map = new Map<string, HourlyHeatmapItem>()
-  for (const a of assistants) {
-    const d = new Date(a.created)
-    const key = `${d.getDay()}|${d.getHours()}`
-    let item = map.get(key)
-    if (!item) {
-      item = { dow: d.getDay(), hour: d.getHours(), requests: 0, totalTokens: 0, totalCost: 0 }
-      map.set(key, item)
-    }
-    item.requests++
-    item.totalTokens += a.tokens.total
-    item.totalCost += a.cost
-  }
-  return Array.from(map.values())
-}
-
-function buildApiCost(models: ModelBreakdownItem[], reportedCost: number): ApiCostAnalysis {
+export function buildApiCost(models: ModelBreakdownItem[], reportedCost: number): ApiCostAnalysis {
   const byModel: ApiCostModelItem[] = models.map(m => {
     const est = estimateApiCost(
       m.provider, m.model, m.requests,
@@ -510,45 +114,40 @@ function buildApiCost(models: ModelBreakdownItem[], reportedCost: number): ApiCo
   }
 }
 
-/** Build a CombinedReportData covering the last N hours. */
-export async function buildRecentHoursReportData(context: Context, hours: number): Promise<CombinedReportData> {
-  const sinceMs = Date.now() - Math.max(1, hours) * 3_600_000
-  const { assistants, sessionsById } = await loadAssistantsSince(sinceMs)
-  const successful = assistants.filter(a => a.tokens.total > 0)
-
-  const summary = summarize(successful)
-  const models = buildModelBreakdown(successful)
-  const providers = buildProviderBreakdown(successful)
-  const daily = buildDailyBreakdown(successful)
-  const sessions = buildSessionBreakdown(successful, sessionsById)
-  const totalSessions = new Set(successful.map(a => a.sessionID)).size
-  const errors = buildErrorStats(assistants)
-  const hourlyHeatmap = buildHourlyHeatmap(successful)
-  const apiCost = buildApiCost(models, summary.totalCost)
-
+function toCombined(report: PeriodReport, fallbackRange: { start: string; end: string }): CombinedReportData {
   const meta: HtmlReportMeta = {
     generatedAt: nowString(),
     dateRange: {
-      start: daily.length > 0 ? daily[daily.length - 1].day : toLocalDay(sinceMs),
-      end: daily.length > 0 ? daily[0].day : toLocalDay(Date.now()),
+      start: report.daily.length > 0 ? report.daily[report.daily.length - 1].day : fallbackRange.start,
+      end: report.daily.length > 0 ? report.daily[0].day : fallbackRange.end,
     },
+    source: report.source,
   }
-
+  const { source: _source, ...rest } = report
   return {
-    summary,
-    models,
-    providers,
-    daily,
-    sessions,
-    totalSessions,
-    errors,
+    ...rest,
     meta,
-    apiCost,
-    hourlyHeatmap,
+    apiCost: buildApiCost(report.models, report.summary.totalCost),
     perfLogs: readLogs(200),
     perfSummary: readPersistedStats(),
-    filters: { startDate: toLocalDay(sinceMs), endDate: toLocalDay(Date.now()) },
-  } as CombinedReportData
+  }
+}
+
+/** Build the cumulative (total) report data for a date-range scope. */
+export async function buildCombinedData(context: Context, filters: UsageFilters = {}, onProgress?: ProgressFn): Promise<CombinedReportData> {
+  void context
+  const report = await getPeriodReport(filters, undefined, onProgress)
+  return toCombined(report, { start: "—", end: "—" })
+}
+
+/** Build a CombinedReportData covering the last N hours. */
+export async function buildRecentHoursReportData(context: Context, hours: number, onProgress?: ProgressFn): Promise<CombinedReportData> {
+  void context
+  const now = Date.now()
+  const sinceMs = now - Math.max(1, hours) * 3_600_000
+  const filters: UsageFilters = { startDate: toLocalDay(sinceMs), endDate: toLocalDay(now) }
+  const report = await getPeriodReport(filters, { sinceMs }, onProgress)
+  return toCombined(report, { start: toLocalDay(sinceMs), end: toLocalDay(now) })
 }
 
 // ── Plain text renderers ──
@@ -559,6 +158,21 @@ function kpiLine(label: string, value: string): string {
 
 function separator(): string {
   return "-".repeat(72)
+}
+
+function errorLines(e: ErrorStats): string[] {
+  const lines = [
+    kpiLine("Error Rate", `${(e.errorRate * 100).toFixed(2)}% (${e.failedCount} failed / ${e.successCount + e.failedCount} total)`),
+    kpiLine("Aborted", `${e.abortedCount ?? 0} (user interrupts, excluded from error rate)`),
+  ]
+  const types = (e.byType ?? []).filter(t => t.type !== "aborted")
+  if (types.length > 0) lines.push(kpiLine("Error Types", types.map(t => `${t.type}=${t.count}`).join(", ")))
+  return lines
+}
+
+function overheadLines(o: OverheadStats): string[] {
+  if (o.sessions === 0) return [kpiLine("Overhead (title/compaction, est.)", "none")]
+  return [kpiLine("Overhead (title/compaction, est.)", `${formatTokens(o.totalTokens)} tokens, ${formatCost(o.cost)} across ${o.sessions} sessions`)]
 }
 
 /** Plain-text summary for cumulative/date-range reports. */
@@ -587,9 +201,13 @@ export function renderPeriodTextReport(data: CombinedReportData): string {
   lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)))
   lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)))
   if (apiCostTotal != null) lines.push(kpiLine("API Equiv Cost", formatCost(apiCostTotal)))
-  if (data.errors) {
-    const e = data.errors
-    lines.push(kpiLine("Error Rate", `${(e.errorRate * 100).toFixed(2)}% (${e.failedCount} failed / ${e.successCount + e.failedCount} total)`))
+  if (data.meta.source) lines.push(kpiLine("Data Source", `${data.meta.source.source} (${data.meta.source.elapsedMs} ms)`))
+  if (data.errors) lines.push(...errorLines(data.errors))
+  if (data.overhead) lines.push(...overheadLines(data.overhead))
+  const prev = data.comparison?.previous
+  if (prev && data.comparison?.previousRange) {
+    const r = data.comparison.previousRange
+    lines.push(kpiLine("Previous Period", `${r.start} .. ${r.end}: ${formatTokens(prev.totalTokens)} tokens, ${prev.requestCount} req, ${formatCost(prev.totalCost)}`))
   }
 
   lines.push("")
@@ -652,9 +270,11 @@ export function renderSessionTextReport(data: SessionReportView): string {
   lines.push(kpiLine("Cache Write", formatTokens(s.cacheWrite)))
   lines.push(kpiLine("Reported Cost", formatCost(s.totalCost)))
   if (data.apiCost.totalApiCost != null) lines.push(kpiLine("API Equiv Cost", formatCost(data.apiCost.totalApiCost)))
-  lines.push(kpiLine("Tokens/s", data.tps > 0 ? (data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1)) : "-"))
+  lines.push(kpiLine("Gen Tokens/s", data.tps > 0 ? (data.tps >= 100 ? Math.round(data.tps).toString() : data.tps.toFixed(1)) : "-"))
   lines.push(kpiLine("Cost/Request", formatCost(data.costPerRequest)))
-  lines.push(kpiLine("Error Rate", `${(data.errors.errorRate * 100).toFixed(2)}% (${data.errors.failedCount} failed / ${data.errors.successCount + data.errors.failedCount} total)`))
+  if (data.source) lines.push(kpiLine("Data Source", `${data.source.source} (${data.source.elapsedMs} ms)`))
+  lines.push(...errorLines(data.errors))
+  if (data.overhead) lines.push(...overheadLines(data.overhead))
 
   lines.push("")
   lines.push("Models")

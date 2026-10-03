@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import type { ErrorStats, OverheadStats, ReportSourceMeta } from "./formatter.js"
 import { percentileSorted } from "./formatter.js"
 
 export function fmtTokens(n: number): string {
@@ -73,6 +74,238 @@ export function nowString(): string {
 /** Percentile of a sorted numeric array (linear interpolation, shared impl). */
 export function percentile(sortedAsc: number[], p: number): number {
   return percentileSorted(sortedAsc, p)
+}
+
+/** Middle-truncate (e.g. long directory paths). The tail gets the larger share because it names the project. */
+export function middleEllipsis(s: string, max: number): string {
+  const chars = Array.from(s)
+  if (chars.length <= max) return s
+  if (max < 3) return chars.slice(0, Math.max(0, max)).join("")
+  const keep = max - 1
+  const tail = Math.ceil(keep * 0.6)
+  const head = keep - tail
+  return chars.slice(0, head).join("") + "\u2026" + chars.slice(chars.length - tail).join("")
+}
+
+/** Replace a leading home directory with "~". */
+export function shortenHome(path: string, home: string): string {
+  if (!home) return path
+  const h = home.replace(/[\\/]+$/, "")
+  if (!h) return path
+  if (path === h) return "~"
+  if (path.startsWith(h + "/") || path.startsWith(h + "\\")) return "~" + path.slice(h.length)
+  return path
+}
+
+/** Last non-empty segment of a / or \ separated path. */
+export function pathBasename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : path
+}
+
+export type ChangeDirection = "up" | "down" | "flat"
+export interface ChangeInfo { direction: ChangeDirection; text: string }
+
+/** Relative change vs. the previous period, e.g. "↑ 12.3%". null when there is no baseline. */
+export function relativeChange(current: number, previous: number | null | undefined): ChangeInfo | null {
+  if (previous == null || !Number.isFinite(previous) || !Number.isFinite(current)) return null
+  if (previous <= 0) return current > 0 ? { direction: "up", text: "\u2191 new" } : { direction: "flat", text: "\u2192 0.0%" }
+  const pct = (current - previous) / previous * 100
+  const abs = Math.abs(pct)
+  if (abs < 0.05) return { direction: "flat", text: "\u2192 0.0%" }
+  const num = abs >= 1000 ? Math.round(abs).toString() : abs.toFixed(1)
+  return { direction: pct > 0 ? "up" : "down", text: `${pct > 0 ? "\u2191" : "\u2193"} ${num}%` }
+}
+
+/** Change of a 0..1 ratio in percentage points, e.g. "↓ 1.2 pp". */
+export function pointChange(current: number | null | undefined, previous: number | null | undefined): ChangeInfo | null {
+  if (current == null || previous == null || !Number.isFinite(current) || !Number.isFinite(previous)) return null
+  const pp = (current - previous) * 100
+  const abs = Math.abs(pp)
+  if (abs < 0.05) return { direction: "flat", text: "\u2192 0.0 pp" }
+  return { direction: pp > 0 ? "up" : "down", text: `${pp > 0 ? "\u2191" : "\u2193"} ${abs.toFixed(1)} pp` }
+}
+
+/** "2026-09-01 → 2026-09-30" shortened to "09-01 → 09-30" when both ends share the year. */
+export function fmtRangeShort(start: string, end: string): string {
+  const ys = /^(\d{4})-(\d{2}-\d{2})/.exec(start)
+  const ye = /^(\d{4})-(\d{2}-\d{2})/.exec(end)
+  if (ys && ye && ys[1] === ye[1]) return `${ys[2]} \u2192 ${ye[2]}`
+  return `${start} \u2192 ${end}`
+}
+
+export function sourceLabel(source: ReportSourceMeta | undefined): string {
+  if (!source) return "OpenCode V2 API"
+  return source.source === "sqlite" ? "SQLite (read-only)" : "OpenCode V2 API"
+}
+
+/** Footer fragment: data source and build time. */
+export function footerSourceHtml(source: ReportSourceMeta | undefined): string {
+  const built = source && Number.isFinite(source.elapsedMs) && source.elapsedMs >= 0
+    ? ` &middot; Built in ${source.elapsedMs < 1 ? "<1ms" : fmtDuration(source.elapsedMs)}`
+    : ""
+  return `Data: ${escapeHtml(sourceLabel(source))}${built}`
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTML building blocks (panels, bar lists, section nav)
+// ---------------------------------------------------------------------------
+
+export type BarTone = "default" | "danger" | "warn" | "good" | "muted" | "accent"
+
+export interface BarItem {
+  label: string
+  /** Secondary line under the label (plain text). */
+  sub?: string
+  /** Full text for the hover tooltip (plain text). */
+  title?: string
+  value: number
+  display: string
+  meta?: string
+  tone?: BarTone
+}
+
+/** Horizontal bar list; all text is escaped here. Bars scale to the largest value. */
+export function barListHtml(items: BarItem[], ariaLabel: string): string {
+  if (items.length === 0) return ""
+  const max = Math.max(...items.map(i => i.value), 0)
+  const rows = items.map(item => {
+    const w = max > 0 && item.value > 0 ? Math.max(1.5, item.value / max * 100) : 0
+    const title = item.title ?? item.label
+    return `<li class="bar-row">
+        <div class="bar-label" title="${escapeHtml(title)}"><span class="bar-name">${escapeHtml(item.label)}</span>${item.sub ? `<span class="bar-sub">${escapeHtml(item.sub)}</span>` : ""}</div>
+        <div class="bar-value">${escapeHtml(item.display)}${item.meta ? `<span class="bar-meta">${escapeHtml(item.meta)}</span>` : ""}</div>
+        <div class="bar-track" aria-hidden="true"><span class="bar-fill tone-${item.tone ?? "default"}" style="width:${w.toFixed(1)}%"></span></div>
+      </li>`
+  }).join("")
+  return `<ul class="bar-list" aria-label="${escapeHtml(ariaLabel)}">${rows}</ul>`
+}
+
+export interface PanelOptions {
+  sub?: string
+  /** Small tag next to the title, e.g. "Estimate". */
+  badge?: string
+  badgeTitle?: string
+  className?: string
+}
+
+/** Card container; `title`/`sub`/`badge` are plain text, `body` is trusted HTML. */
+export function panelHtml(title: string, body: string, opts: PanelOptions = {}): string {
+  const badge = opts.badge
+    ? `<span class="badge"${opts.badgeTitle ? ` title="${escapeHtml(opts.badgeTitle)}"` : ""}>${escapeHtml(opts.badge)}</span>`
+    : ""
+  return `<div class="panel${opts.className ? " " + opts.className : ""}">
+      <div class="panel-head"><div class="panel-title">${escapeHtml(title)}${badge}</div>${opts.sub ? `<div class="panel-sub">${escapeHtml(opts.sub)}</div>` : ""}</div>
+      ${body}
+    </div>`
+}
+
+export interface NavItem { id: string; label: string }
+
+export function sectionNavHtml(items: NavItem[]): string {
+  if (items.length < 2) return ""
+  const links = items.map(i => `<a href="#${escapeHtml(i.id)}">${escapeHtml(i.label)}</a>`).join("")
+  return `<nav class="section-nav" aria-label="Report sections">${links}</nav>`
+}
+
+const FINISH_REASON_META: Record<string, { label: string; tone: BarTone; hint?: string }> = {
+  "stop": { label: "stop", tone: "good", hint: "Model finished normally" },
+  "tool-calls": { label: "tool-calls", tone: "accent", hint: "Turn ended to run tools" },
+  "length": { label: "length \u00b7 truncated", tone: "warn", hint: "Output hit the max-token limit and was cut off" },
+  "error": { label: "error", tone: "danger", hint: "Request ended with an error" },
+  "content-filter": { label: "content-filter", tone: "warn", hint: "Output blocked by the provider's content filter" },
+  "unknown": { label: "unknown", tone: "muted" },
+  "none": { label: "none", tone: "muted", hint: "No finish reason recorded" },
+}
+
+export function finishReasonMeta(reason: string): { label: string; tone: BarTone; hint?: string } {
+  return FINISH_REASON_META[reason] ?? { label: reason, tone: "muted" }
+}
+
+/** Count of a finish reason, 0 when the breakdown is missing. */
+export function finishReasonCount(errors: ErrorStats | undefined, reason: string): number {
+  return errors?.finishReasons?.find(r => r.reason === reason)?.count ?? 0
+}
+
+export function abortedCountOf(errors: ErrorStats | undefined): number {
+  if (!errors) return 0
+  if (typeof errors.abortedCount === "number") return errors.abortedCount
+  return errors.byType?.find(t => t.type === "aborted")?.count ?? 0
+}
+
+/** Error-type distribution; "aborted" is shown on its own line and never as an error bar. Empty when no breakdown. */
+export function errorTypesPanelHtml(errors: ErrorStats | undefined): string {
+  if (!errors || !Array.isArray(errors.byType)) return ""
+  const failedTypes = errors.byType.filter(t => t.type !== "aborted" && t.count > 0)
+  const aborted = abortedCountOf(errors)
+  if (failedTypes.length === 0 && aborted === 0 && errors.failedCount === 0) return ""
+  const failedSum = failedTypes.reduce((s, t) => s + t.count, 0)
+  const body = failedTypes.length > 0
+    ? barListHtml(failedTypes.slice(0, 10).map(t => ({
+        label: t.type,
+        value: t.count,
+        display: String(t.count),
+        meta: failedSum > 0 ? fmtPercent(t.count / failedSum) : undefined,
+        tone: "danger" as const,
+      })), "Error types")
+    : `<div class="panel-empty">${errors.failedCount > 0 ? `${errors.failedCount} failed, type breakdown unavailable` : "No failed requests"}</div>`
+  const abortedLine = aborted > 0
+    ? `<div class="panel-note"><span class="note-dot" aria-hidden="true"></span>User aborted <strong>${aborted}</strong> <span class="note-faint">&middot; interrupted by the user, not counted as errors</span></div>`
+    : ""
+  const done = errors.successCount + errors.failedCount
+  return panelHtml("Error Types", body + abortedLine, {
+    sub: `${errors.failedCount} failed${done > 0 ? ` \u00b7 ${fmtPercent(errors.errorRate)} of ${done}` : ""}`,
+  })
+}
+
+/** Finish-reason distribution ("length" = output truncated). Empty when no breakdown. */
+export function finishReasonsPanelHtml(errors: ErrorStats | undefined): string {
+  const reasons = (errors?.finishReasons ?? []).filter(r => r.count > 0)
+  if (reasons.length === 0) return ""
+  const total = reasons.reduce((s, r) => s + r.count, 0)
+  const sorted = [...reasons].sort((a, b) => b.count - a.count)
+  const aborted = abortedCountOf(errors)
+  const body = barListHtml(sorted.map(r => {
+    const meta = finishReasonMeta(r.reason)
+    // finish = "error" also covers user aborts, which are not counted as failures elsewhere.
+    const label = r.reason === "error" && aborted > 0 ? `error \u00b7 incl. ${aborted} aborted` : meta.label
+    return {
+      label,
+      title: meta.hint ? `${r.reason}: ${meta.hint}` : r.reason,
+      value: r.count,
+      display: String(r.count),
+      meta: fmtPercent(r.count / total),
+      tone: meta.tone,
+    }
+  }), "Finish reasons")
+  const truncated = finishReasonCount(errors, "length")
+  const note = truncated > 0
+    ? `<div class="panel-note warn"><span class="note-dot" aria-hidden="true"></span><strong>${truncated}</strong> response${truncated > 1 ? "s" : ""} hit the output limit <span class="note-faint">&middot; finish = length</span></div>`
+    : ""
+  return panelHtml("Finish Reasons", body + note, { sub: `${total} completed requests` })
+}
+
+/** Title-generation / compaction usage card. Empty when missing or zero. */
+export function overheadPanelHtml(overhead: OverheadStats | undefined, opts: { showSessions?: boolean } = {}): string {
+  if (!overhead || (overhead.totalTokens <= 0 && overhead.cost <= 0)) return ""
+  const stat = (label: string, value: string) =>
+    `<div class="stat-item"><span class="stat-label">${label}</span><span class="stat-value">${value}</span></div>`
+  const body = `
+      <div class="panel-figure">${fmtTokens(overhead.totalTokens)}<span class="panel-figure-sub">tokens &middot; ${fmtCost(overhead.cost)}</span></div>
+      <div class="mini-stats">
+        ${stat("Input", fmtTokens(overhead.inputTokens))}
+        ${stat("Output", fmtTokens(overhead.outputTokens))}
+        ${stat("Reasoning", fmtTokens(overhead.reasoningTokens))}
+        ${stat("Cache R", fmtTokens(overhead.cacheRead))}
+        ${stat("Cache W", fmtTokens(overhead.cacheWrite))}
+        ${opts.showSessions ? stat("Sessions", String(overhead.sessions)) : ""}
+      </div>
+      <div class="panel-note"><span class="note-faint">Title generation, compaction and other usage not attached to assistant messages: session totals minus the sum of assistant messages, floored at 0.</span></div>`
+  return panelHtml("Overhead", body, {
+    sub: "title / compaction",
+    badge: "Derived",
+    badgeTitle: "Derived value: computed by subtraction, not reported directly",
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +592,8 @@ export const SHARED_CSS = `
   .section-title{font-size:11px;font-family:var(--font-mono);font-weight:500;text-transform:uppercase;letter-spacing:.17em;color:#cbc9c4;margin-bottom:10px;padding:0 4px;display:flex;align-items:center;gap:10px}
   .section-title::before{content:'';width:7px;height:7px;background:transparent;border:1px solid #d8d8d5;border-radius:50%;box-shadow:0 0 14px rgba(231,231,228,.35)}
   .section-title .sub{font-size:9px;color:var(--text-faint);letter-spacing:.08em;text-transform:none;font-weight:400}
-  .chart-box,.model-card,.provider-card,.insight-card,.empty-state{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}
-  .chart-box::before,.model-card::before,.provider-card::before,.insight-card::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}
+  .chart-box,.model-card,.provider-card,.insight-card,.empty-state,.panel{--mx:-999px;--my:-999px;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012) 42%,rgba(0,0,0,.14)),var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--shadow-md);position:relative;overflow:hidden}
+  .chart-box::before,.model-card::before,.provider-card::before,.insight-card::before,.panel::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background:radial-gradient(360px circle at var(--mx) var(--my),rgba(255,255,255,.075),transparent 70%)}
   .chart-box{padding:12px;height:420px}
   .chart-box canvas{position:relative;z-index:1}
 
@@ -438,7 +671,85 @@ export const SHARED_CSS = `
   .reveal-item{opacity:0;transform:translateY(22px);transition:opacity .65s var(--ease),transform .65s var(--ease);transition-delay:var(--reveal-delay,0ms)}
   .reveal-item.in-view{opacity:1;transform:none}
 
+  .section[id],.anchor[id]{scroll-margin-top:64px}
+  .kpi-api-row{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px}
+  .data-table td.session-title{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .two-col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+  .two-col>.section,.two-col>.panel{margin-bottom:0}
+  .panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:12px}
+  .provider-layout{grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
+  .provider-share{display:flex;flex-direction:column}
+  .provider-share .chart-box{flex:1;height:auto;min-height:300px}
+
+  .section-nav{position:sticky;top:10px;z-index:50;display:flex;gap:2px;width:max-content;max-width:100%;overflow-x:auto;scrollbar-width:none;margin:0 0 22px;padding:4px;background:rgba(17,17,20,.86);border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 40px -24px rgba(0,0,0,.9)}
+  .section-nav::-webkit-scrollbar{display:none}
+  .section-nav a{flex-shrink:0;padding:6px 12px;border-radius:8px;color:var(--text-dim);text-decoration:none;font-size:10px;font-family:var(--font-mono);letter-spacing:.07em;text-transform:uppercase;transition:color .25s,background .25s}
+  .section-nav a:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .section-nav a.active{color:#111114;background:#e7e7e4}
+
+  .kpi-delta{display:flex;flex-wrap:wrap;gap:2px 6px;align-items:baseline;margin-top:6px}
+  .kpi-sub+.kpi-delta{margin-top:4px}
+  .kpi-delta .delta-range{color:var(--text-faint)}
+  .delta-good{color:var(--success)} .delta-bad{color:var(--danger)} .delta-neutral{color:var(--text-dim)}
+  .kpi-card.kpi-light .delta-good{color:#2c6a4c} .kpi-card.kpi-light .delta-bad{color:#9c2f3a} .kpi-card.kpi-light .delta-neutral{color:#4a4a52} .kpi-card.kpi-light .delta-range{color:#55555d}
+
+  .panel{padding:18px 18px 16px;transition:border-color .4s var(--ease)}
+  .panel:hover{border-color:var(--border-light)}
+  .panel>*{position:relative;z-index:1}
+  .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .panel-title{display:flex;align-items:center;gap:8px;font-size:10px;font-family:var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text)}
+  .panel-sub{font-size:10px;font-family:var(--font-mono);color:var(--text-faint);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .panel-figure{font-family:var(--font-mono);font-size:30px;line-height:1;letter-spacing:-.05em;color:var(--text);font-variant-numeric:tabular-nums;margin:2px 0 14px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}
+  .panel-figure-sub{font-size:11px;letter-spacing:.02em;color:var(--text-dim)}
+  .panel-note{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 6px;margin-top:12px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08);font-size:11px;color:var(--text-dim);line-height:1.45}
+  .panel-note strong{color:var(--text);font-weight:600;font-family:var(--font-mono)}
+  .panel-note .note-faint{color:var(--text-faint)}
+  .panel-note .note-dot{width:6px;height:6px;border-radius:50%;background:var(--missing);align-self:center;flex-shrink:0}
+  .panel-note.warn .note-dot{background:var(--tps)}
+  .panel-empty{padding:18px 0;text-align:center;color:var(--text-faint);font-family:var(--font-mono);font-size:11px}
+  .badge{display:inline-block;padding:2px 7px;border-radius:99px;border:1px solid rgba(208,183,125,.4);color:var(--tps);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;background:rgba(208,183,125,.07);cursor:help}
+  .mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:10px 12px}
+
+  .bar-list{list-style:none;display:flex;flex-direction:column;gap:11px}
+  .bar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 14px;align-items:end}
+  .bar-label{min-width:0;display:flex;flex-direction:column}
+  .bar-name{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar-sub{font-size:10px;color:var(--text-faint);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+  .bar-value{font-family:var(--font-mono);font-size:12px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+  .bar-meta{color:var(--text-faint);font-size:10px;margin-left:8px}
+  .bar-track{grid-column:1/-1;height:5px;border-radius:99px;background:rgba(255,255,255,.05);overflow:hidden}
+  .bar-fill{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#6f6f78,#e7e7e4);transition:width .8s var(--ease)}
+  .bar-fill.tone-danger{background:linear-gradient(90deg,#7d4248,#df7b83)}
+  .bar-fill.tone-warn{background:linear-gradient(90deg,#76663f,#d0b77d)}
+  .bar-fill.tone-good{background:linear-gradient(90deg,#4b6b5b,#8fb7a2)}
+  .bar-fill.tone-accent{background:linear-gradient(90deg,#5d6979,#c8d4e3)}
+  .bar-fill.tone-muted{background:linear-gradient(90deg,#3d3d45,#77777f)}
+
+  .split-bar{display:flex;height:10px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.05);margin:6px 0 10px}
+  .split-seg{height:100%}
+  .split-seg.root{background:linear-gradient(90deg,#bfbfc4,#ededea)} .split-seg.child{background:linear-gradient(90deg,#5d6979,#c8d4e3)}
+  .split-legend{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .split-legend .legend-dot.root{background:#e7e7e4} .split-legend .legend-dot.child{background:var(--input)}
+  .split-key{display:flex;align-items:center;gap:6px;font-size:10px;font-family:var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);margin-bottom:4px}
+  .split-val{font-family:var(--font-mono);font-size:12px;color:var(--text);font-variant-numeric:tabular-nums}
+  .split-val span{color:var(--text-faint);font-size:10px}
+  .split-row-label{font-size:9px;font-family:var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint);margin-top:8px}
+
+  .range-cell{min-width:140px}
+  .range-track{position:relative;height:6px;border-radius:99px;background:rgba(255,255,255,.05)}
+  .range-fill{position:absolute;top:0;bottom:0;left:0;border-radius:99px;background:linear-gradient(90deg,rgba(200,212,227,.25),rgba(223,123,131,.55))}
+  .range-p50{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;border-radius:1px;background:#8fb7a2}
+  .data-table td.cell-left,.data-table th.cell-left{text-align:left}
+  .data-table th.cell-num{text-align:right}
+  .data-table td.cell-num{text-align:right;font-family:var(--font-mono);color:#cdcdd3}
+  .path-cell{display:flex;flex-direction:column;min-width:0;max-width:420px}
+  .path-cell .path-name{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .path-cell .path-full{font-family:var(--font-mono);font-size:10px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .status-chip{display:inline-block;padding:1px 7px;border-radius:99px;font-size:9.5px;font-family:var(--font-mono);border:1px solid var(--border);color:var(--text-dim);white-space:nowrap}
+  .status-chip.tone-danger{color:var(--danger);border-color:rgba(223,123,131,.4)} .status-chip.tone-warn{color:var(--tps);border-color:rgba(208,183,125,.4)} .status-chip.tone-muted{color:var(--text-faint)}
+
   @media(max-width:1200px){.kpi-hero-row,.kpi-session-row{grid-template-columns:repeat(3,1fr)}.kpi-minor-row{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:1100px){.provider-layout{grid-template-columns:minmax(0,1fr)}.provider-share .chart-box{flex:none;height:300px}}
   @media(max-width:768px){
     .kpi-hero-row,.kpi-minor-row,.kpi-session-row{grid-template-columns:repeat(2,minmax(0,1fr))}
     .stat-grid{grid-template-columns:repeat(2,1fr)}
@@ -453,6 +764,17 @@ export const SHARED_CSS = `
     .data-table{font-size:11px}
     .data-table th,.data-table td{padding:6px 8px}
     .provider-row{grid-template-columns:1fr}
+    .two-col{grid-template-columns:minmax(0,1fr);gap:18px}
+    .kpi-api-row{grid-template-columns:minmax(0,1fr)}
+    .kpi-api-row .kpi-card{min-height:0;padding:14px}
+    .kpi-api-row .kpi-label{margin-bottom:8px}
+    .section-nav{top:6px;margin-bottom:16px}
+    .section-nav a{padding:6px 10px}
+    .panel{padding:15px 14px 13px}
+    .panel-head{flex-direction:column;align-items:flex-start;gap:3px}
+    .panel-sub{text-align:left;white-space:normal}
+    .panel-figure{font-size:26px}
+    .section-title{flex-wrap:wrap;row-gap:2px}
   }
   @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.reveal-item{opacity:1!important;transform:none!important}}
   `
@@ -590,7 +912,7 @@ function initDashboardMotion() {
     revealEls.forEach(function(el) { observer.observe(el); });
   }
 
-  document.querySelectorAll('.kpi-card, .chart-box, .model-card, .provider-card, .insight-card').forEach(function(el) {
+  document.querySelectorAll('.kpi-card, .chart-box, .model-card, .provider-card, .insight-card, .panel').forEach(function(el) {
     el.addEventListener('pointermove', function(e) {
       var r = el.getBoundingClientRect();
       el.style.setProperty('--mx', (e.clientX - r.left) + 'px');
@@ -609,11 +931,13 @@ function initDashboardMotion() {
     }
   });
 
-  if (!reduced) document.querySelectorAll('.token-seg').forEach(function(seg) {
+  if (!reduced) document.querySelectorAll('.token-seg, .bar-fill').forEach(function(seg) {
     var target = seg.style.width;
     seg.style.width = '0%';
     requestAnimationFrame(function() { requestAnimationFrame(function() { seg.style.width = target; }); });
   });
+
+  initSectionNav();
 
   var progress = document.getElementById('scroll-progress-bar');
   var scheduled = false;
@@ -627,6 +951,28 @@ function initDashboardMotion() {
     if (!scheduled) { scheduled = true; requestAnimationFrame(updateProgress); }
   }, { passive: true });
   updateProgress();
+}
+
+// Highlights the nav link of the section crossing the upper third of the viewport.
+function initSectionNav() {
+  var nav = document.querySelector('.section-nav');
+  if (!nav || !('IntersectionObserver' in window)) return;
+  var links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+  var byId = {};
+  links.forEach(function(a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (!entry.isIntersecting) return;
+      var a = byId[entry.target.id];
+      if (!a) return;
+      links.forEach(function(l) { l.classList.remove('active'); l.removeAttribute('aria-current'); });
+      a.classList.add('active');
+      a.setAttribute('aria-current', 'location');
+      // Scroll only the nav strip; scrollIntoView would interrupt the page's smooth scroll.
+      if (nav.scrollWidth > nav.clientWidth) nav.scrollLeft = a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2;
+    });
+  }, { rootMargin: '-30% 0px -65% 0px' });
+  Object.keys(byId).forEach(function(id) { var el = document.getElementById(id); if (el) obs.observe(el); });
 }
 
 window.addEventListener('resize', function() {

@@ -2,12 +2,17 @@
 // Enhanced dashboard with model chart view toggle, provider donut chart,
 // hourly activity heatmap, cost trend, and animated background.
 
+import { homedir } from "node:os"
 import type { CombinedReportData, ModelBreakdownItem } from "./formatter.js"
 import { isMissingCache, cacheHitRate, totalInputTokens } from "./formatter.js"
 import {
-  fmtTokens, fmtCost, fmtPercent, escapeHtml, jsonForScript,
+  fmtTokens, fmtCost, fmtPercent, fmtDuration, escapeHtml, jsonForScript,
+  middleEllipsis, shortenHome, pathBasename, relativeChange, pointChange, fmtRangeShort,
+  barListHtml, panelHtml, sectionNavHtml, errorTypesPanelHtml, finishReasonsPanelHtml, overheadPanelHtml,
+  footerSourceHtml, abortedCountOf, finishReasonCount,
   HTML_HEAD_SHARED, BG_ANIMATION_HTML, BG_ANIMATION_CSS, BG_PARTICLE_JS, SHARED_CSS, SHARED_JS,
 } from "./html-common.js"
+import type { ChangeInfo, NavItem } from "./html-common.js"
 import { modelIconImg, getModelIconDataUri } from "./model-icons.js"
 
 function sortModelsByUsage(models: ModelBreakdownItem[]): ModelBreakdownItem[] {
@@ -16,7 +21,22 @@ function sortModelsByUsage(models: ModelBreakdownItem[]): ModelBreakdownItem[] {
 
 function renderMeta(data: CombinedReportData): string {
   const m = data.meta
-  return `Usage Stat Report &middot; ${m.dateRange.start} \u2192 ${m.dateRange.end} &middot; generated ${m.generatedAt}`
+  const prevRange = data.comparison?.previous ? data.comparison.previousRange : null
+  const vs = prevRange ? ` &middot; vs ${escapeHtml(prevRange.start)} \u2192 ${escapeHtml(prevRange.end)}` : ""
+  return `Usage Stat Report &middot; ${escapeHtml(m.dateRange.start)} \u2192 ${escapeHtml(m.dateRange.end)}${vs} &middot; generated ${escapeHtml(m.generatedAt)}`
+}
+
+type DeltaPolarity = "up-good" | "up-bad" | "neutral"
+
+/** KPI period-over-period line; empty without a previous period. */
+function deltaHtml(change: ChangeInfo | null, polarity: DeltaPolarity, data: CombinedReportData): string {
+  const range = data.comparison?.previousRange
+  if (!change || !data.comparison?.previous) return ""
+  const tone = change.direction === "flat" || polarity === "neutral" ? "neutral"
+    : (change.direction === "up") === (polarity === "up-good") ? "good" : "bad"
+  const rangeFull = range ? `${range.start} \u2192 ${range.end}` : "previous period"
+  const rangeShort = range ? fmtRangeShort(range.start, range.end) : "prev"
+  return `<div class="kpi-sub kpi-delta delta-${tone}" title="Compared with ${escapeHtml(rangeFull)}"><span>${escapeHtml(change.text)}</span><span class="delta-range">vs ${escapeHtml(rangeShort)}</span></div>`
 }
 
 // Tiny inline SVG sparkline for hero KPI cards.
@@ -77,37 +97,48 @@ function renderKpiCards(data: CombinedReportData): string {
   const dailyTokensAsc = [...data.daily].reverse().map(d => d.totalTokens)
   const dailyCostsAsc = [...data.daily].reverse().map(d => d.totalCost)
 
+  const prev = data.comparison?.previous ?? null
+  const hasHitRate = (kpiInputSum + kpiCacheSum) > 0
+  const aborted = abortedCountOf(errors)
+  const errorSub = errors ? `${errors.failedCount} failed &middot; ${aborted} aborted` : ''
+
   return `
     <div class="kpi-row kpi-hero-row">
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Tokens</div>
         <div class="kpi-value" data-countup="${fmtTokens(s.totalTokens)}">${fmtTokens(s.totalTokens)}</div>
+        ${deltaHtml(relativeChange(s.totalTokens, prev?.totalTokens), "neutral", data)}
         ${renderSparkline(dailyTokensAsc, "#3f4a5c")}
       </div>
       <div class="kpi-card${isHighCache ? ' kpi-glow' : ''}">
         <div class="kpi-label">Cache Hit Rate</div>
         <div class="kpi-value" style="color:${kpiHitColor}" data-countup="${hitRatePct}">${hitRatePct}</div>
+        ${deltaHtml(hasHitRate ? pointChange(kpiHitRate, prev?.cacheHitRate) : null, "up-good", data)}
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Requests</div>
         <div class="kpi-value" data-countup="${s.requestCount}">${s.requestCount}</div>
+        ${deltaHtml(relativeChange(s.requestCount, prev?.requestCount), "neutral", data)}
       </div>
       <div class="kpi-card kpi-light">
         <div class="kpi-label">Total Cost</div>
         <div class="kpi-value" style="color:var(--tps)" data-countup="${fmtCost(s.totalCost)}">${fmtCost(s.totalCost)}</div>
         <div class="kpi-sub">${fmtCost(costPerSession)}/session</div>
+        ${deltaHtml(relativeChange(s.totalCost, prev?.totalCost), "up-bad", data)}
         ${renderSparkline(dailyCostsAsc, "#7a6840")}
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Error Rate</div>
         <div class="kpi-value" style="color:${errorColor}" data-countup="${errorRatePct}">${errorRatePct}</div>
-        <div class="kpi-sub">${errors ? errors.failedCount + ' failed' : ''}</div>
+        <div class="kpi-sub" title="Aborted = interrupted by the user; not counted in the error rate">${errorSub}</div>
+        ${deltaHtml(errors ? pointChange(errors.errorRate, prev?.errorRate) : null, "up-bad", data)}
       </div>
     </div>
     <div class="kpi-row kpi-minor-row">
       <div class="kpi-card kpi-minor">
         <div class="kpi-label">Sessions</div>
         <div class="kpi-value" data-countup="${totalSessions}">${totalSessions}</div>
+        ${deltaHtml(relativeChange(totalSessions, prev?.sessions), "neutral", data)}
       </div>
       <div class="kpi-card kpi-minor">
         <div class="kpi-label">Avg Daily Tokens</div>
@@ -281,7 +312,7 @@ function renderModelChart() {
 
 window.switchModelView = function(v) {
   modelView = v;
-  document.querySelectorAll('.view-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.view-btn[data-view]').forEach(function(b) { b.classList.remove('active'); });
   document.querySelector('[data-view="' + v + '"]').classList.add('active');
   renderModelChart();
 };`
@@ -339,10 +370,10 @@ function renderProviderDonut() {
     }},
     legend: { type: 'scroll', orient: 'vertical', right: 8, top: 'center', textStyle: { color: '#a3a3ac', fontSize: 11 } },
     color: provDonutColors,
-    graphic: [
-      { type: 'text', left: '35%', top: '43%', silent: true, style: { text: isCost ? 'Total Cost' : 'Total Tokens', textAlign: 'center', fill: '#7d7d86', fontSize: 10, fontFamily: 'ui-monospace, Consolas, monospace' } },
-      { type: 'text', left: '35%', top: '50%', silent: true, style: { text: totalText, textAlign: 'center', fill: '#f2f2ef', fontSize: 20, fontWeight: 600, fontFamily: 'ui-monospace, Consolas, monospace' } }
-    ],
+    title: { text: '{l|' + (isCost ? 'TOTAL COST' : 'TOTAL TOKENS') + '}\\n{v|' + totalText + '}', left: '35%', top: '50%', textAlign: 'center', textVerticalAlign: 'middle', triggerEvent: false,
+      textStyle: { rich: {
+        l: { color: '#7d7d86', fontSize: 9, fontFamily: 'ui-monospace, Consolas, monospace', lineHeight: 18, align: 'center' },
+        v: { color: '#f2f2ef', fontSize: 20, fontWeight: 600, fontFamily: 'ui-monospace, Consolas, monospace', lineHeight: 26, align: 'center' } } } },
     series: [{ type: 'pie', radius: ['46%', '70%'], center: ['35%', '50%'], avoidLabelOverlap: false,
       itemStyle: { borderColor: '#131316', borderWidth: 2, borderRadius: 5 },
       label: { show: false }, labelLine: { show: false },
@@ -392,16 +423,16 @@ function renderApiCostSection(data: CombinedReportData): string {
   const diff = totalApi - reported
   const diffStr = diff > 0.001
     ? `<span style="color:var(--missing)">+${fmtCost(diff)}</span>`
-    : `<span style="color:var(--cache)">${fmtCost(diff)}</span>`
+    : `<span style="color:var(--cache)">${diff < 0 ? '\u2212' + fmtCost(-diff) : fmtCost(diff)}</span>`
 
   return `
-  <div class="section">
+  <div class="section" id="api-cost">
     <div class="section-title">API Equivalent Cost Analysis</div>
     <p style="font-size:12px;color:var(--text-dim);padding:4px 0 8px">
       For providers that don't report cost, API equivalent cost is estimated using official model pricing (models.dev) &times; token usage.
       <span style="color:var(--missing)">~</span> = MISSING model estimated at 94% hit rate.
     </p>
-    <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi-row kpi-api-row">
       <div class="kpi-card kpi-light"><div class="kpi-label">Reported Cost</div><div class="kpi-value" style="color:var(--tps)">${fmtCost(reported)}</div></div>
       <div class="kpi-card"><div class="kpi-label">API Equiv. Total</div><div class="kpi-value" style="color:var(--missing)">${apiCost.totalApiCost != null ? fmtCost(totalApi) : '-'}</div></div>
       <div class="kpi-card"><div class="kpi-label">Difference</div><div class="kpi-value">${diffStr}</div></div>
@@ -458,7 +489,7 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
     return `<tr>
       <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
       <td>${escapeHtml(m.provider)}</td>
-      <td data-sort="${m.requests}">${m.requests}</td>
+      <td class="cell-num" data-sort="${m.requests}">${m.requests}</td>
       <td data-sort="${m.sessions}">${m.sessions}</td>
       <td data-sort="${m.totalTokens}">${fmtTokens(m.totalTokens)}</td>
       <td data-sort="${totalInputTokens(m.inputTokens, m.cacheWrite)}">${fmtTokens(totalInputTokens(m.inputTokens, m.cacheWrite))}</td>
@@ -485,19 +516,25 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
     const errorRows = errors!.byModel
       .filter(m => m.failed > 0)
       .map(m => {
-        const modelRate = m.total > 0 ? (m.failed / m.total * 100).toFixed(1) + '%' : '-'
+        // total counts aborted requests too; the rate excludes them like the global error rate.
+        const aborted = m.aborted ?? 0
+        const counted = Math.max(0, m.total - aborted)
+        const rate = counted > 0 ? m.failed / counted : null
+        const modelRate = rate != null ? (rate * 100).toFixed(1) + '%' : '-'
+        const success = Math.max(0, counted - m.failed)
         return `<tr>
           <td>${escapeHtml(m.provider)}</td>
           <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
-          <td data-sort="${m.total}">${m.total}</td>
+          <td class="cell-num" data-sort="${m.total}">${m.total}</td>
           <td data-sort="${m.failed}" style="color:var(--danger)">${m.failed}</td>
-          <td data-sort="${m.total - m.failed}" style="color:var(--tps)">${m.total - m.failed}</td>
-          <td data-sort="${m.total > 0 ? m.failed / m.total : -1}" style="color:${cellColor}">${modelRate}</td>
+          <td data-sort="${aborted}" style="color:var(--text-dim)">${aborted}</td>
+          <td data-sort="${success}" style="color:var(--tps)">${success}</td>
+          <td data-sort="${rate ?? -1}" style="color:${cellColor}">${modelRate}</td>
         </tr>`
       }).join('\n')
 
     errorTabBtn = `
-      <button class="tab-btn" data-mtab="errors" onclick="switchModelTab('errors')">
+      <button class="tab-btn" role="tab" aria-selected="false" data-mtab="errors" onclick="switchModelTab('errors')">
         Failed Requests <span style="color:var(--danger);margin-left:4px;font-size:0.85em">(${errors!.failedCount})</span>
       </button>`
 
@@ -506,11 +543,12 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
       <p style="font-size:12px;color:${rateColor};padding:8px 0 6px">
         Overall error rate: <strong>${errorRatePct}</strong> &mdash;
         ${errors!.failedCount} failed / ${errors!.successCount + errors!.failedCount} total
+        <span style="color:var(--text-faint)">&middot; ${abortedCountOf(errors)} user-aborted (excluded)</span>
       </p>
       <table id="errors-table" class="data-table">
         <thead><tr>
-          <th>Provider</th><th>Model</th><th class="sortable">Total</th>
-          <th class="sortable">Failed</th><th class="sortable">Success</th><th class="sortable">Error Rate</th>
+          <th>Provider</th><th>Model</th><th class="sortable cell-num">Total</th>
+          <th class="sortable">Failed</th><th class="sortable" title="Interrupted by the user; not an error">Aborted</th><th class="sortable">Success</th><th class="sortable">Error Rate</th>
         </tr></thead>
         <tbody>${errorRows}</tbody>
       </table>
@@ -522,18 +560,26 @@ function renderModelAnalyticsSection(data: CombinedReportData): string {
     </div>`
   }
 
-  return `
-  <div class="section">
+  if (!usageRows) {
+    return `
+  <div class="section" id="analytics">
     <div class="section-title">Model Analytics</div>
-    <div class="tab-bar">
-      <button class="tab-btn active" data-mtab="usage" onclick="switchModelTab('usage')">Usage Breakdown</button>
+    <div class="empty-state">No model usage in this period.</div>
+  </div>`
+  }
+
+  return `
+  <div class="section" id="analytics">
+    <div class="section-title">Model Analytics</div>
+    <div class="tab-bar" role="tablist" aria-label="Model analytics views">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-mtab="usage" onclick="switchModelTab('usage')">Usage Breakdown</button>
       ${errorTabBtn}
     </div>
 
     <div id="model-tab-usage" class="tab-content active">
       <table id="usage-table" class="data-table">
         <thead><tr>
-          <th>Model</th><th>Provider</th><th class="sortable">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
+          <th>Model</th><th>Provider</th><th class="sortable cell-num">Req</th><th class="sortable">Sess</th><th class="sortable">Total</th>
           <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Reasoning</th><th class="sortable">Cache R</th><th class="sortable">Cache W</th>
           <th class="sortable" title="Cache Read / (Input + Cache Read); Input includes cache write">Hit Rate</th><th class="sortable">Cost</th><th title="Official pricing × token usage (estimate)">API Cost</th><th class="sortable" title="Reported cost per 1M total tokens (incl. cache)">Cost/1M</th>
         </tr></thead>
@@ -562,17 +608,25 @@ function renderSessionTable(data: CombinedReportData): string {
       <td data-sort="${s.outputTokens}">${fmtTokens(s.outputTokens)}</td>
       <td data-sort="${s.cacheRead}">${fmtTokens(s.cacheRead)}</td>
       <td data-sort="${s.totalCost}">${fmtCost(s.totalCost)}</td>
-      <td>${escapeHtml(s.title)}</td>
+      <td class="cell-left session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</td>
     </tr>`
   }).join("\n")
 
+  if (data.sessions.length === 0) {
+    return `
+  <div class="section" id="sessions">
+    <div class="section-title">Recent Sessions</div>
+    <div class="empty-state">No sessions in this period.</div>
+  </div>`
+  }
+
   return `
-  <div class="section">
+  <div class="section" id="sessions">
     <div class="section-title">Recent Sessions <span class="sub">(${data.sessions.length} sessions, click headers to sort)</span></div>
     <table id="sessions-table" class="data-table">
       <thead><tr>
         <th class="sortable">Day</th><th>Provider</th><th>Model</th><th class="sortable">Req</th><th class="sortable">Total</th>
-        <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Cache</th><th class="sortable">Cost</th><th>Title</th>
+        <th class="sortable">Input</th><th class="sortable">Output</th><th class="sortable">Cache</th><th class="sortable">Cost</th><th class="cell-left">Title</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -769,6 +823,167 @@ function initCostTrend() {
 }`
 }
 
+const PROJECT_LIMIT = 12
+
+function projectLabel(directory: string, projectId: string): { name: string; path: string; full: string } {
+  const full = directory || projectId || "(unknown)"
+  const short = directory ? shortenHome(directory, homedir()) : full
+  const name = !directory ? full : short === "~" ? "~ (home)" : pathBasename(short)
+  return { name, path: middleEllipsis(short, 58), full }
+}
+
+function renderProjectsPanel(data: CombinedReportData): string {
+  const projects = (data.projects ?? []).filter(p => p.totalTokens > 0 || p.totalCost > 0 || p.sessions > 0)
+  if (projects.length === 0) return ""
+  const views: Array<{ key: string; label: string; pick: (p: typeof projects[number]) => number; show: (p: typeof projects[number]) => string; meta: (p: typeof projects[number]) => string }> = [
+    { key: "tokens", label: "Tokens", pick: p => p.totalTokens, show: p => fmtTokens(p.totalTokens), meta: p => `${fmtCost(p.totalCost)} \u00b7 ${p.sessions} sess` },
+    { key: "cost", label: "Cost", pick: p => p.totalCost, show: p => fmtCost(p.totalCost), meta: p => `${fmtTokens(p.totalTokens)} \u00b7 ${p.sessions} sess` },
+    { key: "sessions", label: "Sessions", pick: p => p.sessions, show: p => `${p.sessions} sess`, meta: p => `${fmtTokens(p.totalTokens)} \u00b7 ${p.requests} req` },
+  ]
+  const lists = views.map((v, i) => {
+    const rows = [...projects].sort((a, b) => v.pick(b) - v.pick(a)).slice(0, PROJECT_LIMIT).map(p => {
+      const l = projectLabel(p.directory, p.projectId)
+      return { label: l.name, sub: l.path === l.name || l.path === "~" ? undefined : l.path, title: l.full, value: v.pick(p), display: v.show(p), meta: v.meta(p) }
+    })
+    return `<div class="pv-list" data-pv-group="projects" data-pv="${v.key}"${i === 0 ? '' : ' hidden'}>${barListHtml(rows, `Projects by ${v.label.toLowerCase()}`)}</div>`
+  }).join("")
+  const buttons = views.map((v, i) =>
+    `<button class="view-btn${i === 0 ? ' active' : ''}" data-pv-group="projects" data-pv="${v.key}" aria-pressed="${i === 0}" onclick="switchPanelView('projects','${v.key}')">${v.label}</button>`).join("")
+  const more = projects.length > PROJECT_LIMIT ? `<div class="panel-note"><span class="note-faint">Top ${PROJECT_LIMIT} of ${projects.length} directories</span></div>` : ""
+  return panelHtml("Projects", `<div class="view-btn-bar">${buttons}</div>${lists}${more}`, { sub: `${projects.length} director${projects.length === 1 ? 'y' : 'ies'}` })
+}
+
+function renderAgentsPanel(data: CombinedReportData): string {
+  const agents = (data.agents ?? []).filter(a => a.totalTokens > 0 || a.requests > 0)
+  const kinds = data.sessionKinds
+  const kindsTotal = kinds ? kinds.root.totalTokens + kinds.child.totalTokens : 0
+  if (agents.length === 0 && kindsTotal <= 0) return ""
+
+  let split = ""
+  if (kinds && kindsTotal > 0) {
+    const rootPct = kinds.root.totalTokens / kindsTotal
+    const childPct = 1 - rootPct
+    const costTotal = kinds.root.totalCost + kinds.child.totalCost
+    const col = (cls: string, label: string, k: typeof kinds.root, pct: number) => `
+        <div>
+          <div class="split-key"><span class="legend-dot ${cls}"></span>${label}</div>
+          <div class="split-val">${fmtPercent(pct)} <span>&middot; ${fmtTokens(k.totalTokens)}</span></div>
+          <div class="split-val"><span>${fmtCost(k.totalCost)}${costTotal > 0 ? ` (${fmtPercent(k.totalCost / costTotal)})` : ''} &middot; ${k.sessions} sess &middot; ${k.requests} req</span></div>
+        </div>`
+    split = `
+      <div class="split-row-label">Main sessions vs sub-agents &middot; token share</div>
+      <div class="split-bar" role="img" aria-label="Main sessions ${fmtPercent(rootPct)}, sub-agent sessions ${fmtPercent(childPct)} of tokens">
+        <span class="split-seg root" style="width:${(rootPct * 100).toFixed(2)}%"></span><span class="split-seg child" style="width:${(childPct * 100).toFixed(2)}%"></span>
+      </div>
+      <div class="split-legend">${col("root", "Main", kinds.root, rootPct)}${col("child", "Sub-agent", kinds.child, childPct)}</div>`
+  }
+
+  const list = agents.length > 0
+    ? barListHtml([...agents].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 10).map(a => ({
+        label: a.agent || "(none)",
+        sub: `${a.sessions} sess \u00b7 ${a.requests} req`,
+        value: a.totalTokens,
+        display: fmtTokens(a.totalTokens),
+        meta: fmtCost(a.totalCost),
+        tone: "accent" as const,
+      })), "Usage by agent")
+    : ""
+  const body = list + (list && split ? `<div style="height:16px"></div>` : "") + split
+  const sub = agents.length > 10 ? `top 10 of ${agents.length} agents` : agents.length > 0 ? `${agents.length} agent${agents.length === 1 ? '' : 's'}` : undefined
+  return panelHtml("Agents", body, { sub })
+}
+
+function renderWorkspaceSection(data: CombinedReportData): string {
+  const projects = renderProjectsPanel(data)
+  const agents = renderAgentsPanel(data)
+  if (!projects && !agents) return ""
+  return `
+  <div class="section" id="workspaces">
+    <div class="section-title">Projects &amp; Agents</div>
+    <div class="panel-grid">${projects}${agents}</div>
+  </div>`
+}
+
+const LATENCY_LIMIT = 20
+
+function renderLatencyTable(data: CombinedReportData): string {
+  const all = (data.modelLatency ?? []).filter(m => m.samples > 0)
+  const rows = [...all].sort((a, b) => b.samples - a.samples).slice(0, LATENCY_LIMIT)
+  if (rows.length === 0) return ""
+  const maxP90 = Math.max(...rows.map(r => r.p90Ms), 1)
+  const body = rows.map(m => {
+    const p90w = Math.min(100, m.p90Ms / maxP90 * 100)
+    const p50l = Math.min(100, m.p50Ms / maxP90 * 100)
+    return `<tr>
+      <td><div class="model-cell">${modelIconImg(m.model, 16)}<span class="model-name-text" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</span></div></td>
+      <td class="cell-left">${escapeHtml(m.provider)}</td>
+      <td class="cell-num" data-sort="${m.samples}">${m.samples}</td>
+      <td data-sort="${m.p50Ms}">${fmtDuration(m.p50Ms)}</td>
+      <td data-sort="${m.p90Ms}">${fmtDuration(m.p90Ms)}</td>
+      <td data-sort="${m.avgMs}">${fmtDuration(m.avgMs)}</td>
+      <td class="range-cell" aria-hidden="true"><div class="range-track"><span class="range-fill" style="width:${p90w.toFixed(1)}%"></span><span class="range-p50" style="left:${p50l.toFixed(1)}%"></span></div></td>
+    </tr>`
+  }).join("\n")
+  return `
+    <div class="section-title" style="margin-top:16px">Request Duration by Model <span class="sub">completed &minus; created &middot; bar = 0&ndash;p90, tick = p50${all.length > LATENCY_LIMIT ? ` &middot; top ${LATENCY_LIMIT} of ${all.length} by samples` : ''}</span></div>
+    <table id="latency-table" class="data-table">
+      <thead><tr><th>Model</th><th class="cell-left">Provider</th><th class="sortable cell-num">Samples</th><th class="sortable">p50</th><th class="sortable">p90</th><th class="sortable">Avg</th><th class="cell-left">Spread</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+    <div class="pagination-ctrl" id="latency-table-ctrl">
+      <button class="page-btn" id="latency-table-prev">Prev</button>
+      <span class="page-info" id="latency-table-info"></span>
+      <button class="page-btn" id="latency-table-next">Next</button>
+    </div>`
+}
+
+function renderReliabilitySection(data: CombinedReportData): string {
+  const types = errorTypesPanelHtml(data.errors)
+  const reasons = finishReasonsPanelHtml(data.errors)
+  const latency = renderLatencyTable(data)
+  if (!types && !reasons && !latency) return ""
+  return `
+  <div class="section" id="reliability">
+    <div class="section-title">Reliability &amp; Latency</div>
+    ${types || reasons ? `<div class="panel-grid">${types}${reasons}</div>` : ''}
+    ${latency}
+  </div>`
+}
+
+function renderCacheSavingsPanel(data: CombinedReportData): string {
+  const cs = data.cacheSavings
+  if (!cs) return ""
+  const priced = (cs.byModel ?? []).filter(m => m.saved != null && m.saved > 0)
+  if (cs.estimatedSavedCost == null && priced.length === 0) return ""
+  const total = cs.estimatedSavedCost ?? priced.reduce((s, m) => s + (m.saved ?? 0), 0)
+  const unpriced = (cs.byModel ?? []).filter(m => m.saved == null && m.cacheRead > 0).length
+  const list = barListHtml([...priced].sort((a, b) => (b.saved ?? 0) - (a.saved ?? 0)).slice(0, 8).map(m => ({
+    label: m.model,
+    sub: m.provider,
+    title: `${m.provider} / ${m.model}`,
+    value: m.saved ?? 0,
+    display: `~${fmtCost(m.saved ?? 0)}`,
+    meta: `${fmtTokens(m.cacheRead)} cached`,
+    tone: "good" as const,
+  })), "Estimated cache savings by model")
+  const note = `<div class="panel-note"><span class="note-faint">Cache-read tokens &times; (input price &minus; cache-read price), official pricing.${unpriced > 0 ? ` ${unpriced} model${unpriced > 1 ? 's' : ''} without pricing not included.` : ''}</span></div>`
+  return panelHtml("Cache Savings", `<div class="panel-figure">~${fmtCost(total)}<span class="panel-figure-sub">saved by prompt caching</span></div>${list}${note}`, {
+    badge: "Estimate",
+    badgeTitle: "Estimated from official model pricing; not a billed amount",
+  })
+}
+
+function renderEfficiencySection(data: CombinedReportData): string {
+  const savings = renderCacheSavingsPanel(data)
+  const overhead = overheadPanelHtml(data.overhead, { showSessions: true })
+  if (!savings && !overhead) return ""
+  return `
+  <div class="section" id="efficiency">
+    <div class="section-title">Efficiency</div>
+    <div class="panel-grid">${savings}${overhead}</div>
+  </div>`
+}
+
 function renderInsightsSection(data: CombinedReportData): string {
   const insights: { icon: string; title: string; value: string }[] = []
 
@@ -808,6 +1023,35 @@ function renderInsightsSection(data: CombinedReportData): string {
     })
   }
 
+  const saved = data.cacheSavings?.estimatedSavedCost
+  if (saved != null && saved > 0) {
+    insights.push({
+      icon: '\u21BA',
+      title: 'Prompt caching saved (estimate)',
+      value: `<span class="accent">~${fmtCost(saved)}</span> vs. paying full input price`,
+    })
+  }
+
+  const topProject = (data.projects ?? [])[0]
+  if (topProject && topProject.totalTokens > 0) {
+    const l = projectLabel(topProject.directory, topProject.projectId)
+    const total = data.summary.totalTokens
+    insights.push({
+      icon: '\u25A3',
+      title: 'Busiest project',
+      value: `<span class="accent" title="${escapeHtml(l.full)}">${escapeHtml(l.name)}</span> · ${fmtTokens(topProject.totalTokens)}${total > 0 ? ` (${(topProject.totalTokens / total * 100).toFixed(1)}%)` : ''} · ${topProject.sessions} sessions`,
+    })
+  }
+
+  const truncated = finishReasonCount(data.errors, "length")
+  if (truncated > 0) {
+    insights.push({
+      icon: '\u2702',
+      title: 'Truncated outputs',
+      value: `<span class="accent">${truncated}</span> response${truncated > 1 ? 's' : ''} hit the output token limit`,
+    })
+  }
+
   if (insights.length === 0) return ""
   const cards = insights.map(ins => `
     <div class="insight-card">
@@ -818,9 +1062,9 @@ function renderInsightsSection(data: CombinedReportData): string {
       </div>
     </div>`).join("\n")
   return `
-  <div class="section">
+  <div class="section" id="insights">
     <div class="section-title">Insights</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px">
       ${cards}
     </div>
   </div>`
@@ -845,6 +1089,19 @@ export function generateTotalUsageHtml(data: CombinedReportData): string {
   const heatmapJs = calendarVisible ? renderHeatmapInit(data) : ""
   const hourlyHeatmapJs = (data.hourlyHeatmap ?? []).length > 0 ? renderHourlyHeatmapInit(data) : ""
   const costTrendJs = data.daily.length > 0 ? renderCostTrendInit(data) : ""
+  const insightsStr = renderInsightsSection(data)
+  const workspaceStr = renderWorkspaceSection(data)
+  const reliabilityStr = renderReliabilitySection(data)
+  const efficiencyStr = renderEfficiencySection(data)
+  const nav: NavItem[] = [{ id: "overview", label: "Overview" }]
+  if (insightsStr) nav.push({ id: "insights", label: "Insights" })
+  nav.push({ id: "models", label: "Models" }, { id: "timeline", label: "Timeline" }, { id: "providers", label: "Providers" })
+  if (workspaceStr) nav.push({ id: "workspaces", label: "Projects" })
+  if (reliabilityStr) nav.push({ id: "reliability", label: "Reliability" })
+  if (efficiencyStr) nav.push({ id: "efficiency", label: "Efficiency" })
+  nav.push({ id: "analytics", label: "Analytics" })
+  if (apiCostStr) nav.push({ id: "api-cost", label: "API Cost" })
+  nav.push({ id: "sessions", label: "Sessions" })
   const jsonData = jsonForScript(data)
 
   return `<!DOCTYPE html>
@@ -857,8 +1114,6 @@ ${HTML_HEAD_SHARED}
 <style>
 ${BG_ANIMATION_CSS}
 ${SHARED_CSS}
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -871,11 +1126,15 @@ ${BG_ANIMATION_HTML}
     <div class="meta">${metaStr}</div>
   </div>
 
+  ${sectionNavHtml(nav)}
+
+  <div id="overview" class="anchor">
   ${kpiStr}
+  </div>
 
-  ${renderInsightsSection(data)}
+  ${insightsStr}
 
-  <div class="section">
+  <div class="section" id="models">
     <div class="section-title">Model Comparison Matrix</div>
     ${modelChartVisible ? `
     <div class="view-btn-bar">
@@ -887,13 +1146,13 @@ ${BG_ANIMATION_HTML}
     <div class="chart-box" id="model-chart" style="height:520px"></div>` : '<div class="empty-state">No model usage data in this period.</div>'}
   </div>
 
-  <div class="section">
+  <div class="section" id="timeline">
     <div class="section-title">Usage Timeline</div>
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="daily" onclick="switchTab('daily')">Daily Trend</button>
-      ${calendarVisible ? '<button class="tab-btn" data-tab="heatmap" onclick="switchTab(\'heatmap\')">Calendar Heatmap</button>' : ''}
-      ${hourlyHeatmapJs ? '<button class="tab-btn" data-tab="hourly" onclick="switchTab(\'hourly\')">Activity Hours</button>' : ''}
-      ${costTrendJs ? '<button class="tab-btn" data-tab="cost" onclick="switchTab(\'cost\')">Cost Trend</button>' : ''}
+    <div class="tab-bar" role="tablist" aria-label="Timeline views">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="daily" onclick="switchTab('daily')">Daily Trend</button>
+      ${calendarVisible ? '<button class="tab-btn" role="tab" aria-selected="false" data-tab="heatmap" onclick="switchTab(\'heatmap\')">Calendar Heatmap</button>' : ''}
+      ${hourlyHeatmapJs ? '<button class="tab-btn" role="tab" aria-selected="false" data-tab="hourly" onclick="switchTab(\'hourly\')">Activity Hours</button>' : ''}
+      ${costTrendJs ? '<button class="tab-btn" role="tab" aria-selected="false" data-tab="cost" onclick="switchTab(\'cost\')">Cost Trend</button>' : ''}
     </div>
     <div id="tab-daily" class="tab-content active">
       <div class="chart-box" id="daily-chart"></div>
@@ -903,21 +1162,27 @@ ${BG_ANIMATION_HTML}
     ${costTrendJs ? `<div id="tab-cost" class="tab-content"><div class="chart-box" id="cost-trend-chart"></div></div>` : ''}
   </div>
 
-  <div class="two-col" style="margin-bottom:28px">
+  <div class="two-col provider-layout anchor" id="providers" style="margin-bottom:28px">
     <div class="section" style="margin-bottom:0">
       <div class="section-title">Provider Summary</div>
-      <div class="provider-row">${providerStr}</div>
+      ${providerStr ? `<div class="provider-row">${providerStr}</div>` : '<div class="empty-state">No provider data.</div>'}
     </div>
-    <div class="section" style="margin-bottom:0">
+    <div class="section provider-share" style="margin-bottom:0">
       <div class="section-title">Share by Provider</div>
       ${data.providers.length > 0 ? `
       <div class="view-btn-bar" id="prov-view-bar" style="margin-bottom:4px">
         <button class="view-btn${data.providers.some(p => p.totalCost > 0) ? ' active' : ''}" data-pview="cost" onclick="switchProviderView('cost')">Cost</button>
         <button class="view-btn${data.providers.some(p => p.totalCost > 0) ? '' : ' active'}" data-pview="tokens" onclick="switchProviderView('tokens')">Tokens</button>
       </div>
-      <div class="chart-box" id="provider-donut" style="height:280px"></div>` : '<div class="empty-state">No provider data.</div>'}
+      <div class="chart-box" id="provider-donut"></div>` : '<div class="empty-state">No provider data.</div>'}
     </div>
   </div>
+
+  ${workspaceStr}
+
+  ${reliabilityStr}
+
+  ${efficiencyStr}
 
   ${modelAnalyticsStr}
 
@@ -926,7 +1191,7 @@ ${BG_ANIMATION_HTML}
   ${sessionTableStr}
 
   <div class="footer">
-    Generated by opencode-usage-stat &middot; Data: OpenCode V2 API &middot; Export:
+    Generated by opencode-usage-stat &middot; ${footerSourceHtml(data.meta.source)} &middot; Export:
     <a href="javascript:void(0)" onclick="downloadJSON()">JSON</a>
   </div>
 </div>
@@ -951,9 +1216,10 @@ window.ensureTabChart = function(name) {
 
 window.switchTab = function(name) {
   document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
-  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(el) { el.classList.remove('active'); el.setAttribute('aria-selected', 'false'); });
   document.getElementById('tab-' + name).classList.add('active');
-  document.querySelector('[data-tab="' + name + '"]').classList.add('active');
+  var tabBtn = document.querySelector('[data-tab="' + name + '"]');
+  tabBtn.classList.add('active'); tabBtn.setAttribute('aria-selected', 'true');
   window.ensureTabChart(name);
   setTimeout(function() {
     if (name === 'daily' && window.__charts && window.__charts.daily) window.__charts.daily.resize();
@@ -964,12 +1230,20 @@ window.switchTab = function(name) {
 };
 
 window.switchModelTab = function(name) {
-  document.querySelectorAll('[data-mtab]').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('[data-mtab]').forEach(function(el) { el.classList.remove('active'); el.setAttribute('aria-selected', 'false'); });
   ['model-tab-usage', 'model-tab-errors'].forEach(function(id) { var el = document.getElementById(id); if (el) el.classList.remove('active'); });
   var activeTab = document.getElementById('model-tab-' + name);
   if (activeTab) activeTab.classList.add('active');
   var activeBtn = document.querySelector('[data-mtab="' + name + '"]');
-  if (activeBtn) activeBtn.classList.add('active');
+  if (activeBtn) { activeBtn.classList.add('active'); activeBtn.setAttribute('aria-selected', 'true'); }
+};
+
+window.switchPanelView = function(group, view) {
+  document.querySelectorAll('[data-pv-group="' + group + '"]').forEach(function(el) {
+    var on = el.getAttribute('data-pv') === view;
+    if (el.tagName === 'BUTTON') { el.classList.toggle('active', on); el.setAttribute('aria-pressed', String(on)); }
+    else el.hidden = !on;
+  });
 };
 
 window.downloadJSON = function() {
@@ -997,7 +1271,9 @@ document.addEventListener('DOMContentLoaded', function() {
   makeSortable('errors-table');
   makeSortable('sessions-table');
   makeSortable('api-cost-table');
+  makeSortable('latency-table');
   initPaginator('usage-table', 15);
+  initPaginator('latency-table', 10);
   initPaginator('errors-table', 15);
   initPaginator('sessions-table', 15);
   initPaginator('api-cost-table', 15);

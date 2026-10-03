@@ -118,9 +118,11 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
  */
 export declare function fetchFactorySubscriptionUsage(credential: FactoryUsageCredential, fetchImpl?: FetchLike): Promise<DroidAccountQuota>;
 /**
- * Account-quota source for checkDroidUsage: re-reads the secure JSON on every
- * call (so a freshly saved credential is picked up without a restart) and
- * returns null when no credential exists. Fetch failures propagate so the
+ * Account-quota source for checkDroidUsage: resolves a credential on every
+ * call — the Factory CLI keyring first (self-refreshing, so a freshly expired
+ * access token is rotated on the spot), then the secure JSON as fallback. A
+ * keyring present but unrefreshable counts as a request failure; with no
+ * credential at all the source returns null. Fetch failures propagate so the
  * caller can distinguish "not configured" from "failed".
  */
 export declare function makeFactoryAccountQuotaSource(fetchImpl?: FetchLike): DroidAccountQuotaSource;

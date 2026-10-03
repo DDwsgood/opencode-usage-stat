@@ -45,7 +45,7 @@ Shortcut arguments:
   - **DeepSeek** — account balance (USD preferred, then CNY)
   - **Codex** — rate-limit windows (primary/secondary) and credits / spend limit
    - **Command Code** — 5-hour / weekly windows, billing-cycle credits, and plan
-   - **Droid (Factory)** — current-session/subagent consumption from `opencode-droid-v2`'s public usage RPC, in Factory Service Credits (FSC), not dollars; plus real account quota windows (standard/core 5h · weekly · monthly used % + resets, extra-usage cash balance) when a saved Factory web credential exists
+   - **Droid (Factory)** — current-session/subagent consumption from `opencode-droid-v2`'s public usage RPC, in Factory Service Credits (FSC), not dollars; plus real account quota windows (standard/core 5h · weekly · monthly used % + resets, extra-usage cash balance) when a Factory credential resolves (CLI keyring or saved web credential)
   - Each enabled provider appears collapsed immediately and refreshes independently every 2 minutes with a ~15 s timeout.
 
 ### Session / total dashboards
@@ -69,7 +69,7 @@ Single self-contained HTML files (ECharts, background, icons, styles embedded). 
 After the package is published, install and configure both entrypoints globally:
 
 ```bash
-opencode2 plugin add opencode-usage-stat@2.6.0
+opencode2 plugin add opencode-usage-stat@2.6.1
 ```
 
 Or clone and build from source:
@@ -155,7 +155,7 @@ Only providers set to `true` are queried. The plugin reads credentials **at runt
 | `cursor` | Cursor | access token (secure JSON file) |
 | `command-code` | Command Code | API key (`COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json`) |
 | `devin` | Devin | `opencode-devin-v2` plugin credentials (shown only when that plugin is installed and a devin model is enabled) |
-| `droid` | Droid (Factory) | Public `opencode-droid-v2` usage RPC; account quota optionally via saved Factory web credential (secure JSON file) |
+| `droid` | Droid (Factory) | Public `opencode-droid-v2` usage RPC; account quota via the Factory CLI keyring (auto-rotated) or a saved Factory web credential (secure JSON file) |
 
 While collapsed, each provider row shows the labeled short-form usage
 `n%/5h m%/7d`. Monthly or billing-cycle totals are only shown when expanded.
@@ -200,9 +200,21 @@ Resolution order (per provider):
 **Droid note:** the `droid` row uses the same three-way AND gate: `providerUsage.droid` must be `true`, `opencode-droid-v2` must be installed at the current location, and at least one `droid` model must be enabled. It combines two independent sources, each degrading on its own:
 
 - *Session FSC* — tracked consumption for the current session and its subagents via the plugin's public RPC `usage` method over the connected OpenCode client. FSC is a credit unit, not dollars. The bridge's live counters are process-local; reloading it does not reconstruct historical FSC. Missing credits stay unknown, and totals covering only part of the session family are marked `≥` (lower bound, partial).
-- *Account quota* — the official Factory billing-limits endpoint (`GET https://api.factory.ai/api/billing/limits`), the same one the web frontend calls for the 5h · weekly · monthly bars. A real account request was verified with a Bearer access token alone; Cookie and organization ID were not needed for that account. Save `{ "accessToken": "..." }` in `~/.config/openchamber/quota/droid.json` or `~/.config/opencode/usage-stat/droid.json`; optional `cookie` and `organizationId` fields are also supported (cookie-only authentication remains unverified). Keep the file owner-only (`0600`). The CLI's encrypted `~/.factory/auth.v2.keyring` is never read. When saved, the row shows real standard/core windows with used-percent and reset times, plus the extra-usage cash balance (USD, not FSC). The legacy `/api/organization/subscription/usage` endpoint is not the source of these rate-limit bars. Without a credential, account quota is reported as unavailable rather than fabricated; a failed fetch is shown as unknown. Access tokens can expire; this plugin does not refresh or persist them.
+- *Account quota* — the official Factory billing-limits endpoint (`GET https://api.factory.ai/api/billing/limits`), the same one the web frontend calls for the 5h · weekly · monthly bars. Credentials resolve in two steps:
+  1. **Factory CLI keyring** — `~/.factory/auth.v2.keyring` (honors `FACTORY_HOME_OVERRIDE`; `~/.factory-dev` under `FACTORY_ENV=development`). The file is `base64(iv):base64(authTag):base64(ciphertext)` AES-256-GCM; the 32-byte key lives in the OS keyring (service `Factory CLI`, account `auth-encryption-key`) and is read through the `keytar.node` module the CLI ships (`FACTORY_KEYTAR_PATH` overrides the path). A still-valid access token is used as-is; an expired one is rotated through the same WorkOS `/authenticate` endpoint the CLI uses, and the new token pair is re-encrypted and written back (pre-write `.bak` copy, atomic rename, mode `0600`, all other fields preserved) so the CLI never sees a revoked refresh token. `FACTORY_DISABLE_KEYRING` disables this source entirely.
+  2. **Saved web credential** — `{ "accessToken": "..." }` in `~/.config/openchamber/quota/droid.json` or `~/.config/opencode/usage-stat/droid.json`; optional `cookie` and `organizationId` fields are also supported (cookie-only authentication remains unverified). Keep the file owner-only (`0600`). This is a read-only fallback: saved tokens are ~24 h WorkOS JWTs and are never refreshed.
 
-No Factory credentials are ever written, refreshed, or logged; requests use `redirect: "manual"` and never echo error bodies. An old host without plugin RPC support reports that limitation.
+  When resolved, the row shows real standard/core windows with used-percent and reset times, plus the extra-usage cash balance (USD, not FSC). The legacy `/api/organization/subscription/usage` endpoint is not the source of these rate-limit bars. Without a credential, account quota is reported as unavailable rather than fabricated; a failed fetch or a keyring refresh rejection is shown as unknown. An `X-Factory-Org-Id` header is sent only when a credential carries an organization ID (the keyring's `active_organization_id`), matching the CLI.
+
+No Factory credentials are ever logged; the only write this plugin performs is refreshing the CLI keyring's own token pair back into the same file when it expires. Requests use `redirect: "manual"` and never echo error bodies. An old host without plugin RPC support reports that limitation.
+
+### Changes in 2.6.2
+
+- Droid account quota no longer depends on a manually saved web credential (a ~24 h WorkOS JWT): the provider now reads the Factory CLI keyring (`~/.factory/auth.v2.keyring`), uses its access token while valid, and rotates an expired one through WorkOS — writing the refreshed pair back so the CLI's own session stays intact. The saved JSON credential remains as a read-only fallback; `FACTORY_DISABLE_KEYRING` opts the keyring source out.
+
+### Changes in 2.6.1
+
+- Group expanded Droid quota windows under Standard and Core headings, with shorter 5h, Weekly, and Monthly labels. Values, progress bars, reset times, and fetching behavior are unchanged.
 
 ### Changes in 2.6.0
 
@@ -242,6 +254,8 @@ src/
   provider-usage-blocks.tsx TUI Provider Usage UI (default collapsed)
   provider-collapse.ts     Pure collapse-state helpers (tested)
   credentials.ts           Secure credential resolution (V2 SQLite, env, safe .env)
+  factory-keyring.ts       Factory CLI keyring decrypt + WorkOS token rotation
+  droid-usage.ts           Droid session FSC RPC + Factory account quota
   queries.ts               V2 client aggregation (cursor pagination) → dashboard contract
   formatter.ts             Report + perf types & formatting
   pricing.ts               models.dev pricing & API-equivalent estimates

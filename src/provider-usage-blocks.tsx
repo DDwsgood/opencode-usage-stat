@@ -45,6 +45,9 @@ import { t } from "./i18n.js"
 import { formatResetDuration } from "./formatter.js"
 import { resolveThemeColors } from "./theme-map.js"
 import { getSettingsStore } from "./settings.js"
+import { truncateToWidth, visualWidth } from "./text-width.js"
+import { percentBar, providerHeaderFit, providerRowLayout, usageLevel } from "./tui-layout.js"
+import type { UsageLevel } from "./tui-layout.js"
 
 const REFRESH_MS = 2 * 60 * 1000 // every 2 minutes
 
@@ -79,7 +82,14 @@ export interface ProviderUsageBlocksProps {
   context: Context
   /** Current session (slot input); required for Droid session-tracked FSC. */
   sessionID?: string
+  /** Outer sidebar panel width (border included); rows are fitted to it. */
+  panelWidth?: number
 }
+
+// Cells between the panel edge and row content: panel border + this block's
+// paddingX, and the expanded body's own paddingX.
+const HEADER_INSET = 4
+const BODY_INSET = 6
 
 interface ProviderState {
   id: ProviderId
@@ -232,7 +242,8 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     }
   }
 
-  // Real account-quota source (saved Factory web credential; re-read per call).
+  // Real account-quota source (Factory CLI keyring first — self-refreshing —
+  // then the saved web credential; credentials are re-resolved per call).
   const factoryQuotaSource = droidEnabled ? makeFactoryAccountQuotaSource() : undefined
 
   let droidSeq = 0
@@ -351,18 +362,16 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
     if (!s.result) return dimColor()
     if (!s.result.ok) return redColor()
     // Tightest window decides the dot color, independent of display mode.
-    const worst = worstUsagePercent(s.result.windows)
-    if (worst != null) {
-      if (worst >= 90) return redColor()
-      if (worst >= 70) return amberColor()
-    }
+    return levelColor(usageLevel(worstUsagePercent(s.result.windows)))
+  }
+
+  function levelColor(level: UsageLevel): RGBA {
+    if (level === "critical") return redColor()
+    if (level === "warn") return amberColor()
     return greenColor()
   }
 
-  function percentBar(percent: number, width: number): string {
-    const filled = Math.max(0, Math.min(width, Math.floor((percent / 100) * width)))
-    return "█".repeat(filled) + "░".repeat(Math.max(0, width - filled))
-  }
+  const panelWidth = (): number => props.panelWidth ?? 38
 
   /** Total dollars from a dollar-pool value label, 0 when not one. */
   function totalDollars(valueLabel: string | null): number {
@@ -384,30 +393,29 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
             return "●"
           }
           const headerText = () => {
-            if (state.loading && !state.result) return `${t("providerRefreshing")}…`
+            if (state.loading && !state.result) return t("providerRefreshing")
             const summary = collapsedSummary(state.result?.windows, displayMode())
             if (state.result?.ok && summary != null) return summary
             const status = state.result?.status ?? t("providerNotConfigured")
             const prefix = `${PROVIDER_NAMES[state.id]} — `
             return status.startsWith(prefix) ? status.slice(prefix.length) : status
           }
+          const header = () => providerHeaderFit(panelWidth() - HEADER_INSET, PROVIDER_NAMES[state.id] ?? state.id, headerText())
           return (
             <box flexDirection="column">
               <box flexDirection="row" justifyContent="space-between" gap={1} onMouseDown={() => toggle(state.id)} paddingX={0}>
                 <text fg={PROVIDER_COLORS[state.id] ?? FALLBACK_COLOR}>
                   <span style={{ fg: color() } as any}>{dot()}</span>{" "}
-                  <span style={{ fg: primaryColor() } as any}>{PROVIDER_NAMES[state.id]}</span>
+                  <span style={{ fg: primaryColor() } as any}>{header().name}</span>
                   {isOpen() ? " ▾" : " ▸"}
                 </text>
-                <text fg={mutedColor()}>
-                  {headerText().length > 32 ? headerText().slice(0, 31) + "…" : headerText()}
-                </text>
+                <text fg={mutedColor()}>{header().right}</text>
               </box>
 
               <Show when={isOpen()}>
                 <box flexDirection="column" paddingX={1} marginTop={0}>
                   <Show when={state.loading && !state.result}>
-                    <text fg={mutedColor()}>{t("providerRefreshing")}…</text>
+                    <text fg={mutedColor()}>{t("providerRefreshing")}</text>
                   </Show>
 
                   <Show when={!state.loading && !state.result}>
@@ -423,62 +431,100 @@ export function ProviderUsageBlocks(props: ProviderUsageBlocksProps): JSX.Elemen
 
                   <Show when={state.result !== null && state.result.ok && state.result.windows}>
                     <For each={state.result?.windows ?? []}>
-                      {win => {
+                      {(win, index) => {
+                        const droidGroup = state.id === "droid"
+                          ? /^(Standard|Core) · (5h|weekly|monthly)$/.exec(win.label)
+                          : null
+                        const windowLabel = droidGroup
+                          ? droidGroup[2].charAt(0).toUpperCase() + droidGroup[2].slice(1)
+                          : win.label
                         const isDollarPool = DOLLAR_POOL_LABEL.test(win.valueLabel ?? "")
-                        const label = win.label ? win.label + ": " : ""
-                        if (win.percent != null) {
-                          const shownPercent = () =>
-                            displayMode() === "remaining" ? 100 - win.percent! : win.percent!
-                          // Dollar pools render "Monthly: [bar] N% left" plus a
-                          // second line "[credits]$/[allowance]$"; other windows
-                          // keep " · resets <duration>".
-                          const poolCredits = isDollarPool
-                            ? (displayMode() === "remaining"
-                              ? dollarPoolRemaining(win.valueLabel)
-                              : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)))
-                            : null
-                          const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null
-                          return (
-                            <Show when={!isDollarPool} fallback={
-                              <box flexDirection="column">
+                        const label = windowLabel ? windowLabel + ": " : ""
+                        // Droid group rows sit one extra cell to the right.
+                        const contentWidth = () => panelWidth() - BODY_INSET - (droidGroup ? 1 : 0)
+                        // Each bar is colored by its own used percent; the
+                        // header dot keeps the worst window.
+                        const winColor = () => levelColor(usageLevel(win.percent))
+
+                        function renderWindow(): JSX.Element {
+                          if (win.percent != null) {
+                            const shownPercent = () =>
+                              displayMode() === "remaining" ? 100 - win.percent! : win.percent!
+                            const percentSuffix = () =>
+                              ` ${Math.round(shownPercent())}%${displayMode() === "remaining" ? ` ${t("left")}` : ""}`
+                            const layout = () => {
+                              const reset = !isDollarPool && win.resetsAt ? formatResetDuration(win.resetsAt) : ""
+                              return providerRowLayout(
+                                contentWidth(),
+                                label,
+                                percentSuffix(),
+                                reset ? ` · ${t("providerResets")} ${reset}` : "",
+                                reset ? ` · ${reset}` : "",
+                              )
+                            }
+                            // Dollar pools render "Monthly: [bar] N% left" plus a
+                            // second line "[credits]$/[allowance]$"; other windows
+                            // keep " · resets <duration>".
+                            const poolCredits = isDollarPool
+                              ? (displayMode() === "remaining"
+                                ? dollarPoolRemaining(win.valueLabel)
+                                : Math.max(0, totalDollars(win.valueLabel) - (dollarPoolRemaining(win.valueLabel) ?? 0)))
+                              : null
+                            const poolAllowance = isDollarPool ? totalDollars(win.valueLabel) : null
+                            return (
+                              <Show when={!isDollarPool} fallback={
+                                <box flexDirection="column">
+                                  <text fg={mutedColor()}>
+                                    {label}
+                                    <span style={{ fg: winColor() } as any}>
+                                      {percentBar(shownPercent(), layout().barWidth)}{percentSuffix()}
+                                    </span>
+                                  </text>
+                                  <text>
+                                    <span style={{ fg: winColor() } as any}>
+                                      {`${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`}
+                                    </span>
+                                  </text>
+                                </box>
+                              }>
                                 <text fg={mutedColor()}>
                                   {label}
-                                  <span style={{ fg: color() } as any}>
-                                    {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                    {displayMode() === "remaining" ? ` ${t("left")}` : ""}
+                                  <span style={{ fg: winColor() } as any}>
+                                    {percentBar(shownPercent(), layout().barWidth)}{percentSuffix()}
                                   </span>
+                                  {layout().reset ? (
+                                    <span style={{ fg: dimColor() } as any}>{layout().reset}</span>
+                                  ) : null}
                                 </text>
-                                <text>
-                                  <span style={{ fg: color() } as any}>
-                                    {`${shortDollars(poolCredits ?? 0)}$/${shortDollars(poolAllowance ?? 0)}$`}
-                                  </span>
-                                </text>
-                              </box>
-                            }>
+                              </Show>
+                            )
+                          }
+                          if (win.valueLabel) {
+                            return (
                               <text fg={mutedColor()}>
                                 {label}
-                                <span style={{ fg: color() } as any}>
-                                  {percentBar(shownPercent(), 12)}{" "}{Math.round(shownPercent())}%
-                                  {displayMode() === "remaining" ? ` ${t("left")}` : ""}
+                                <span style={{ fg: greenColor() } as any}>
+                                  {truncateToWidth(win.valueLabel, Math.max(1, contentWidth() - visualWidth(label)))}
                                 </span>
-                                {win.resetsAt ? (
-                                  <span style={{ fg: dimColor() } as any}>
-                                    {` · ${t("providerResets")} ${formatResetDuration(win.resetsAt)}`}
-                                  </span>
-                                ) : null}
                               </text>
-                            </Show>
-                          )
+                            )
+                          }
+                          return <text fg={mutedColor()}>{label}—</text>
                         }
-                        if (win.valueLabel) {
+
+                        if (droidGroup) {
                           return (
-                            <text fg={mutedColor()}>
-                              {label}
-                              <span style={{ fg: greenColor() } as any}>{win.valueLabel}</span>
-                            </text>
+                            <box flexDirection="column">
+                              <Show when={!state.result?.windows?.[index() - 1]?.label.startsWith(`${droidGroup[1]} · `)}>
+                                <text fg={mutedColor()}>{droidGroup[1]}:</text>
+                              </Show>
+                              <box flexDirection="column" paddingLeft={1}>
+                                {renderWindow()}
+                              </box>
+                            </box>
                           )
                         }
-                        return <text fg={mutedColor()}>{label}—</text>
+                        return renderWindow()
                       }}
                     </For>
                   </Show>

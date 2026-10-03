@@ -1,6 +1,6 @@
 {
   "name": "opencode-usage-stat",
-  "version": "2.6.0",
+  "version": "2.6.2",
   "description": "Opencode V2 plugin: real-time token/cache/performance stats, 19 provider usage integrations, and polished HTML usage dashboards",
   "type": "module",
   "main": "./dist/server.js",
